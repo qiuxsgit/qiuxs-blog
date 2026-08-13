@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ const (
 	freezeManualVersionSQL    = `UPDATE article_revisions SET status = 'frozen', reason = 'manual_version', updated_at = ? WHERE id = ? AND status = 'editing' AND lock_version = ?`
 	insertEditingVersionSQL   = `INSERT INTO article_revisions (id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at) VALUES (?, ?, ?, 'editing', 'draft', ?, ?, ?, ?, ?, 1, ?, ?)`
 	replaceDraftPointerSQL    = `UPDATE articles SET draft_revision_id = ?, updated_at = ? WHERE id = ? AND draft_revision_id = ? AND state = 'active'`
+	selectArticlePointerSQL   = `SELECT state, draft_revision_id FROM articles WHERE id = ? FOR UPDATE`
 	selectFrozenVersionSQL    = `SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'frozen'`
 	listFrozenVersionsSQL     = `SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE article_id = ? AND status = 'frozen' ORDER BY revision_no DESC`
 	testContentHash           = `5b732fcfb7289a73704164ad25aaae5be4b188172d1a47932428a8d1cdc7d2dc`
@@ -75,6 +77,214 @@ func TestMySQLRepositoryCreateVersionFreezesAndCopiesCurrentDraftAtomically(t *t
 	require.Equal(t, firstMediaKey, version.Media[0].PublicKey)
 	require.Equal(t, int64(91), *version.CoverMediaID)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMySQLRepositoryVersionMutationsAcceptExactStoredAssociationLimits(t *testing.T) {
+	for _, operation := range []string{"create", "restore"} {
+		t.Run(operation, func(t *testing.T) {
+			repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+			at := time.Date(2026, 8, 14, 14, 0, 0, 0, time.UTC)
+			createdAt := at.Add(-2 * time.Hour)
+			updatedAt := at.Add(-time.Hour)
+			mock.ExpectBegin()
+			if operation == "restore" {
+				expectFrozenTarget(mock, 15, createdAt.Add(-2*time.Hour), updatedAt.Add(-2*time.Hour))
+				expectRestoreCurrentForUpdate(mock, 30, 3, 4, createdAt, updatedAt)
+			} else {
+				expectCurrentDraftForUpdate(mock, 3, createdAt, updatedAt)
+			}
+			associationRevisionID := int64(21)
+			oldRevisionID := int64(21)
+			lockVersion := int64(3)
+			revisionNo := int64(3)
+			title, summary, body := "Title", "Summary", "body"
+			if operation == "restore" {
+				associationRevisionID = 15
+				oldRevisionID = 30
+				lockVersion = 4
+				revisionNo = 4
+				title, summary, body = "Historic Title", "Historic Summary", "historic body"
+			}
+			mock.ExpectQuery(selectDraftTagsSQL).WithArgs(associationRevisionID).WillReturnRows(exactLimitTagRows())
+			mock.ExpectQuery(selectDraftMediaSQL).WithArgs(associationRevisionID).WillReturnRows(exactLimitMediaRows())
+			mock.ExpectExec(freezeManualVersionSQL).WithArgs(at, oldRevisionID, lockVersion).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(insertEditingVersionSQL).WithArgs(
+				int64(1), int64(11), revisionNo, title, summary, int64(91), body, testContentHash, at, at,
+			).WillReturnResult(sqlmock.NewResult(0, 1))
+			expectExactLimitAssociationCopies(mock, 1, at)
+			mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(1), at, int64(11), oldRevisionID).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit()
+
+			var draft Draft
+			if operation == "restore" {
+				var err error
+				draft, err = repository.RestoreVersion(context.Background(), 11, 15, 30, 4, at)
+				require.NoError(t, err)
+			} else {
+				version, next, err := repository.CreateVersion(context.Background(), 11, 21, 3, at)
+				require.NoError(t, err)
+				require.Len(t, version.Tags, MaxTagCount)
+				require.Len(t, version.Media, MaxBodyMediaCount+1)
+				draft = next
+			}
+			require.Len(t, draft.Tags, MaxTagCount)
+			require.Len(t, draft.Media, MaxBodyMediaCount+1)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestMySQLRepositoryVersionMutationsPreserveNonNilEmptyAssociationSlices(t *testing.T) {
+	for _, operation := range []string{"create", "restore"} {
+		t.Run(operation, func(t *testing.T) {
+			repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+			at := time.Date(2026, 8, 14, 14, 30, 0, 0, time.UTC)
+			mock.ExpectBegin()
+			oldRevisionID := int64(21)
+			lockVersion := int64(3)
+			revisionNo := int64(3)
+			title, summary, body := "Title", "Summary", "body"
+			associationRevisionID := int64(21)
+			if operation == "restore" {
+				mock.ExpectQuery(selectFrozenVersionSQL).WithArgs(int64(15), int64(11)).WillReturnRows(draftScalarRows().AddRow(
+					int64(15), int64(11), int64(1), "frozen", "manual_version", "Historic", "", nil, "historic body", testContentHash, int64(2), at.Add(-4*time.Hour), at.Add(-3*time.Hour),
+				))
+				mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(30), int64(11)).WillReturnRows(draftScalarRows().AddRow(
+					int64(30), int64(11), int64(3), "editing", "draft", "Current", "", nil, "current body", testContentHash, int64(4), at.Add(-2*time.Hour), at.Add(-time.Hour),
+				))
+				oldRevisionID = 30
+				lockVersion = 4
+				revisionNo = 4
+				title, summary, body = "Historic", "", "historic body"
+				associationRevisionID = 15
+			} else {
+				mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnRows(draftScalarRows().AddRow(
+					int64(21), int64(11), int64(2), "editing", "draft", title, summary, nil, body, testContentHash, lockVersion, at.Add(-2*time.Hour), at.Add(-time.Hour),
+				))
+			}
+			mock.ExpectQuery(selectDraftTagsSQL).WithArgs(associationRevisionID).WillReturnRows(emptyStoredTagRows())
+			mock.ExpectQuery(selectDraftMediaSQL).WithArgs(associationRevisionID).WillReturnRows(sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}))
+			mock.ExpectExec(freezeManualVersionSQL).WithArgs(at, oldRevisionID, lockVersion).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(insertEditingVersionSQL).WithArgs(int64(1), int64(11), revisionNo, title, summary, nil, body, testContentHash, at, at).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(1), at, int64(11), oldRevisionID).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit()
+
+			if operation == "restore" {
+				restored, err := repository.RestoreVersion(context.Background(), 11, 15, 30, 4, at)
+				require.NoError(t, err)
+				require.NotNil(t, restored.Tags)
+				require.NotNil(t, restored.Media)
+			} else {
+				version, next, err := repository.CreateVersion(context.Background(), 11, 21, 3, at)
+				require.NoError(t, err)
+				require.NotNil(t, version.Tags)
+				require.NotNil(t, version.Media)
+				require.NotNil(t, next.Tags)
+				require.NotNil(t, next.Media)
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestCloneDraftDoesNotAliasAssociationSlices(t *testing.T) {
+	source := Draft{
+		CoverMediaID: revisionInt64Pointer(91),
+		Tags:         []tag.Snapshot{{TagID: 7, Name: "Go", Slug: "t_go", Position: 0}},
+		Media:        []media.Reference{{MediaID: 91, PublicKey: firstMediaKey, Purpose: "cover", Position: 0}},
+	}
+
+	cloned := cloneDraft(source)
+	cloned.Tags[0].Name = "Changed"
+	cloned.Media[0].PublicKey = secondMediaKey
+	*cloned.CoverMediaID = 92
+
+	require.Equal(t, "Go", source.Tags[0].Name)
+	require.Equal(t, firstMediaKey, source.Media[0].PublicKey)
+	require.Equal(t, int64(91), *source.CoverMediaID)
+	empty := cloneDraft(Draft{Tags: []tag.Snapshot{}, Media: []media.Reference{}})
+	require.NotNil(t, empty.Tags)
+	require.NotNil(t, empty.Media)
+}
+
+func TestMySQLRepositoryVersionMutationsRejectMalformedStoredAssociationsBeforeFreezeOrAllocation(t *testing.T) {
+	tests := []struct {
+		name      string
+		tags      func() *sqlmock.Rows
+		media     func() *sqlmock.Rows
+		mediaRead bool
+	}{
+		{name: "tags over limit", tags: func() *sqlmock.Rows { return storedTagRows(MaxTagCount + 1) }},
+		{name: "tag nonpositive ID", tags: func() *sqlmock.Rows { return storedTagRowsWith(0, "Go", "t_go", 0) }},
+		{name: "tag position gap", tags: func() *sqlmock.Rows { return storedTagRowsWith(7, "Go", "t_go", 1) }},
+		{name: "tag duplicate", tags: func() *sqlmock.Rows {
+			return storedTagRowsWith(7, "Go", "t_go", 0).AddRow(int64(7), "Go Again", "t_go_again", 1)
+		}},
+		{name: "media over limit", tags: emptyStoredTagRows, mediaRead: true, media: func() *sqlmock.Rows { return storedMediaRows(MaxBodyMediaCount + 1) }},
+		{name: "media nonpositive ID", tags: emptyStoredTagRows, mediaRead: true, media: func() *sqlmock.Rows {
+			return storedMediaRowsWith(0, firstMediaKey, "cover", 0)
+		}},
+		{name: "media position gap", tags: emptyStoredTagRows, mediaRead: true, media: func() *sqlmock.Rows {
+			return storedMediaRowsWith(91, firstMediaKey, "cover", 1)
+		}},
+		{name: "media invalid purpose", tags: emptyStoredTagRows, mediaRead: true, media: func() *sqlmock.Rows {
+			return storedMediaRowsWith(91, firstMediaKey, "thumbnail", 0)
+		}},
+		{name: "media duplicate content ID", tags: emptyStoredTagRows, mediaRead: true, media: func() *sqlmock.Rows {
+			return storedMediaRowsWith(91, firstMediaKey, "cover", 0).
+				AddRow(int64(92), secondMediaKey, "content", 1).
+				AddRow(int64(92), mediaKeyForIndex(3), "content", 2)
+		}},
+		{name: "media duplicate content key", tags: emptyStoredTagRows, mediaRead: true, media: func() *sqlmock.Rows {
+			return storedMediaRowsWith(91, firstMediaKey, "cover", 0).
+				AddRow(int64(92), secondMediaKey, "content", 1).
+				AddRow(int64(93), secondMediaKey, "content", 2)
+		}},
+		{name: "second cover", tags: emptyStoredTagRows, mediaRead: true, media: func() *sqlmock.Rows {
+			return storedMediaRowsWith(91, firstMediaKey, "cover", 0).
+				AddRow(int64(92), secondMediaKey, "cover", 1)
+		}},
+		{name: "missing scalar cover reference", tags: emptyStoredTagRows, mediaRead: true, media: func() *sqlmock.Rows {
+			return storedMediaRowsWith(92, secondMediaKey, "content", 0)
+		}},
+		{name: "mismatched scalar cover", tags: emptyStoredTagRows, mediaRead: true, media: func() *sqlmock.Rows {
+			return storedMediaRowsWith(92, firstMediaKey, "cover", 0)
+		}},
+	}
+
+	for _, operation := range []string{"create", "restore"} {
+		for _, test := range tests {
+			t.Run(operation+"/"+test.name, func(t *testing.T) {
+				repository, mock, counter := newRevisionRepositoryTest(t, 1, 1)
+				at := time.Date(2026, 8, 14, 14, 0, 0, 0, time.UTC)
+				mock.ExpectBegin()
+				associationRevisionID := int64(21)
+				if operation == "restore" {
+					expectFrozenTarget(mock, 15, at.Add(-4*time.Hour), at.Add(-3*time.Hour))
+					expectRestoreCurrentForUpdate(mock, 30, 3, 4, at.Add(-2*time.Hour), at.Add(-time.Hour))
+					associationRevisionID = 15
+				} else {
+					expectCurrentDraftForUpdate(mock, 3, at.Add(-2*time.Hour), at.Add(-time.Hour))
+				}
+				mock.ExpectQuery(selectDraftTagsSQL).WithArgs(associationRevisionID).WillReturnRows(test.tags())
+				if test.mediaRead {
+					mock.ExpectQuery(selectDraftMediaSQL).WithArgs(associationRevisionID).WillReturnRows(test.media())
+				}
+				mock.ExpectRollback()
+
+				var err error
+				if operation == "restore" {
+					_, err = repository.RestoreVersion(context.Background(), 11, 15, 30, 4, at)
+				} else {
+					_, _, err = repository.CreateVersion(context.Background(), 11, 21, 3, at)
+				}
+
+				require.EqualError(t, err, "validate stored revision associations failed")
+				require.Empty(t, counter.keys)
+				require.NoError(t, mock.ExpectationsWereMet())
+			})
+		}
+	}
 }
 
 func TestMySQLRepositoryCreateVersionRejectsStaleLockBeforeAssociationReadsOrInserts(t *testing.T) {
@@ -134,6 +344,7 @@ func TestMySQLRepositoryCreateVersionRollsBackConditionalFailures(t *testing.T) 
 			mock.ExpectExec(insertEditingVersionSQL).WithArgs(int64(1), int64(11), int64(3), "Title", "Summary", int64(91), "body", testContentHash, at, at).WillReturnResult(sqlmock.NewResult(0, 1))
 			expectCopiedVersionAssociations(mock, 1, at, 1, 2, 1, 2)
 			mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(1), at, int64(11), int64(21)).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectQuery(selectArticlePointerSQL).WithArgs(int64(11)).WillReturnRows(sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("trashed", int64(21)))
 			mock.ExpectRollback()
 		}},
 	} {
@@ -146,6 +357,71 @@ func TestMySQLRepositoryCreateVersionRollsBackConditionalFailures(t *testing.T) 
 			require.ErrorIs(t, err, test.wantError)
 			require.NoError(t, mock.ExpectationsWereMet())
 		})
+	}
+}
+
+func TestMySQLRepositoryVersionMutationsClassifyZeroPointerUpdatesFromLockedArticleState(t *testing.T) {
+	for _, operation := range []string{"create", "restore"} {
+		for _, test := range []struct {
+			name       string
+			rows       func() *sqlmock.Rows
+			queryErr   error
+			wantDomain error
+		}{
+			{name: "missing article", queryErr: sql.ErrNoRows, wantDomain: ErrArticleInactive},
+			{name: "inactive article", rows: func() *sqlmock.Rows {
+				return sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("trashed", int64(21))
+			}, wantDomain: ErrArticleInactive},
+			{name: "active null pointer", rows: func() *sqlmock.Rows {
+				return sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("active", nil)
+			}, wantDomain: ErrConflict},
+			{name: "active pointer mismatch", rows: func() *sqlmock.Rows {
+				return sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("active", int64(999))
+			}, wantDomain: ErrConflict},
+			{name: "state query failure", queryErr: errors.New("pointer-state-secret")},
+			{name: "impossible active expected pointer", rows: func() *sqlmock.Rows {
+				return sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("active", int64(21))
+			}},
+		} {
+			t.Run(operation+"/"+test.name, func(t *testing.T) {
+				repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+				at := time.Date(2026, 8, 14, 15, 0, 0, 0, time.UTC)
+				oldRevisionID := int64(21)
+				if operation == "restore" {
+					oldRevisionID = 30
+					expectRestoreThroughCopies(mock, at, at.Add(-4*time.Hour), at.Add(-3*time.Hour), at.Add(-2*time.Hour), at.Add(-time.Hour))
+				} else {
+					expectCreateVersionThroughCopies(mock, at, at.Add(-2*time.Hour), at.Add(-time.Hour))
+				}
+				mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(1), at, int64(11), oldRevisionID).WillReturnResult(sqlmock.NewResult(0, 0))
+				query := mock.ExpectQuery(selectArticlePointerSQL).WithArgs(int64(11))
+				if test.queryErr != nil {
+					query.WillReturnError(test.queryErr)
+				} else {
+					rows := test.rows()
+					if test.name == "impossible active expected pointer" && operation == "restore" {
+						rows = sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("active", int64(30))
+					}
+					query.WillReturnRows(rows)
+				}
+				mock.ExpectRollback()
+
+				var err error
+				if operation == "restore" {
+					_, err = repository.RestoreVersion(context.Background(), 11, 15, 30, 4, at)
+				} else {
+					_, _, err = repository.CreateVersion(context.Background(), 11, 21, 3, at)
+				}
+
+				if test.wantDomain != nil {
+					require.ErrorIs(t, err, test.wantDomain)
+				} else {
+					require.EqualError(t, err, "verify active article draft pointer failed")
+					require.NotContains(t, err.Error(), "secret")
+				}
+				require.NoError(t, mock.ExpectationsWereMet())
+			})
+		}
 	}
 }
 
@@ -377,6 +653,7 @@ func TestMySQLRepositoryRestoreVersionRollsBackAndSanitizesEveryDistinctStage(t 
 		{name: "inactive pointer", wantError: ErrArticleInactive, setup: func(mock sqlmock.Sqlmock) {
 			expectRestoreThroughCopies(mock, at, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt)
 			mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(1), at, int64(11), int64(30)).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectQuery(selectArticlePointerSQL).WithArgs(int64(11)).WillReturnRows(sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("trashed", int64(30)))
 			mock.ExpectRollback()
 		}},
 		{name: "commit", setup: func(mock sqlmock.Sqlmock) {
@@ -1245,6 +1522,59 @@ func expectOneFrozenHistoryScalar(mock sqlmock.Sqlmock, at time.Time) {
 	mock.ExpectQuery(listFrozenVersionsSQL).WithArgs(int64(11)).WillReturnRows(draftScalarRows().AddRow(
 		int64(15), int64(11), int64(1), "frozen", "manual_version", "Title", "", nil, "body", testContentHash, int64(1), at, at,
 	))
+}
+
+func exactLimitTagRows() *sqlmock.Rows {
+	return storedTagRows(MaxTagCount)
+}
+
+func storedTagRows(count int) *sqlmock.Rows {
+	rows := emptyStoredTagRows()
+	for index := 0; index < count; index++ {
+		rows.AddRow(int64(index+1), fmt.Sprintf("Tag %d", index), fmt.Sprintf("t_%d", index), index)
+	}
+	return rows
+}
+
+func storedTagRowsWith(tagID int64, name, slug string, position int) *sqlmock.Rows {
+	return emptyStoredTagRows().AddRow(tagID, name, slug, position)
+}
+
+func emptyStoredTagRows() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"})
+}
+
+func exactLimitMediaRows() *sqlmock.Rows {
+	return storedMediaRows(MaxBodyMediaCount)
+}
+
+func storedMediaRows(bodyCount int) *sqlmock.Rows {
+	rows := storedMediaRowsWith(91, firstMediaKey, "cover", 0)
+	for index := 0; index < bodyCount; index++ {
+		rows.AddRow(int64(index+100), mediaKeyForIndex(index), "content", index+1)
+	}
+	return rows
+}
+
+func storedMediaRowsWith(mediaID int64, publicKey, purpose string, position int) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}).
+		AddRow(mediaID, publicKey, purpose, position)
+}
+
+func expectExactLimitAssociationCopies(mock sqlmock.Sqlmock, revisionID int64, at time.Time) {
+	for index := 0; index < MaxTagCount; index++ {
+		mock.ExpectExec(insertDraftTagSQL).
+			WithArgs(int64(index+1), revisionID, int64(index+1), fmt.Sprintf("Tag %d", index), fmt.Sprintf("t_%d", index), index, at).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	mock.ExpectExec(insertDraftMediaSQL).
+		WithArgs(int64(1), revisionID, int64(91), "cover", 0, at).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	for index := 0; index < MaxBodyMediaCount; index++ {
+		mock.ExpectExec(insertDraftMediaSQL).
+			WithArgs(int64(index+2), revisionID, int64(index+100), "content", index+1, at).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+	}
 }
 
 func versionTagSnapshots() []tag.Snapshot {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/dbtable"
@@ -29,6 +30,7 @@ const (
 	manualVersionFreezeStatement  = "UPDATE article_revisions SET status = 'frozen', reason = 'manual_version', updated_at = ? WHERE id = ? AND status = 'editing' AND lock_version = ?"
 	editingVersionInsertStatement = "INSERT INTO article_revisions (id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at) VALUES (?, ?, ?, 'editing', 'draft', ?, ?, ?, ?, ?, 1, ?, ?)"
 	draftPointerReplaceStatement  = "UPDATE articles SET draft_revision_id = ?, updated_at = ? WHERE id = ? AND draft_revision_id = ? AND state = 'active'"
+	articlePointerForUpdateSelect = "SELECT state, draft_revision_id FROM articles WHERE id = ? FOR UPDATE"
 	frozenVersionSelect           = "SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'frozen'"
 	frozenVersionsListSelect      = "SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE article_id = ? AND status = 'frozen' ORDER BY revision_no DESC"
 )
@@ -383,7 +385,19 @@ func (r *MySQLRepository) loadAssociations(ctx context.Context, queryer revision
 		return err
 	}
 	stored.Media, err = r.loadMedia(ctx, queryer, stored.ID)
-	return err
+	if err != nil {
+		return err
+	}
+	if stored.CoverMediaID == nil {
+		if len(stored.Media) > 0 && stored.Media[0].Purpose == "cover" {
+			return invalidStoredAssociations()
+		}
+		return nil
+	}
+	if *stored.CoverMediaID <= 0 || len(stored.Media) == 0 || stored.Media[0].Purpose != "cover" || stored.Media[0].MediaID != *stored.CoverMediaID {
+		return invalidStoredAssociations()
+	}
+	return nil
 }
 
 func (r *MySQLRepository) insertEditingCopy(ctx context.Context, tx *sql.Tx, source Draft, revisionNo int64, at time.Time) (Draft, error) {
@@ -448,7 +462,21 @@ func replaceDraftPointer(ctx context.Context, tx *sql.Tx, articleID, oldRevision
 		return revisionSafeWrap("replace active article draft pointer", err)
 	}
 	if rowsAffected == 0 {
-		return ErrArticleInactive
+		var state string
+		var currentDraftID sql.NullInt64
+		if err := tx.QueryRowContext(ctx, articlePointerForUpdateSelect, articleID).Scan(&state, &currentDraftID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrArticleInactive
+			}
+			return revisionSafeWrap("verify active article draft pointer", err)
+		}
+		if state != "active" {
+			return ErrArticleInactive
+		}
+		if !currentDraftID.Valid || currentDraftID.Int64 != oldRevisionID {
+			return ErrConflict
+		}
+		return revisionSafeWrap("verify active article draft pointer", errors.New("zero affected rows for expected active draft pointer"))
 	}
 	if rowsAffected != 1 {
 		return revisionSafeWrap("replace active article draft pointer", errors.New("unexpected affected row count"))
@@ -463,11 +491,19 @@ func (r *MySQLRepository) loadTags(ctx context.Context, queryer revisionQueryer,
 	}
 	defer rows.Close()
 	snapshots := make([]tag.Snapshot, 0)
+	seenIDs := make(map[int64]struct{})
 	for rows.Next() {
 		var snapshot tag.Snapshot
 		if err := rows.Scan(&snapshot.TagID, &snapshot.Name, &snapshot.Slug, &snapshot.Position); err != nil {
 			return nil, revisionSafeWrap("load draft tag snapshots", err)
 		}
+		if len(snapshots) == MaxTagCount || snapshot.TagID <= 0 || strings.TrimSpace(snapshot.Name) == "" || strings.TrimSpace(snapshot.Slug) == "" || snapshot.Position != len(snapshots) {
+			return nil, invalidStoredAssociations()
+		}
+		if _, exists := seenIDs[snapshot.TagID]; exists {
+			return nil, invalidStoredAssociations()
+		}
+		seenIDs[snapshot.TagID] = struct{}{}
 		snapshots = append(snapshots, snapshot)
 	}
 	if err := rows.Err(); err != nil {
@@ -483,10 +519,42 @@ func (r *MySQLRepository) loadMedia(ctx context.Context, queryer revisionQueryer
 	}
 	defer rows.Close()
 	references := make([]media.Reference, 0)
+	seenContentIDs := make(map[int64]struct{})
+	seenContentKeys := make(map[string]struct{})
+	coverSeen := false
+	contentCount := 0
 	for rows.Next() {
 		var reference media.Reference
 		if err := rows.Scan(&reference.MediaID, &reference.PublicKey, &reference.Purpose, &reference.Position); err != nil {
 			return nil, revisionSafeWrap("load draft media references", err)
+		}
+		if reference.MediaID <= 0 || strings.TrimSpace(reference.PublicKey) == "" || reference.Position != len(references) {
+			return nil, invalidStoredAssociations()
+		}
+		switch reference.Purpose {
+		case "cover":
+			if coverSeen || len(references) != 0 {
+				return nil, invalidStoredAssociations()
+			}
+			coverSeen = true
+		case "content":
+			if contentCount == MaxBodyMediaCount {
+				return nil, invalidStoredAssociations()
+			}
+			if _, exists := seenContentIDs[reference.MediaID]; exists {
+				return nil, invalidStoredAssociations()
+			}
+			if _, exists := seenContentKeys[reference.PublicKey]; exists {
+				return nil, invalidStoredAssociations()
+			}
+			seenContentIDs[reference.MediaID] = struct{}{}
+			seenContentKeys[reference.PublicKey] = struct{}{}
+			contentCount++
+		default:
+			return nil, invalidStoredAssociations()
+		}
+		if len(references) == MaxBodyMediaCount+1 {
+			return nil, invalidStoredAssociations()
 		}
 		references = append(references, reference)
 	}
@@ -494,6 +562,10 @@ func (r *MySQLRepository) loadMedia(ctx context.Context, queryer revisionQueryer
 		return nil, revisionSafeWrap("load draft media references", err)
 	}
 	return references, nil
+}
+
+func invalidStoredAssociations() error {
+	return revisionSafeWrap("validate stored revision associations", errors.New("stored revision associations are invalid"))
 }
 
 func (r *MySQLRepository) validate(ctx context.Context) error {
@@ -615,8 +687,10 @@ func cloneDraft(source Draft) Draft {
 	if source.CoverMediaID != nil {
 		cloned.CoverMediaID = revisionInt64(*source.CoverMediaID)
 	}
-	cloned.Tags = append([]tag.Snapshot(nil), source.Tags...)
-	cloned.Media = append([]media.Reference(nil), source.Media...)
+	cloned.Tags = make([]tag.Snapshot, len(source.Tags))
+	copy(cloned.Tags, source.Tags)
+	cloned.Media = make([]media.Reference, len(source.Media))
+	copy(cloned.Media, source.Media)
 	return cloned
 }
 

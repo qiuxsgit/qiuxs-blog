@@ -103,6 +103,18 @@ func TestCreateFirstAdminRejectsInvalidInputBeforeHashingOrWriting(t *testing.T)
 	}
 }
 
+func TestCreateFirstAdminRejectsPasswordAboveHasherByteLimit(t *testing.T) {
+	password := strings.Repeat("a", 257)
+	repo := &fakeAdminRepository{}
+
+	admin, err := CreateFirstAdmin(context.Background(), repo, auth.DefaultPasswordHasher(), "qiuxs", password)
+
+	assert.Empty(t, admin)
+	assert.Error(t, err)
+	assert.Zero(t, repo.createCalls)
+	assert.NotContains(t, err.Error(), password)
+}
+
 func TestCreateFirstAdminMapsUniqueRaceToAdminExists(t *testing.T) {
 	repo := &fakeAdminRepository{createErr: auth.ErrAdminAlreadyExists}
 

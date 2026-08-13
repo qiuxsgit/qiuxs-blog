@@ -82,6 +82,21 @@ func TestMySQLRepositoryCreateRejectsInvalidUsernameBeforeAllocatingID(t *testin
 	assert.ErrorContains(t, err, "username")
 }
 
+func TestMySQLRepositoryCreateStopsBeforeInsertWhenIDAllocationFails(t *testing.T) {
+	allocationErr := errors.New("redis unavailable")
+	counter := &repositoryCounter{err: allocationErr}
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	ids, err := idgen.New(counter, nil, 1, 1, false)
+	require.NoError(t, err)
+
+	_, err = NewMySQLRepository(db, ids).Create(context.Background(), "qiuxs", "encoded-hash")
+
+	assert.ErrorIs(t, err, allocationErr)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestMySQLRepositoryCreateClassifiesOnlyNamedBusinessConflicts(t *testing.T) {
 	tests := []struct {
 		name       string

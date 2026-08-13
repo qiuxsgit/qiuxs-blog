@@ -43,6 +43,8 @@ func (i terminalPasswordInput) ReadPassword(prompt string) (string, error) {
 
 type adminInitializer func(context.Context, config.Config, string, string) (auth.Admin, error)
 
+var errInitializeAdministrator = errors.New("initialize administrator")
+
 func run(
 	args []string,
 	getenv func(string) string,
@@ -78,7 +80,7 @@ func run(
 	}
 	admin, err := initialize(context.Background(), cfg, username, password)
 	if err != nil {
-		return fmt.Errorf("initialize administrator: %w", err)
+		return fmt.Errorf("%w: %w", errInitializeAdministrator, err)
 	}
 	if _, err := fmt.Fprintf(stdout, "%d %s\n", admin.ID, username); err != nil {
 		return fmt.Errorf("write administrator result: %w", err)
@@ -145,10 +147,28 @@ func createAdminWithDependencies(
 	return bootstrap.CreateFirstAdmin(ctx, repo, auth.DefaultPasswordHasher(), username, password)
 }
 
+func execute(
+	args []string,
+	getenv func(string) string,
+	input passwordInput,
+	stdout io.Writer,
+	stderr io.Writer,
+	initialize adminInitializer,
+) int {
+	if err := run(args, getenv, input, stdout, initialize); err != nil {
+		message := err.Error()
+		if errors.Is(err, errInitializeAdministrator) {
+			message = "initialize administrator: operation failed"
+		}
+		_, _ = fmt.Fprintln(stderr, message)
+		return 1
+	}
+	return 0
+}
+
 func main() {
 	input := terminalPasswordInput{fd: int(os.Stdin.Fd()), out: os.Stderr}
-	if err := run(os.Args[1:], os.Getenv, input, os.Stdout, initializeAdmin); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	if exitCode := execute(os.Args[1:], os.Getenv, input, os.Stdout, os.Stderr, initializeAdmin); exitCode != 0 {
+		os.Exit(exitCode)
 	}
 }

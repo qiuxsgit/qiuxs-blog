@@ -102,6 +102,48 @@ func TestRunInitDoesNotExposeEnvironmentPasswordInErrors(t *testing.T) {
 	assert.NotContains(t, err.Error(), secret)
 }
 
+func TestExecuteRedactsDownstreamErrorDetails(t *testing.T) {
+	password := "automation-password"
+	fakeHash := "$argon2id$duplicate-secret-value"
+	downstreamErr := errors.New("Duplicate entry '" + password + " " + fakeHash + "' for key 'uk_admins_username'")
+	input := &fakePasswordInput{}
+	var stdout, stderr strings.Builder
+	initialize := func(context.Context, config.Config, string, string) (auth.Admin, error) {
+		return auth.Admin{}, downstreamErr
+	}
+
+	exitCode := execute(
+		[]string{"init", "--username", "qiuxs"},
+		validCLIEnvironment(password),
+		input,
+		&stdout,
+		&stderr,
+		initialize,
+	)
+
+	assert.Equal(t, 1, exitCode)
+	assert.Empty(t, stdout.String())
+	assert.Equal(t, "initialize administrator: operation failed\n", stderr.String())
+	assert.NotContains(t, stderr.String(), password)
+	assert.NotContains(t, stderr.String(), fakeHash)
+}
+
+func TestRunInitPreservesDownstreamErrorCause(t *testing.T) {
+	downstreamErr := errors.New("database operation failed")
+	initialize := func(context.Context, config.Config, string, string) (auth.Admin, error) {
+		return auth.Admin{}, downstreamErr
+	}
+
+	internalErr := run(
+		[]string{"init", "--username", "qiuxs"},
+		validCLIEnvironment("automation-password"),
+		&fakePasswordInput{},
+		&strings.Builder{},
+		initialize,
+	)
+	assert.ErrorIs(t, internalErr, downstreamErr)
+}
+
 func TestRunRejectsUnsupportedCommandBeforeLoadingConfiguration(t *testing.T) {
 	getenvCalled := false
 

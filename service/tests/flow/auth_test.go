@@ -174,6 +174,12 @@ func flowConfig(redisAddr string) config.Config {
 			CookieSecure: true,
 			TTL:          time.Hour,
 		},
+		GFS: config.GFSConfig{
+			BaseURL:          "https://gfs.example.com",
+			AppID:            "blog-app",
+			AppSecret:        "test-app-secret",
+			PublicReadSecret: "test-public-read-secret",
+		},
 	}
 }
 

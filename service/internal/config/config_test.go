@@ -27,6 +27,10 @@ func TestLoadProductionConfig(t *testing.T) {
 	require.Equal(t, "qx_blog_session", got.Session.CookieName)
 	require.True(t, got.Session.CookieSecure)
 	require.Equal(t, 24*time.Hour, got.Session.TTL)
+	require.Equal(t, "https://gfs.example.com", got.GFS.BaseURL)
+	require.Equal(t, "blog-app", got.GFS.AppID)
+	require.Equal(t, "raw-app-secret", got.GFS.AppSecret)
+	require.Equal(t, "public-read-secret", got.GFS.PublicReadSecret)
 }
 
 func TestLoadUsesDevelopmentDefaults(t *testing.T) {
@@ -65,6 +69,7 @@ func TestValidateAcceptsCanonicalDevelopmentAndProductionConfig(t *testing.T) {
 	production.Environment = "production"
 	production.HTTP.AdminOrigin = "https://blog-admin.qiuxs.com"
 	production.Session.CookieSecure = true
+	production.GFS.BaseURL = "https://gfs.example.com"
 	require.NoError(t, config.Validate(production))
 }
 
@@ -100,6 +105,19 @@ func TestValidateRejectsInvalidDirectConfigWithoutRevealingValues(t *testing.T) 
 		{name: "invalid cookie name", mutate: func(cfg *config.Config) { cfg.Session.CookieName = "cookie secret" }, wantField: "BLOG_SESSION_COOKIE_NAME", secretText: "cookie secret"},
 		{name: "session TTL below minimum", mutate: func(cfg *config.Config) { cfg.Session.TTL = 15*time.Minute - time.Nanosecond }, wantField: "BLOG_SESSION_TTL"},
 		{name: "session TTL above maximum", mutate: func(cfg *config.Config) { cfg.Session.TTL = 168*time.Hour + time.Nanosecond }, wantField: "BLOG_SESSION_TTL"},
+		{name: "missing GFS base URL", mutate: func(cfg *config.Config) { cfg.GFS.BaseURL = "" }, wantField: "BLOG_GFS_BASE_URL"},
+		{name: "malformed GFS base URL", mutate: func(cfg *config.Config) { cfg.GFS.BaseURL = "://gfs-url-secret" }, wantField: "BLOG_GFS_BASE_URL", secretText: "gfs-url-secret"},
+		{name: "GFS base URL userinfo", mutate: func(cfg *config.Config) { cfg.GFS.BaseURL = "https://gfs-user-secret@gfs.example.com" }, wantField: "BLOG_GFS_BASE_URL", secretText: "gfs-user-secret"},
+		{name: "GFS base URL empty fragment", mutate: func(cfg *config.Config) { cfg.GFS.BaseURL += "#" }, wantField: "BLOG_GFS_BASE_URL"},
+		{name: "noncanonical GFS root slash", mutate: func(cfg *config.Config) { cfg.GFS.BaseURL += "/" }, wantField: "BLOG_GFS_BASE_URL"},
+		{name: "production HTTP GFS base URL", mutate: func(cfg *config.Config) {
+			cfg.Environment = "production"
+			cfg.HTTP.AdminOrigin = "https://admin.example.com"
+			cfg.Session.CookieSecure = true
+		}, wantField: "BLOG_GFS_BASE_URL"},
+		{name: "missing GFS app ID", mutate: func(cfg *config.Config) { cfg.GFS.AppID = " \t" }, wantField: "BLOG_GFS_APP_ID"},
+		{name: "missing GFS app secret", mutate: func(cfg *config.Config) { cfg.GFS.AppSecret = " \t" }, wantField: "BLOG_GFS_APP_SECRET"},
+		{name: "missing GFS public read secret", mutate: func(cfg *config.Config) { cfg.GFS.PublicReadSecret = " \t" }, wantField: "BLOG_GFS_PUBLIC_READ_SECRET"},
 	}
 
 	for _, test := range tests {
@@ -115,6 +133,75 @@ func TestValidateRejectsInvalidDirectConfigWithoutRevealingValues(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestLoadRejectsMissingGFSConfigurationWithoutRevealingSecrets(t *testing.T) {
+	for _, key := range []string{
+		"BLOG_GFS_BASE_URL",
+		"BLOG_GFS_APP_ID",
+		"BLOG_GFS_APP_SECRET",
+		"BLOG_GFS_PUBLIC_READ_SECRET",
+	} {
+		t.Run(key, func(t *testing.T) {
+			env := validEnv()
+			delete(env, key)
+
+			_, err := config.Load(func(name string) string { return env[name] })
+
+			require.ErrorContains(t, err, key)
+			for _, secret := range []string{"gfs.example.com", "blog-app", "raw-app-secret", "public-read-secret"} {
+				require.NotContains(t, err.Error(), secret)
+			}
+		})
+	}
+}
+
+func TestLoadNormalizesAndValidatesGFSBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+		wantErr bool
+	}{
+		{name: "normalizes root slash", baseURL: "http://gfs.example.com/", want: "http://gfs.example.com"},
+		{name: "rejects userinfo", baseURL: "https://user@gfs.example.com", wantErr: true},
+		{name: "rejects query", baseURL: "https://gfs.example.com?token=value", wantErr: true},
+		{name: "rejects forced query", baseURL: "https://gfs.example.com?", wantErr: true},
+		{name: "rejects fragment", baseURL: "https://gfs.example.com#part", wantErr: true},
+		{name: "rejects empty fragment", baseURL: "https://gfs.example.com#", wantErr: true},
+		{name: "rejects non-root path", baseURL: "https://gfs.example.com/api", wantErr: true},
+		{name: "rejects unsupported scheme", baseURL: "ftp://gfs.example.com", wantErr: true},
+		{name: "rejects missing host", baseURL: "https:", wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := validEnv()
+			env["BLOG_ENV"] = "development"
+			env["BLOG_GFS_BASE_URL"] = test.baseURL
+
+			got, err := config.Load(func(key string) string { return env[key] })
+
+			if test.wantErr {
+				require.ErrorContains(t, err, "BLOG_GFS_BASE_URL")
+				require.NotContains(t, err.Error(), test.baseURL)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, test.want, got.GFS.BaseURL)
+		})
+	}
+}
+
+func TestLoadRejectsHTTPGFSBaseURLInProduction(t *testing.T) {
+	env := validEnv()
+	env["BLOG_GFS_BASE_URL"] = "http://gfs-production-secret.example.com"
+
+	_, err := config.Load(func(key string) string { return env[key] })
+
+	require.ErrorContains(t, err, "BLOG_GFS_BASE_URL")
+	require.ErrorContains(t, err, "https")
+	require.NotContains(t, err.Error(), "gfs-production-secret")
 }
 
 func TestLoadRejectsUnknownEnvironmentAndWhitespaceHTTPAddress(t *testing.T) {
@@ -277,18 +364,22 @@ func TestLoadNormalizesAndValidatesAdminOrigin(t *testing.T) {
 
 func validEnv() map[string]string {
 	return map[string]string{
-		"BLOG_ENV":                 "production",
-		"BLOG_HTTP_ADDR":           ":9010",
-		"BLOG_MYSQL_DSN":           "blog:secret@tcp(mysql:3306)/qiuxs_blog?parseTime=true&loc=UTC",
-		"BLOG_REDIS_ADDR":          "redis:6379",
-		"BLOG_REDIS_PASSWORD":      "redis-secret",
-		"BLOG_REDIS_DB":            "2",
-		"IDGEN_OFFSET":             "1",
-		"IDGEN_STEP":               "1",
-		"IDGEN_HEAL":               "false",
-		"BLOG_ADMIN_ORIGIN":        "https://blog-admin.qiuxs.com",
-		"BLOG_SESSION_COOKIE_NAME": "qx_blog_session",
-		"BLOG_SESSION_TTL":         "24h",
+		"BLOG_ENV":                    "production",
+		"BLOG_HTTP_ADDR":              ":9010",
+		"BLOG_MYSQL_DSN":              "blog:secret@tcp(mysql:3306)/qiuxs_blog?parseTime=true&loc=UTC",
+		"BLOG_REDIS_ADDR":             "redis:6379",
+		"BLOG_REDIS_PASSWORD":         "redis-secret",
+		"BLOG_REDIS_DB":               "2",
+		"IDGEN_OFFSET":                "1",
+		"IDGEN_STEP":                  "1",
+		"IDGEN_HEAL":                  "false",
+		"BLOG_ADMIN_ORIGIN":           "https://blog-admin.qiuxs.com",
+		"BLOG_SESSION_COOKIE_NAME":    "qx_blog_session",
+		"BLOG_SESSION_TTL":            "24h",
+		"BLOG_GFS_BASE_URL":           "https://gfs.example.com/",
+		"BLOG_GFS_APP_ID":             "blog-app",
+		"BLOG_GFS_APP_SECRET":         "raw-app-secret",
+		"BLOG_GFS_PUBLIC_READ_SECRET": "public-read-secret",
 	}
 }
 
@@ -308,6 +399,12 @@ func validDirectConfig() config.Config {
 		Session: config.SessionConfig{
 			CookieName: "qx_blog_session",
 			TTL:        24 * time.Hour,
+		},
+		GFS: config.GFSConfig{
+			BaseURL:          "http://gfs.example.com",
+			AppID:            "blog-app",
+			AppSecret:        "raw-app-secret",
+			PublicReadSecret: "public-read-secret",
 		},
 	}
 }

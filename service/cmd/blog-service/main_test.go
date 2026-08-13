@@ -154,11 +154,15 @@ func validRuntime(t *testing.T) (runtimeDependencies, *closeCounts) {
 	closes := &closeCounts{}
 	return runtimeDependencies{
 		getenv: configEnvironment(map[string]string{
-			"BLOG_ENV":          "production",
-			"BLOG_HTTP_ADDR":    ":19090",
-			"BLOG_MYSQL_DSN":    "user:password@tcp(mysql:3306)/blog",
-			"BLOG_REDIS_ADDR":   "redis:6379",
-			"BLOG_ADMIN_ORIGIN": "https://admin.example.com",
+			"BLOG_ENV":                    "production",
+			"BLOG_HTTP_ADDR":              ":19090",
+			"BLOG_MYSQL_DSN":              "user:password@tcp(mysql:3306)/blog",
+			"BLOG_REDIS_ADDR":             "redis:6379",
+			"BLOG_ADMIN_ORIGIN":           "https://admin.example.com",
+			"BLOG_GFS_BASE_URL":           "https://gfs.example.com",
+			"BLOG_GFS_APP_ID":             "blog-app",
+			"BLOG_GFS_APP_SECRET":         "test-app-secret",
+			"BLOG_GFS_PUBLIC_READ_SECRET": "test-public-read-secret",
 		}),
 		logger:  slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		random:  bytes.NewReader(make([]byte, 128)),

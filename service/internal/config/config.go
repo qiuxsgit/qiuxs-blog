@@ -25,6 +25,7 @@ type Config struct {
 	Redis       RedisConfig
 	IDGen       IDGenConfig
 	Session     SessionConfig
+	GFS         GFSConfig
 }
 
 type HTTPConfig struct{ Addr, AdminOrigin string }
@@ -41,6 +42,12 @@ type SessionConfig struct {
 	CookieName   string
 	CookieSecure bool
 	TTL          time.Duration
+}
+type GFSConfig struct {
+	BaseURL          string
+	AppID            string
+	AppSecret        string
+	PublicReadSecret string
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -75,6 +82,10 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	gfsBaseURL, err := parseHTTPOrigin(getenv("BLOG_GFS_BASE_URL"), "BLOG_GFS_BASE_URL", environment)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cookieName := valueOrDefault(getenv("BLOG_SESSION_COOKIE_NAME"), defaultSessionCookieName)
 	ttl, err := parseSessionTTL(getenv("BLOG_SESSION_TTL"))
@@ -104,6 +115,12 @@ func Load(getenv func(string) string) (Config, error) {
 			CookieSecure: environment == "production",
 			TTL:          ttl,
 		},
+		GFS: GFSConfig{
+			BaseURL:          gfsBaseURL,
+			AppID:            getenv("BLOG_GFS_APP_ID"),
+			AppSecret:        getenv("BLOG_GFS_APP_SECRET"),
+			PublicReadSecret: getenv("BLOG_GFS_PUBLIC_READ_SECRET"),
+		},
 	}
 	if err := Validate(cfg); err != nil {
 		return Config{}, err
@@ -112,8 +129,9 @@ func Load(getenv func(string) string) (Config, error) {
 }
 
 // Validate checks a fully parsed Config without normalizing it. In particular,
-// HTTP.AdminOrigin must already equal the canonical origin Load emits: lower-
-// case scheme and no trailing slash, path, query, fragment, or userinfo.
+// HTTP.AdminOrigin and GFS.BaseURL must already equal the canonical origins
+// Load emits: lower-case scheme and host with no trailing slash, path, query,
+// fragment, or userinfo.
 // Returned errors name environment variables but never include their values.
 func Validate(cfg Config) error {
 	if cfg.Environment != "development" && cfg.Environment != "production" {
@@ -149,6 +167,22 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Session.TTL < minimumSessionTTL || cfg.Session.TTL > maximumSessionTTL {
 		return fmt.Errorf("BLOG_SESSION_TTL must be between 15m and 168h")
+	}
+	canonicalGFSBaseURL, err := parseHTTPOrigin(cfg.GFS.BaseURL, "BLOG_GFS_BASE_URL", cfg.Environment)
+	if err != nil {
+		return err
+	}
+	if canonicalGFSBaseURL != cfg.GFS.BaseURL {
+		return fmt.Errorf("BLOG_GFS_BASE_URL must be canonical without a trailing slash")
+	}
+	if strings.TrimSpace(cfg.GFS.AppID) == "" {
+		return fmt.Errorf("BLOG_GFS_APP_ID is required")
+	}
+	if strings.TrimSpace(cfg.GFS.AppSecret) == "" {
+		return fmt.Errorf("BLOG_GFS_APP_SECRET is required")
+	}
+	if strings.TrimSpace(cfg.GFS.PublicReadSecret) == "" {
+		return fmt.Errorf("BLOG_GFS_PUBLIC_READ_SECRET is required")
 	}
 	return nil
 }
@@ -206,24 +240,31 @@ func parseHeal(value string) (bool, error) {
 }
 
 func parseAdminOrigin(value, environment string) (string, error) {
+	return parseHTTPOrigin(value, "BLOG_ADMIN_ORIGIN", environment)
+}
+
+func parseHTTPOrigin(value, field, environment string) (string, error) {
 	if strings.TrimSpace(value) == "" {
-		return "", fmt.Errorf("BLOG_ADMIN_ORIGIN is required")
+		return "", fmt.Errorf("%s is required", field)
+	}
+	if strings.Contains(value, "#") {
+		return "", fmt.Errorf("%s must be an http or https origin without userinfo, query, fragment, or path", field)
 	}
 
 	origin, err := url.Parse(value)
 	if err != nil {
-		return "", fmt.Errorf("BLOG_ADMIN_ORIGIN must be a valid origin URL")
+		return "", fmt.Errorf("%s must be a valid origin URL", field)
 	}
 
 	scheme := strings.ToLower(origin.Scheme)
-	if (scheme != "http" && scheme != "https") || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.ForceQuery || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") || origin.RawPath != "" {
-		return "", fmt.Errorf("BLOG_ADMIN_ORIGIN must be an http or https origin without userinfo, query, fragment, or path")
+	if (scheme != "http" && scheme != "https") || origin.Host == "" || origin.Hostname() == "" || origin.User != nil || origin.RawQuery != "" || origin.ForceQuery || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") || origin.RawPath != "" || origin.Opaque != "" {
+		return "", fmt.Errorf("%s must be an http or https origin without userinfo, query, fragment, or path", field)
 	}
 	if environment == "production" && scheme != "https" {
-		return "", fmt.Errorf("BLOG_ADMIN_ORIGIN must use https in production")
+		return "", fmt.Errorf("%s must use https in production", field)
 	}
 
-	return scheme + "://" + origin.Host, nil
+	return scheme + "://" + strings.ToLower(origin.Host), nil
 }
 
 func parseSessionTTL(value string) (time.Duration, error) {

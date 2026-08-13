@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/media"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/randomkey"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/revision"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/tag"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,22 +21,23 @@ func TestServiceCreateGeneratesStableSlugAndReturnsInitialDraft(t *testing.T) {
 		ID: 11, Slug: "aaaaaaaaaaaa", DraftRevisionID: 21, State: StateActive,
 		CreatedAt: at.UTC(), UpdatedAt: at.UTC(),
 	}}}
-	draft := revision.Draft{
+	wantDraft := revision.Draft{
 		ID: 21, ArticleID: 11, RevisionNo: 1, LockVersion: 1,
 		Status: revision.StatusEditing, Reason: revision.ReasonDraft,
 		ContentHash: "9ebca1a33e28c44890c99e46d508488363522c83f17a31056641ad11b11a153f",
-		CreatedAt:   at.UTC(), UpdatedAt: at.UTC(),
+		Tags:        []tag.Snapshot{}, Media: []media.Reference{},
+		CreatedAt: at.UTC(), UpdatedAt: at.UTC(),
 	}
-	drafts := &draftReaderFake{byArticleID: map[int64]revision.Draft{11: draft}}
+	drafts := &draftReaderFake{err: errors.New("draft-read-must-not-run")}
 	service := newArticleService(t, repository, drafts, bytes.Repeat([]byte{0}, 12), func() time.Time { return at })
 
 	got, err := service.Create(context.Background())
 
 	require.NoError(t, err)
-	require.Equal(t, Detail{Article: repository.createResults[0].article, Draft: draft}, got)
+	require.Equal(t, Detail{Article: repository.createResults[0].article, Draft: wantDraft}, got)
 	require.Equal(t, []string{"aaaaaaaaaaaa"}, repository.createSlugs)
 	require.Equal(t, []time.Time{at.UTC()}, repository.createTimes)
-	require.Equal(t, []int64{11}, drafts.calls)
+	require.Empty(t, drafts.calls)
 }
 
 func TestServiceCreateRetriesOnlySlugConflictsAtMostFiveTimes(t *testing.T) {
@@ -77,27 +80,13 @@ func TestServiceCreateRetriesOnlySlugConflictsAtMostFiveTimes(t *testing.T) {
 	})
 }
 
-func TestServiceCreateSanitizesRandomAndDraftReadFailures(t *testing.T) {
-	t.Run("random", func(t *testing.T) {
-		service := newArticleService(t, newArticleRepositoryFake(), &draftReaderFake{}, nil, time.Now)
+func TestServiceCreateSanitizesRandomFailure(t *testing.T) {
+	service := newArticleService(t, newArticleRepositoryFake(), &draftReaderFake{}, nil, time.Now)
 
-		_, err := service.Create(context.Background())
+	_, err := service.Create(context.Background())
 
-		require.Error(t, err)
-		require.NotContains(t, err.Error(), "EOF")
-	})
-
-	t.Run("draft reader", func(t *testing.T) {
-		repository := newArticleRepositoryFake()
-		repository.createResults = []articleResult{{article: Article{ID: 11, Slug: "aaaaaaaaaaaa", DraftRevisionID: 21, State: StateActive}}}
-		drafts := &draftReaderFake{err: errors.New("draft-content-secret")}
-		service := newArticleService(t, repository, drafts, bytes.Repeat([]byte{0}, 12), time.Now)
-
-		_, err := service.Create(context.Background())
-
-		require.Error(t, err)
-		require.NotContains(t, err.Error(), "draft-content-secret")
-	})
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "EOF")
 }
 
 func TestServiceGetCombinesArticleAndCurrentDraft(t *testing.T) {

@@ -68,11 +68,10 @@ func (s *service) Create(ctx context.Context) (Detail, error) {
 			}
 			return Detail{}, articleSafeWrap("create article", err)
 		}
-		draft, err := s.drafts.GetDraft(ctx, created.ID)
-		if err != nil {
-			return Detail{}, articleSafeWrap("load initial article draft", err)
-		}
-		return Detail{Article: created, Draft: draft}, nil
+		return Detail{
+			Article: created,
+			Draft:   revision.NewInitialDraft(created.ID, created.DraftRevisionID, created.CreatedAt),
+		}, nil
 	}
 	return Detail{}, articleSafeWrap("create article after slug retries", ErrSlugConflict)
 }

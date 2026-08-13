@@ -107,10 +107,129 @@ func TestDevelopSQLDefinesStageTwoConstraints(t *testing.T) {
 
 	require.Contains(t, normalized, "EDITING_ARTICLE_ID BIGINT GENERATED ALWAYS AS (CASE WHEN STATUS = 'EDITING' THEN ARTICLE_ID ELSE NULL END) STORED")
 	require.Contains(t, normalized, "CONTENT_MD LONGTEXT NOT NULL")
-	require.Contains(t, normalized, "CONTENT_HASH CHAR(64) NOT NULL")
+	require.Contains(t, normalized, "CONTENT_HASH CHAR(64) CHARACTER SET ASCII COLLATE ASCII_BIN NOT NULL")
 	require.Contains(t, normalized, "SOCIAL_LINKS_JSON JSON NOT NULL")
 	require.Contains(t, normalized, "DATETIME(6)")
 	require.Contains(t, normalized, "ON DELETE RESTRICT")
+}
+
+func TestDevelopSQLUsesCaseSensitiveMachineDomains(t *testing.T) {
+	raw := readDevelopSQLRaw(t)
+	expectedColumns := map[string][]string{
+		"admins": {
+			"state VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'active'",
+		},
+		"media": {
+			"public_key VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL",
+			"state VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'active'",
+		},
+		"tags": {
+			"slug VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL",
+		},
+		"articles": {
+			"slug VARCHAR(12) CHARACTER SET ascii COLLATE ascii_bin NOT NULL",
+			"state VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'active'",
+		},
+		"article_revisions": {
+			"status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL",
+			"reason VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL",
+			"content_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL",
+		},
+		"article_revision_tags": {
+			"tag_slug VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL",
+		},
+		"article_revision_media": {
+			"purpose VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL",
+		},
+	}
+	for table, columns := range expectedColumns {
+		t.Run(table, func(t *testing.T) {
+			definition := rawTableDefinition(t, raw, table)
+			for _, column := range columns {
+				require.Contains(t, definition, column)
+			}
+		})
+	}
+
+	expectedRegexChecks := []string{
+		"CONSTRAINT chk_media_public_key CHECK (REGEXP_LIKE(public_key, '^m_[a-z0-9_-]{22}$', 'c'))",
+		"CONSTRAINT chk_tags_slug CHECK (REGEXP_LIKE(slug, '^t_[a-z0-9_-]{12}$', 'c'))",
+		"CONSTRAINT chk_articles_slug CHECK (REGEXP_LIKE(slug, '^[a-z0-9_-]{12}$', 'c'))",
+		"CONSTRAINT chk_article_revisions_hash CHECK (REGEXP_LIKE(content_hash, '^[a-f0-9]{64}$', 'c'))",
+	}
+	for _, check := range expectedRegexChecks {
+		require.Contains(t, raw, check)
+	}
+
+	require.NotContains(t, raw, "name VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin")
+	require.NotContains(t, raw, "tag_name VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin")
+	require.NotContains(t, raw, "title VARCHAR(200) CHARACTER SET ascii COLLATE ascii_bin")
+}
+
+func TestDevelopSQLDefinesExactStageTwoForeignKeys(t *testing.T) {
+	normalized := readDevelopSQL(t)
+	expected := []string{
+		"CONSTRAINT FK_ARTICLE_REVISIONS_ARTICLE FOREIGN KEY (ARTICLE_ID) REFERENCES ARTICLES (ID) ON DELETE RESTRICT",
+		"CONSTRAINT FK_ARTICLE_REVISIONS_COVER_MEDIA FOREIGN KEY (COVER_MEDIA_ID) REFERENCES MEDIA (ID) ON DELETE RESTRICT",
+		"CONSTRAINT FK_ARTICLE_REVISION_TAGS_REVISION FOREIGN KEY (REVISION_ID) REFERENCES ARTICLE_REVISIONS (ID) ON DELETE RESTRICT",
+		"CONSTRAINT FK_ARTICLE_REVISION_TAGS_TAG FOREIGN KEY (TAG_ID) REFERENCES TAGS (ID) ON DELETE RESTRICT",
+		"CONSTRAINT FK_ARTICLE_REVISION_MEDIA_REVISION FOREIGN KEY (REVISION_ID) REFERENCES ARTICLE_REVISIONS (ID) ON DELETE RESTRICT",
+		"CONSTRAINT FK_ARTICLE_REVISION_MEDIA_MEDIA FOREIGN KEY (MEDIA_ID) REFERENCES MEDIA (ID) ON DELETE RESTRICT",
+		"CONSTRAINT FK_SITE_SETTINGS_SEO_MEDIA FOREIGN KEY (SEO_DEFAULT_IMAGE_MEDIA_ID) REFERENCES MEDIA (ID) ON DELETE RESTRICT",
+		"ADD CONSTRAINT FK_ARTICLES_DRAFT_REVISION FOREIGN KEY (DRAFT_REVISION_ID) REFERENCES ARTICLE_REVISIONS (ID) ON DELETE RESTRICT",
+		"ADD CONSTRAINT FK_ARTICLES_PUBLISHED_REVISION FOREIGN KEY (PUBLISHED_REVISION_ID) REFERENCES ARTICLE_REVISIONS (ID) ON DELETE RESTRICT",
+	}
+	for _, foreignKey := range expected {
+		require.Equal(t, 1, strings.Count(normalized, foreignKey), foreignKey)
+	}
+
+	expectedShapes := map[string][]string{
+		"articles": {
+			"DRAFT_REVISION_ID BIGINT NULL",
+			"PUBLISHED_REVISION_ID BIGINT NULL",
+		},
+		"article_revisions": {
+			"ARTICLE_ID BIGINT NOT NULL",
+			"COVER_MEDIA_ID BIGINT NULL",
+		},
+		"article_revision_tags": {
+			"REVISION_ID BIGINT NOT NULL",
+			"TAG_ID BIGINT NOT NULL",
+		},
+		"article_revision_media": {
+			"REVISION_ID BIGINT NOT NULL",
+			"MEDIA_ID BIGINT NOT NULL",
+		},
+		"site_settings": {
+			"SEO_DEFAULT_IMAGE_MEDIA_ID BIGINT NULL",
+		},
+	}
+	for table, shapes := range expectedShapes {
+		t.Run(table, func(t *testing.T) {
+			definition := tableDefinition(t, normalized, table)
+			for _, shape := range shapes {
+				require.Contains(t, definition, shape)
+			}
+		})
+	}
+
+	require.Contains(t, normalized, "ALTER TABLE ARTICLES\n    ADD CONSTRAINT FK_ARTICLES_DRAFT_REVISION FOREIGN KEY (DRAFT_REVISION_ID) REFERENCES ARTICLE_REVISIONS (ID) ON DELETE RESTRICT,\n    ADD CONSTRAINT FK_ARTICLES_PUBLISHED_REVISION FOREIGN KEY (PUBLISHED_REVISION_ID) REFERENCES ARTICLE_REVISIONS (ID) ON DELETE RESTRICT;")
+}
+
+func TestDevelopSQLCreatesStageTwoTablesInDependencyOrder(t *testing.T) {
+	normalized := readDevelopSQL(t)
+	requireFragmentsInOrder(t, normalized, []string{
+		"CREATE TABLE MEDIA (",
+		"CREATE TABLE TAGS (",
+		"CREATE TABLE ARTICLES (",
+		"CREATE TABLE ARTICLE_REVISIONS (",
+		"CREATE TABLE ARTICLE_REVISION_TAGS (",
+		"CREATE TABLE ARTICLE_REVISION_MEDIA (",
+		"CREATE TABLE SITE_SETTINGS (",
+		"CREATE TABLE HOTLINK_SETTINGS (",
+		"CREATE TABLE REFERER_ALLOWLIST (",
+		"ALTER TABLE ARTICLES",
+	})
 }
 
 func TestDevelopSQLContainsNoSeedDataOrMigrationCommand(t *testing.T) {
@@ -139,9 +258,14 @@ func sqlsDir(t *testing.T) string {
 
 func readDevelopSQL(t *testing.T) string {
 	t.Helper()
+	return strings.ToUpper(readDevelopSQLRaw(t))
+}
+
+func readDevelopSQLRaw(t *testing.T) string {
+	t.Helper()
 	sqlText, err := os.ReadFile(filepath.Join(sqlsDir(t), "develop", "develop.sql"))
 	require.NoError(t, err)
-	return strings.ToUpper(string(sqlText))
+	return string(sqlText)
 }
 
 func tableDefinition(t *testing.T, normalizedSQL, table string) string {
@@ -154,4 +278,26 @@ func tableDefinition(t *testing.T, normalizedSQL, table string) string {
 	end := strings.Index(remainder, ") ENGINE=INNODB")
 	require.NotEqual(t, -1, end, "unterminated table %s", table)
 	return remainder[:end]
+}
+
+func rawTableDefinition(t *testing.T, rawSQL, table string) string {
+	t.Helper()
+	startMarker := "CREATE TABLE " + table + " ("
+	start := strings.Index(rawSQL, startMarker)
+	require.NotEqual(t, -1, start, "missing table %s", table)
+
+	remainder := rawSQL[start:]
+	end := strings.Index(remainder, ") ENGINE=InnoDB")
+	require.NotEqual(t, -1, end, "unterminated table %s", table)
+	return remainder[:end]
+}
+
+func requireFragmentsInOrder(t *testing.T, text string, fragments []string) {
+	t.Helper()
+	remaining := text
+	for _, fragment := range fragments {
+		index := strings.Index(remaining, fragment)
+		require.NotEqual(t, -1, index, "missing or out-of-order fragment %q", fragment)
+		remaining = remaining[index+len(fragment):]
+	}
 }

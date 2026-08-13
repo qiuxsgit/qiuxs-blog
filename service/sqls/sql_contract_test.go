@@ -1,8 +1,10 @@
 package sqls_test
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -165,6 +167,43 @@ func TestDevelopSQLReleaseDomainsAndForeignKeysAreExactAndCaseSensitive(t *testi
 		"CREATE TABLE RELEASES (", "CREATE TABLE RELEASE_ARTICLES (", "CREATE TABLE BUILDER_CONFIG (",
 		"CREATE TABLE PUBLISH_JOBS (", "CREATE TABLE SITE_STATE (",
 	})
+}
+
+func TestDevelopSQLBuilderCiphertextUsesUnpaddedRawStandardBase64(t *testing.T) {
+	raw := readDevelopSQLRaw(t)
+	definition := rawTableDefinition(t, raw, "builder_config")
+	const storage = "token_ciphertext TEXT CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'RawStd base64 of nonce || ciphertext-and-tag'"
+	require.Contains(t, definition, storage)
+	for _, constraint := range []string{
+		"CHAR_LENGTH(token_ciphertext) >= 39",
+		"MOD(CHAR_LENGTH(token_ciphertext), 4) <> 1",
+		"REGEXP_LIKE(token_ciphertext, '^[A-Za-z0-9+/]+$', 'c')",
+		"REGEXP_LIKE(token_ciphertext, '[AQgw]$', 'c')",
+		"REGEXP_LIKE(token_ciphertext, '[AEIMQUYcgkosw048]$', 'c')",
+	} {
+		require.Contains(t, definition, constraint)
+	}
+	require.NotContains(t, definition, "A-Za-z0-9_-")
+	require.NotContains(t, definition, "token_nonce")
+
+	alphabet := regexp.MustCompile(`^[A-Za-z0-9+/]+$`)
+	require.True(t, alphabet.MatchString("Ab09+/"), "RawStdEncoding permits + and /")
+	for _, nonCanonical := range []string{"Ab09-_", "Ab09=="} {
+		require.False(t, alphabet.MatchString(nonCanonical), nonCanonical)
+	}
+	for _, invalid := range []string{"A", "AAAA", strings.Repeat("A", 38) + "B"} {
+		require.False(t, validRawStdCiphertext(invalid), invalid)
+	}
+	canonical := base64.RawStdEncoding.EncodeToString(append([]byte(strings.Repeat("\xfb\xff\xff", 9)), 0xfb, 0xff))
+	require.Len(t, canonical, 39, "minimum nonce, tag, and one-byte token payload")
+	require.Contains(t, canonical, "+")
+	require.Contains(t, canonical, "/")
+	require.True(t, validRawStdCiphertext(canonical))
+}
+
+func validRawStdCiphertext(encoded string) bool {
+	decoded, err := base64.RawStdEncoding.Strict().DecodeString(encoded)
+	return err == nil && len(decoded) >= 29 && base64.RawStdEncoding.EncodeToString(decoded) == encoded
 }
 
 func TestDevelopSQLDefinesStageTwoConstraints(t *testing.T) {

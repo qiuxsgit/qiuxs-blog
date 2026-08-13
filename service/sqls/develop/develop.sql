@@ -225,7 +225,7 @@ CREATE TABLE builder_config (
     name VARCHAR(100) NOT NULL,
     base_url VARCHAR(2048) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     username VARCHAR(255) NOT NULL,
-    token_ciphertext TEXT CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    token_ciphertext TEXT CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'RawStd base64 of nonce || ciphertext-and-tag',
     job_name VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     enabled BOOLEAN NOT NULL,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
@@ -236,7 +236,16 @@ CREATE TABLE builder_config (
     CONSTRAINT chk_builder_config_name CHECK (CHAR_LENGTH(TRIM(name)) > 0),
     CONSTRAINT chk_builder_config_base_url CHECK (REGEXP_LIKE(base_url, '^https://[a-z0-9.-]+(:[1-9][0-9]{0,4})?$', 'c')),
     CONSTRAINT chk_builder_config_username CHECK (CHAR_LENGTH(TRIM(username)) > 0),
-    CONSTRAINT chk_builder_config_ciphertext CHECK (REGEXP_LIKE(token_ciphertext, '^[A-Za-z0-9_-]+$', 'c')),
+    CONSTRAINT chk_builder_config_ciphertext CHECK (
+        CHAR_LENGTH(token_ciphertext) >= 39
+        AND MOD(CHAR_LENGTH(token_ciphertext), 4) <> 1
+        AND REGEXP_LIKE(token_ciphertext, '^[A-Za-z0-9+/]+$', 'c')
+        AND (
+            MOD(CHAR_LENGTH(token_ciphertext), 4) = 0
+            OR (MOD(CHAR_LENGTH(token_ciphertext), 4) = 2 AND REGEXP_LIKE(token_ciphertext, '[AQgw]$', 'c'))
+            OR (MOD(CHAR_LENGTH(token_ciphertext), 4) = 3 AND REGEXP_LIKE(token_ciphertext, '[AEIMQUYcgkosw048]$', 'c'))
+        )
+    ),
     CONSTRAINT chk_builder_config_job_name CHECK (REGEXP_LIKE(job_name, '^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$', 'c') AND job_name NOT LIKE '%//%'),
     CONSTRAINT chk_builder_config_enabled CHECK (enabled IN (0, 1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

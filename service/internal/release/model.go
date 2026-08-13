@@ -85,6 +85,28 @@ type PublishJob struct {
 	FinishedAt   *time.Time
 }
 
+// Aggregate is the observable immutable release and its complete publish-job
+// history. Jobs are ordered by created_at descending, then id descending.
+type Aggregate struct {
+	Release Release
+	Jobs    []PublishJob
+}
+
+// LatestJob returns a copy of the first job in the repository-defined order.
+// An empty history is a corrupt repository result because release creation and
+// its initial job are atomic.
+func (a Aggregate) LatestJob() (PublishJob, error) {
+	if len(a.Jobs) == 0 {
+		return PublishJob{}, ErrInvalidAggregate
+	}
+	return a.Jobs[0], nil
+}
+
+type ListQuery struct {
+	Limit  int
+	Offset int
+}
+
 type Bundle struct {
 	SchemaVersion int             `json:"schemaVersion"`
 	ReleaseID     int64           `json:"releaseId"`
@@ -151,4 +173,5 @@ var (
 	ErrNotFound               = errors.New("release not found")
 	ErrConflict               = errors.New("invalid publish transition")
 	ErrReconciliationRequired = errors.New("release reconciliation required")
+	ErrInvalidAggregate       = errors.New("release aggregate is invalid")
 )

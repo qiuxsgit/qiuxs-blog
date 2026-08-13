@@ -112,10 +112,12 @@ type stage3ContractAdapter struct {
 	*AdminHandler
 }
 
-func (*stage3ContractAdapter) GetBuilderConfig(c *gin.Context)              { stage3Unavailable(c) }
-func (*stage3ContractAdapter) PutBuilderConfig(c *gin.Context)              { stage3Unavailable(c) }
-func (*stage3ContractAdapter) TestBuilderConfig(c *gin.Context)             { stage3Unavailable(c) }
-func (*stage3ContractAdapter) ListReleases(c *gin.Context)                  { stage3Unavailable(c) }
+func (*stage3ContractAdapter) GetBuilderConfig(c *gin.Context)  { stage3Unavailable(c) }
+func (*stage3ContractAdapter) PutBuilderConfig(c *gin.Context)  { stage3Unavailable(c) }
+func (*stage3ContractAdapter) TestBuilderConfig(c *gin.Context) { stage3Unavailable(c) }
+func (*stage3ContractAdapter) ListReleases(c *gin.Context, _ ListReleasesParams) {
+	stage3Unavailable(c)
+}
 func (*stage3ContractAdapter) CreateRelease(c *gin.Context)                 { stage3Unavailable(c) }
 func (*stage3ContractAdapter) GetRelease(c *gin.Context, _ ReleaseId)       { stage3Unavailable(c) }
 func (*stage3ContractAdapter) RetryRelease(c *gin.Context, _ ReleaseId)     { stage3Unavailable(c) }

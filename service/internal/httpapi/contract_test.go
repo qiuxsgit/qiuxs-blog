@@ -63,7 +63,7 @@ var releaseAdminOperationContracts = []operationContract{
 	{"POST", "/api/admin/v1/releases", "createRelease", 202, "CreateReleaseResult"},
 	{"GET", "/api/admin/v1/releases", "listReleases", 200, "ReleaseList"},
 	{"GET", "/api/admin/v1/releases/{releaseId}", "getRelease", 200, "ReleaseView"},
-	{"POST", "/api/admin/v1/releases/{releaseId}/retry", "retryRelease", 202, "PublishJobView"},
+	{"POST", "/api/admin/v1/releases/{releaseId}/retry", "retryRelease", 202, "RetryReleaseResult"},
 }
 
 var releaseInternalOperationContracts = []operationContract{
@@ -362,6 +362,49 @@ func TestAdminContractRequestShapesAreExactAndClosed(t *testing.T) {
 	require.ElementsMatch(t, []string{"release", "job"}, createResult.Value.Required)
 	require.Equal(t, "#/components/schemas/ReleaseView", createResult.Value.Properties["release"].Ref)
 	require.Equal(t, "#/components/schemas/PublishJobView", createResult.Value.Properties["job"].Ref)
+}
+
+func TestReleaseAdminReadsExposeOrderedJobHistoryAndPagination(t *testing.T) {
+	doc := loadAdminContract(t)
+	releaseView := doc.Components.Schemas["ReleaseView"].Value
+	require.ElementsMatch(t, []string{"id", "status", "checksum", "createdAt", "completedAt", "latestJob", "jobs"}, releaseView.Required)
+	require.ElementsMatch(t, releaseView.Required, schemaPropertyNames(releaseView))
+
+	latest := releaseView.Properties["latestJob"].Value
+	require.False(t, latest.Nullable)
+	require.Equal(t, "#/components/schemas/PublishJobView", releaseView.Properties["latestJob"].Ref)
+	jobs := releaseView.Properties["jobs"].Value
+	require.Equal(t, "#/components/schemas/PublishJobView", jobs.Items.Ref)
+	require.Equal(t, uint64(1), jobs.MinItems)
+	require.Contains(t, jobs.Description, "createdAt descending, then id descending")
+
+	retryResult := doc.Components.Schemas["RetryReleaseResult"].Value
+	require.NotNil(t, retryResult.AdditionalProperties.Has)
+	require.False(t, *retryResult.AdditionalProperties.Has)
+	require.ElementsMatch(t, []string{"release", "job"}, retryResult.Required)
+	require.Equal(t, "#/components/schemas/ReleaseView", retryResult.Properties["release"].Ref)
+	require.Equal(t, "#/components/schemas/PublishJobView", retryResult.Properties["job"].Ref)
+
+	list := doc.Paths.Find("/api/admin/v1/releases").Get
+	require.Len(t, list.Parameters, 2)
+	parameters := map[string]*openapi3.Parameter{}
+	for _, parameter := range list.Parameters {
+		parameters[parameter.Value.Name] = parameter.Value
+	}
+	limit := parameters["limit"]
+	require.NotNil(t, limit)
+	require.Equal(t, "query", limit.In)
+	require.False(t, limit.Required)
+	require.EqualValues(t, 20, limit.Schema.Value.Default)
+	require.Equal(t, float64(1), *limit.Schema.Value.Min)
+	require.NotNil(t, limit.Schema.Value.Max)
+	require.Equal(t, float64(100), *limit.Schema.Value.Max)
+	offset := parameters["offset"]
+	require.NotNil(t, offset)
+	require.Equal(t, "query", offset.In)
+	require.False(t, offset.Required)
+	require.EqualValues(t, 0, offset.Schema.Value.Default)
+	require.Equal(t, float64(0), *offset.Schema.Value.Min)
 }
 
 func TestAdminContractUsesSignedInt64IdentityAndLockFields(t *testing.T) {

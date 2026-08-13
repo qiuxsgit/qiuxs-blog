@@ -11,8 +11,8 @@ type SnapshotSource interface {
 
 type Repository interface {
 	CreateLocked(context.Context, CreateCommand) (Release, PublishJob, error)
-	FindRelease(context.Context, int64) (Release, error)
-	ListReleases(context.Context) ([]Release, error)
+	FindRelease(context.Context, int64) (Aggregate, error)
+	ListReleases(context.Context, ListQuery) ([]Aggregate, error)
 	LoadBundle(context.Context, int64) (Bundle, error)
 	CreateRetryLocked(context.Context, int64) (PublishJob, error)
 	ApplyCallbackLocked(context.Context, CallbackEvent) (PublishJob, bool, error)

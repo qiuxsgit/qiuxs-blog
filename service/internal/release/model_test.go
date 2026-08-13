@@ -66,6 +66,29 @@ func TestReleaseRepositoryContractUsesImmutableCommandsAndSnapshots(t *testing.T
 	require.ErrorIs(t, ErrReconciliationRequired, ErrReconciliationRequired)
 }
 
+func TestReleaseAggregateExposesOrderedJobHistoryWithoutAliasing(t *testing.T) {
+	createdAt := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	aggregate := Aggregate{
+		Release: Release{ID: 7},
+		Jobs: []PublishJob{
+			{ID: 12, ReleaseID: 7, Status: JobBuilding, CreatedAt: createdAt},
+			{ID: 11, ReleaseID: 7, Status: JobFailed, CreatedAt: createdAt.Add(-time.Minute)},
+		},
+	}
+
+	latest, err := aggregate.LatestJob()
+	require.NoError(t, err)
+	require.Equal(t, int64(12), latest.ID)
+	latest.Status = JobSuccess
+	require.Equal(t, JobBuilding, aggregate.Jobs[0].Status)
+	require.Equal(t, []int64{12, 11}, []int64{aggregate.Jobs[0].ID, aggregate.Jobs[1].ID})
+
+	empty := Aggregate{Release: Release{ID: 8}, Jobs: []PublishJob{}}
+	require.NotNil(t, empty.Jobs)
+	_, err = empty.LatestJob()
+	require.ErrorIs(t, err, ErrInvalidAggregate)
+}
+
 func mapKeys(value map[string]any) []string {
 	keys := make([]string, 0, len(value))
 	for key := range value {
@@ -80,11 +103,11 @@ func (*repositoryContractFake) CreateLocked(context.Context, CreateCommand) (Rel
 	return Release{}, PublishJob{}, errors.New("not implemented")
 }
 
-func (*repositoryContractFake) FindRelease(context.Context, int64) (Release, error) {
-	return Release{}, errors.New("not implemented")
+func (*repositoryContractFake) FindRelease(context.Context, int64) (Aggregate, error) {
+	return Aggregate{}, errors.New("not implemented")
 }
 
-func (*repositoryContractFake) ListReleases(context.Context) ([]Release, error) {
+func (*repositoryContractFake) ListReleases(context.Context, ListQuery) ([]Aggregate, error) {
 	return nil, errors.New("not implemented")
 }
 

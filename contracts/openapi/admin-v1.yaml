@@ -55,7 +55,11 @@ components:
       required: [username, password]
       properties:
         username: {type: string, minLength: 1, maxLength: 64}
-        password: {type: string, minLength: 1, maxLength: 256}
+        password:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: UTF-8 encoded value must be at most 256 bytes.
     AdminView:
       type: object
       additionalProperties: false

@@ -23,13 +23,21 @@ const (
 type AuthHandler struct {
 	service auth.Service
 	session config.SessionConfig
+	initErr error
 }
 
 func NewAuthHandler(service auth.Service, session config.SessionConfig) *AuthHandler {
-	return &AuthHandler{service: service, session: session}
+	handler := &AuthHandler{service: service, session: session}
+	if err := config.ValidateSessionCookieName(session.CookieName); err != nil {
+		handler.initErr = auth.ErrInternal
+	}
+	return handler
 }
 
 func (h *AuthHandler) LoginAdmin(c *gin.Context) {
+	if !h.valid(c) {
+		return
+	}
 	request, err := decodeLoginRequest(c)
 	if err != nil {
 		WriteProblem(c, ErrInvalidRequest)
@@ -47,6 +55,9 @@ func (h *AuthHandler) LoginAdmin(c *gin.Context) {
 }
 
 func (h *AuthHandler) LogoutAdmin(c *gin.Context) {
+	if !h.valid(c) {
+		return
+	}
 	token, err := c.Cookie(h.session.CookieName)
 	if err == nil && token != "" {
 		if err := h.service.Logout(c.Request.Context(), token); err != nil {
@@ -60,11 +71,22 @@ func (h *AuthHandler) LogoutAdmin(c *gin.Context) {
 }
 
 func (h *AuthHandler) GetCurrentAdmin(c *gin.Context) {
+	if !h.valid(c) {
+		return
+	}
 	admin, ok := requireAdmin(c)
 	if !ok {
 		return
 	}
 	c.JSON(http.StatusOK, AdminView{Id: admin.ID, Username: admin.Username})
+}
+
+func (h *AuthHandler) valid(c *gin.Context) bool {
+	if h == nil || h.initErr != nil {
+		WriteProblem(c, auth.ErrInternal)
+		return false
+	}
+	return true
 }
 
 func decodeLoginRequest(c *gin.Context) (LoginRequest, error) {
@@ -80,14 +102,57 @@ func decodeLoginRequest(c *gin.Context) (LoginRequest, error) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxLoginBodyBytes)
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
-	var request LoginRequest
-	if err := decoder.Decode(&request); err != nil {
+	request, err := decodeLoginObject(decoder)
+	if err != nil {
 		return LoginRequest{}, ErrInvalidRequest
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return LoginRequest{}, ErrInvalidRequest
 	}
 	if !validLoginRequest(request) {
+		return LoginRequest{}, ErrInvalidRequest
+	}
+	return request, nil
+}
+
+func decodeLoginObject(decoder *json.Decoder) (LoginRequest, error) {
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return LoginRequest{}, ErrInvalidRequest
+	}
+
+	request := LoginRequest{}
+	seen := map[string]bool{}
+	for decoder.More() {
+		propertyToken, err := decoder.Token()
+		if err != nil {
+			return LoginRequest{}, ErrInvalidRequest
+		}
+		property, ok := propertyToken.(string)
+		if !ok || (property != "username" && property != "password") || seen[property] {
+			return LoginRequest{}, ErrInvalidRequest
+		}
+
+		var value any
+		if err := decoder.Decode(&value); err != nil {
+			return LoginRequest{}, ErrInvalidRequest
+		}
+		stringValue, ok := value.(string)
+		if !ok {
+			return LoginRequest{}, ErrInvalidRequest
+		}
+
+		seen[property] = true
+		switch property {
+		case "username":
+			request.Username = stringValue
+		case "password":
+			request.Password = stringValue
+		}
+	}
+
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') || !seen["username"] || !seen["password"] {
 		return LoginRequest{}, ErrInvalidRequest
 	}
 	return request, nil

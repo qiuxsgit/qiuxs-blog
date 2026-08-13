@@ -90,6 +90,26 @@ func TestLoadRejectsInvalidSessionTTL(t *testing.T) {
 	require.ErrorContains(t, err, "BLOG_SESSION_TTL")
 }
 
+func TestLoadRejectsInvalidSessionCookieName(t *testing.T) {
+	for _, cookieName := range []string{
+		"session name",
+		"session;name",
+		"session=name",
+		"session/name",
+		"session\nname",
+		"会话",
+	} {
+		t.Run(cookieName, func(t *testing.T) {
+			env := validEnv()
+			env["BLOG_SESSION_COOKIE_NAME"] = cookieName
+
+			_, err := config.Load(func(key string) string { return env[key] })
+
+			require.ErrorContains(t, err, "BLOG_SESSION_COOKIE_NAME")
+		})
+	}
+}
+
 func TestLoadRejectsNonHTTPSProductionOrigin(t *testing.T) {
 	env := validEnv()
 	env["BLOG_ADMIN_ORIGIN"] = "http://blog-admin.qiuxs.com"

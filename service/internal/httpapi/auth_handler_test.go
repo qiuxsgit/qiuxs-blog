@@ -91,6 +91,7 @@ func (l *handlerLimiterFake) ResetUsername(context.Context, string) error       
 
 type handlerTestSystem struct {
 	router  *gin.Engine
+	service auth.Service
 	repo    *handlerRepositoryFake
 	store   *handlerSessionStoreFake
 	limiter *handlerLimiterFake
@@ -117,7 +118,7 @@ func newHandlerTestSystem(t *testing.T) handlerTestSystem {
 	router := gin.New()
 	router.Use(RequestID(), LoadAdminSession(service, sessionConfig.CookieName))
 	RegisterHandlers(router, handler)
-	return handlerTestSystem{router: router, repo: repo, store: store, limiter: limiter, now: now, config: sessionConfig}
+	return handlerTestSystem{router: router, service: service, repo: repo, store: store, limiter: limiter, now: now, config: sessionConfig}
 }
 
 func TestAuthHandlerLoginRejectsUnknownFieldsTrailingJSONAndWrongContentType(t *testing.T) {
@@ -139,6 +140,37 @@ func TestAuthHandlerLoginRejectsUnknownFieldsTrailingJSONAndWrongContentType(t *
 
 			require.Equal(t, http.StatusBadRequest, recorder.Code)
 			require.Zero(t, system.repo.findCalls)
+			requireProblemResponse(t, recorder, http.StatusBadRequest, "invalid_request")
+		})
+	}
+}
+
+func TestAuthHandlerLoginRequiresExactUniqueStringProperties(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "capitalized username", body: `{"Username":"admin.user","password":"correct-password"}`},
+		{name: "mixed-case username", body: `{"userName":"admin.user","password":"correct-password"}`},
+		{name: "capitalized password", body: `{"username":"admin.user","Password":"correct-password"}`},
+		{name: "duplicate username", body: `{"username":"admin.user","username":"admin.user","password":"correct-password"}`},
+		{name: "duplicate password", body: `{"username":"admin.user","password":"correct-password","password":"correct-password"}`},
+		{name: "unknown property", body: `{"username":"admin.user","password":"correct-password","unknown":"value"}`},
+		{name: "numeric username", body: `{"username":42,"password":"correct-password"}`},
+		{name: "null password", body: `{"username":"admin.user","password":null}`},
+		{name: "missing username", body: `{"password":"correct-password"}`},
+		{name: "missing password", body: `{"username":"admin.user"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			system := newHandlerTestSystem(t)
+
+			recorder := performHandlerRequest(system.router, http.MethodPost, "/api/admin/v1/session", "application/json", tt.body, nil)
+
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+			require.Zero(t, system.repo.findCalls)
+			require.Empty(t, system.store.sessions)
 			requireProblemResponse(t, recorder, http.StatusBadRequest, "invalid_request")
 		})
 	}
@@ -211,6 +243,32 @@ func TestAuthHandlerLoginReturnsSchemaValidRateLimitProblemAndCeilingRetryAfter(
 	require.Equal(t, "2", recorder.Header().Get("Retry-After"))
 	require.Zero(t, system.repo.findCalls)
 	requireProblemResponse(t, recorder, http.StatusTooManyRequests, "login_rate_limited")
+}
+
+func TestAuthHandlerRejectsInvalidCookieConfigurationBeforeCreatingSession(t *testing.T) {
+	system := newHandlerTestSystem(t)
+	invalidConfig := system.config
+	invalidConfig.CookieName = "invalid;cookie"
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(RequestID(), LoadAdminSession(system.service, system.config.CookieName))
+	RegisterHandlers(router, NewAuthHandler(system.service, invalidConfig))
+
+	recorder := performHandlerRequest(
+		router,
+		http.MethodPost,
+		"/api/admin/v1/session",
+		"application/json",
+		`{"username":"admin.user","password":"correct-password"}`,
+		nil,
+	)
+
+	require.Equal(t, http.StatusInternalServerError, recorder.Code)
+	require.Zero(t, system.repo.findCalls)
+	require.Zero(t, system.repo.updateCalls)
+	require.Empty(t, system.store.sessions)
+	require.Empty(t, recorder.Header().Values("Set-Cookie"))
+	requireProblemResponse(t, recorder, http.StatusInternalServerError, "internal_error")
 }
 
 func TestAuthHandlerLogoutClearsCookieAndReturns204WhenSessionAbsent(t *testing.T) {

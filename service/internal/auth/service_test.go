@@ -101,13 +101,16 @@ func (l *serviceLimiterFake) record(event string) {
 }
 
 type serviceSessionStoreFake struct {
-	setErr      error
-	getSession  Session
-	getErr      error
-	deleteErr   error
-	events      *[]string
-	setCalls    int
-	deleteCalls int
+	setErr            error
+	getSession        Session
+	getErr            error
+	deleteErr         error
+	events            *[]string
+	setCalls          int
+	deleteCalls       int
+	deleteContextErr  error
+	deleteDeadline    time.Time
+	deleteHasDeadline bool
 }
 
 func (s *serviceSessionStoreFake) Set(_ context.Context, _ string, _ Session, _ time.Duration) error {
@@ -121,8 +124,10 @@ func (s *serviceSessionStoreFake) Get(_ context.Context, _ string) (Session, err
 	return s.getSession, s.getErr
 }
 
-func (s *serviceSessionStoreFake) Delete(_ context.Context, _ string) error {
+func (s *serviceSessionStoreFake) Delete(ctx context.Context, _ string) error {
 	s.deleteCalls++
+	s.deleteContextErr = ctx.Err()
+	s.deleteDeadline, s.deleteHasDeadline = ctx.Deadline()
 	s.record("session-delete")
 	return s.deleteErr
 }
@@ -338,6 +343,31 @@ func TestServiceLoginFailsClosedWhenRecordingInvalidCredentialsFails(t *testing.
 	require.Zero(t, store.setCalls)
 }
 
+func TestServiceLoginTreatsMalformedStoredHashAsSanitizedInternalFailure(t *testing.T) {
+	now := time.Now()
+	hasher, _ := testServiceHasher(t)
+	repo := &serviceRepositoryFake{adminByUsername: Admin{
+		ID:           42,
+		Username:     "admin.user",
+		PasswordHash: "$argon2id$malformed-secret-hash",
+		State:        "active",
+	}}
+	store := &serviceSessionStoreFake{}
+	limiter := &serviceLimiterFake{decision: LimitDecision{Allowed: true}}
+	sessions := NewSessionManager(store, time.Hour, strings.NewReader(string(bytesFromZeroTo31())), func() time.Time { return now })
+	service := NewService(repo, hasher, sessions, limiter, func() time.Time { return now })
+
+	result, err := service.Login(context.Background(), "admin.user", "correct-password", "192.0.2.10")
+
+	require.Equal(t, LoginResult{}, result)
+	require.Equal(t, ErrInternal, err)
+	require.NotErrorIs(t, err, ErrInvalidCredentials)
+	require.NotErrorIs(t, err, ErrDependencyUnavailable)
+	require.NotContains(t, err.Error(), "malformed-secret-hash")
+	require.Zero(t, limiter.recordCalls)
+	require.Zero(t, store.setCalls)
+}
+
 func TestServiceLoginLogsSanitizedCompensationFailure(t *testing.T) {
 	var logs bytes.Buffer
 	previousLogger := slog.Default()
@@ -362,6 +392,31 @@ func TestServiceLoginLogsSanitizedCompensationFailure(t *testing.T) {
 	require.NotContains(t, logs.String(), "redis password secret")
 	require.NotContains(t, logs.String(), "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
 	require.NotContains(t, logs.String(), "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0")
+}
+
+func TestServiceLoginCompensationSurvivesRequestCancellationWithBoundedContext(t *testing.T) {
+	now := time.Now()
+	hasher, hash := testServiceHasher(t)
+	repo := &serviceRepositoryFake{
+		adminByUsername: Admin{ID: 42, Username: "admin.user", PasswordHash: hash, State: "active"},
+		updateErr:       errors.New("mysql unavailable"),
+	}
+	store := &serviceSessionStoreFake{}
+	limiter := &serviceLimiterFake{decision: LimitDecision{Allowed: true}}
+	sessions := NewSessionManager(store, time.Hour, strings.NewReader(string(bytesFromZeroTo31())), func() time.Time { return now })
+	service := NewService(repo, hasher, sessions, limiter, func() time.Time { return now })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := service.Login(ctx, "admin.user", "correct-password", "192.0.2.10")
+
+	require.ErrorIs(t, err, ErrDependencyUnavailable)
+	require.Equal(t, 1, store.deleteCalls)
+	require.NoError(t, store.deleteContextErr)
+	require.True(t, store.deleteHasDeadline)
+	remaining := time.Until(store.deleteDeadline)
+	require.Positive(t, remaining)
+	require.LessOrEqual(t, remaining, 5*time.Second)
 }
 
 func TestServiceLogoutIsIdempotent(t *testing.T) {

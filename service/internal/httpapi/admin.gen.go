@@ -24,6 +24,7 @@ type AdminView struct {
 
 // LoginRequest defines model for LoginRequest.
 type LoginRequest struct {
+	// Password UTF-8 encoded value must be at most 256 bytes.
 	Password string `json:"password"`
 	Username string `json:"username"`
 }
@@ -141,17 +142,17 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"xFTNbts8EHwVYb/vVsWSYydAdUt7KALkEKRAL0EOtLiWGUgkw13lB4bevSAp23KiNLBRpBfD4nKHM7M/",
-	"ayhNY41GzQTFGhySNZowfFw7s6ixuenP/FFpNKNm/1dYW6tSsDI6s/Hml3sy2seoXGEj/L//HS6hgP+y",
-	"3TtZjFLW40PXdSlIpNIp6+GggBt8aJE4WQpVowR/oc/yoBeyUfqXwqfAQ0rls0R97YxFx8qzX4qaMAU7",
-	"OFqDkv53aVwjGApQms/nkEKjtGraBoppCvxiMYawQgddCi2h06IJ8vsosVO6CqwcPrTKoYTi1sMPrt9t",
-	"wcziHkv2WFemUrrXdiB3K4iejAsKGvF8hbriFRSnZ+dBwOZ7J2FDcl/BIPV8/kHmK3lbmHRHZkzkpqyH",
-	"6SuNHLM4UkDiSzkaJRbc0iA0qBwrrscx48GgFVqn4CP9IbpB3b6cRuZDnm9N8VBKL00gE1nBg2qf6WRR",
-	"myoJ/ZxcXF9CCo/oKM7AdJJPcs/WWNTCKihgNskns+A/r4LoTFiVCZ+ePU6zWOIKQ295c8N0eufgB/L3",
-	"1jnUHB4LfAejfprnfxjvw8Z6N50jg92TSAJnRewEm1CseT59D3jLNHu9kboUzvLZEXmB2b55hBSNX4PE",
-	"GhnfmnhlKtO+Z+A8Zg7F/oyQicPGPKJMjEtE7VDIl0QsyBsdhM8+VXgK1hCPilN6py008zcjX/5aX+wt",
-	"v25/uti12P2rnrxoeYWaPTLKsc7MjyrQsR19bEPMT79+7gT59YvOLywobtfQuhoKWDFbKrLML7aT4OUk",
-	"bLpJaRro7rrfAQAA//8=",
+	"xFTJbuM4EP0VomZuo0jyEmNGt0wD3QiQQ5BeLkEOtFiWGUgkQxadGIb+vUHKi5woHcRopC+GxWI9vvdq",
+	"2UCpG6MVKnJQbMCiM1o5jB/XVs9rbG62Z+Go1IpQUfjLjallyUlqlZnu5j/3TqsQc+USGx7+/W1xAQX8",
+	"lR3eybqoy7b40LZtAgJdaaUJcFDADT54dMQWXNYoIFzYZgXQC9FI9UPiY+QhhAxZvL622qAlGdgveO0w",
+	"AdM72oAU4XehbcMJCpCKZlNIoJFKNr6BYpQArQ12IazQQpuAd2gVb6L8bdSRlaqKrCw+eGlRQHEb4HvX",
+	"7/Zgen6PJQWsK11JtdX2Tu6GO/eobVRw7NX3b5/P/mWoSi1QsBWvPbLGO2JzZJxYox2x8fmMzdeELg16",
+	"+dMVqoqWUIzPZ1H/7vvgwE7jsQG91Nn0jcxn7uxhkoOWIY92XfE+e4L4gQp1FNDRpRiMOuLkXS/UKzxJ",
+	"qocxu4NeJ3kr4S39MbpD3b+cdMz7PF+aEqCkWuhIpmMFD9I/ubN5rSsWx4FdXF9CAiu0rmuLUZqneWCr",
+	"DSpuJBQwSfN0Ev2nZRSdcSMzHtKz1SjrSlxhbM1gbhzu4Bx8QfrkrUVF8bHIt7cpxnn+i+3wvq1wGO6B",
+	"vbAlwSJn6chy0rFY03z0GvCeafZ8obUJnOeTE/Iis2PzHLrO+DCeNRK+NPFKV9q/ZuD05WB/7SCZxUav",
+	"UDBtGa8tcrFmfO6C0VH45EOFJ2C0o0FxUh20xWb+X4v1b+uLo93ZHk8XWY/tn+rJC09LVBSQUQx1Zn5S",
+	"gU7t6FMbYjr+72MnKKxftGFhQXG7AW9rKGBJZFyRZWGxnUUv07jp0lI30N61PwMAAP//",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

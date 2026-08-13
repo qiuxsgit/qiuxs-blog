@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -86,6 +87,9 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	cookieName := valueOrDefault(getenv("BLOG_SESSION_COOKIE_NAME"), defaultSessionCookieName)
+	if err := ValidateSessionCookieName(cookieName); err != nil {
+		return Config{}, err
+	}
 	ttl, err := parseSessionTTL(getenv("BLOG_SESSION_TTL"))
 	if err != nil {
 		return Config{}, err
@@ -114,6 +118,15 @@ func Load(getenv func(string) string) (Config, error) {
 			TTL:          ttl,
 		},
 	}, nil
+}
+
+// ValidateSessionCookieName requires an ASCII RFC token suitable for an HTTP
+// Cookie name. The returned error never includes the candidate value.
+func ValidateSessionCookieName(name string) error {
+	if err := (&http.Cookie{Name: name}).Valid(); err != nil {
+		return fmt.Errorf("BLOG_SESSION_COOKIE_NAME must be a valid HTTP cookie name")
+	}
+	return nil
 }
 
 func valueOrDefault(value, defaultValue string) string {

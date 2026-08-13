@@ -9,6 +9,8 @@ import (
 
 const dummyPasswordHash = "$argon2id$v=19$m=65536,t=3,p=2$cWl1eHMtYmxvZy1kdW1teQ$erZZ0+ILSHaNpqTAcuH1AhGE0jZeC5fPeBGmltMGIa0"
 
+const sessionCompensationTimeout = 2 * time.Second
+
 var ErrDependencyUnavailable = errors.New("dependency unavailable")
 
 // RateLimitError preserves the limiter's retry decision for the HTTP layer.
@@ -77,7 +79,11 @@ func (s Service) Login(ctx context.Context, username, password, ip string) (Logi
 	if findErr != nil && !errors.Is(findErr, ErrAdminNotFound) {
 		return LoginResult{}, dependencyUnavailable()
 	}
-	if verifyErr != nil || errors.Is(findErr, ErrAdminNotFound) || !passwordMatches || admin.State != "active" {
+	if verifyErr != nil {
+		_, _ = s.hasher.Verify(password, dummyPasswordHash)
+		return LoginResult{}, ErrInternal
+	}
+	if errors.Is(findErr, ErrAdminNotFound) || !passwordMatches || admin.State != "active" {
 		if err := s.limiter.RecordFailure(ctx, normalizedUsername, ip); err != nil {
 			return LoginResult{}, dependencyUnavailable()
 		}
@@ -138,8 +144,10 @@ func (s Service) Current(ctx context.Context, token string) (Admin, error) {
 }
 
 func (s Service) compensateSession(ctx context.Context, token string) {
-	if err := s.sessions.Delete(ctx, token); err != nil {
-		slog.ErrorContext(ctx, "login session compensation failed")
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionCompensationTimeout)
+	defer cancel()
+	if err := s.sessions.Delete(cleanupCtx, token); err != nil {
+		slog.ErrorContext(cleanupCtx, "login session compensation failed")
 	}
 }
 

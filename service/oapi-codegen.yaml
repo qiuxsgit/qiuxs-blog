@@ -1,0 +1,6 @@
+package: httpapi
+output: internal/httpapi/admin.gen.go
+generate:
+  models: true
+  gin-server: true
+  embedded-spec: true

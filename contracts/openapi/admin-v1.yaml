@@ -1,0 +1,75 @@
+openapi: 3.0.3
+info:
+  title: qiuxs-blog Admin API
+  version: 1.0.0
+servers:
+  - url: https://blog-admin.qiuxs.com
+paths:
+  /api/admin/v1/session:
+    post:
+      operationId: loginAdmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200':
+          description: Authenticated administrator
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminView'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '429': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+    delete:
+      operationId: logoutAdmin
+      responses:
+        '204': {description: Session removed or already absent}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/me:
+    get:
+      operationId: getCurrentAdmin
+      responses:
+        '200':
+          description: Current administrator
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminView'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+components:
+  responses:
+    ProblemResponse:
+      description: Request failed
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+  schemas:
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: {type: string, minLength: 1, maxLength: 64}
+        password: {type: string, minLength: 1, maxLength: 256}
+    AdminView:
+      type: object
+      additionalProperties: false
+      required: [id, username]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        username: {type: string}
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code, requestId]
+      properties:
+        type: {type: string, format: uri}
+        title: {type: string}
+        status: {type: integer}
+        code: {type: string}
+        requestId: {type: string}

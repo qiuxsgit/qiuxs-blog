@@ -2,12 +2,18 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -15,19 +21,51 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/auth"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/config"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/httpapi"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/idgen"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/randomkey"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
 func TestBuildRegistersPublicAndAdminRoutes(t *testing.T) {
 	router := buildTestRouter(t)
-	requireRoute(t, router, http.MethodGet, "/health/live")
-	requireRoute(t, router, http.MethodGet, "/health/ready")
-	requireRoute(t, router, http.MethodPost, "/api/admin/v1/session")
-	requireRoute(t, router, http.MethodDelete, "/api/admin/v1/session")
-	requireRoute(t, router, http.MethodGet, "/api/admin/v1/me")
+	want := []string{
+		http.MethodGet + " /health/live",
+		http.MethodGet + " /health/ready",
+		http.MethodPost + " /api/admin/v1/session",
+		http.MethodDelete + " /api/admin/v1/session",
+		http.MethodGet + " /api/admin/v1/me",
+		http.MethodGet + " /api/admin/v1/articles",
+		http.MethodPost + " /api/admin/v1/articles",
+		http.MethodGet + " /api/admin/v1/articles/:articleId",
+		http.MethodPut + " /api/admin/v1/articles/:articleId/draft",
+		http.MethodGet + " /api/admin/v1/articles/:articleId/preview",
+		http.MethodGet + " /api/admin/v1/articles/:articleId/versions",
+		http.MethodPost + " /api/admin/v1/articles/:articleId/versions",
+		http.MethodPost + " /api/admin/v1/articles/:articleId/versions/:revisionId/restore",
+		http.MethodPost + " /api/admin/v1/articles/:articleId/trash",
+		http.MethodPost + " /api/admin/v1/articles/:articleId/untrash",
+		http.MethodGet + " /api/admin/v1/tags",
+		http.MethodPost + " /api/admin/v1/tags",
+		http.MethodPatch + " /api/admin/v1/tags/:tagId",
+		http.MethodPost + " /api/admin/v1/media/upload-policy",
+		http.MethodPost + " /api/admin/v1/media",
+		http.MethodGet + " /api/admin/v1/settings/site",
+		http.MethodPut + " /api/admin/v1/settings/site",
+		http.MethodGet + " /api/admin/v1/settings/hotlink",
+		http.MethodPut + " /api/admin/v1/settings/hotlink",
+		http.MethodGet + " /img/proxy/:publicKey",
+	}
+	got := make([]string, 0, len(router.Routes()))
+	for _, route := range router.Routes() {
+		got = append(got, route.Method+" "+route.Path)
+	}
+	sort.Strings(want)
+	sort.Strings(got)
+	require.Equal(t, want, got)
 
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/missing", nil)
@@ -46,6 +84,87 @@ func TestBuildRegistersPublicAndAdminRoutes(t *testing.T) {
 	}, problem)
 }
 
+func TestBuildEnforcesAdminMiddlewareWithoutApplyingItToPublicMedia(t *testing.T) {
+	deps, mock, miniRedis := testDependenciesWithResources(t, io.Discard)
+	router, err := Build(testConfig(), deps)
+	require.NoError(t, err)
+
+	anonymous := httptest.NewRecorder()
+	anonymousRequest := httptest.NewRequest(http.MethodGet, "/api/admin/v1/tags", nil)
+	anonymousRequest.Header.Set("X-Request-ID", "anonymous-admin")
+	router.ServeHTTP(anonymous, anonymousRequest)
+	require.Equal(t, http.StatusUnauthorized, anonymous.Code, anonymous.Body.String())
+	requireProblemCode(t, anonymous, "unauthenticated")
+
+	token := testAdminSessionToken()
+	seedAdminSession(t, deps.Redis, token, deps.Now())
+	for _, origin := range []string{"", "https://wrong-origin.example"} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/admin/v1/tags", strings.NewReader(`{"name":"Go"}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", origin)
+		request.AddCookie(&http.Cookie{Name: testConfig().Session.CookieName, Value: token})
+		router.ServeHTTP(response, request)
+		require.Equal(t, http.StatusForbidden, response.Code, response.Body.String())
+		requireProblemCode(t, response, "origin_forbidden")
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, allow_empty_referer FROM hotlink_settings WHERE singleton_key = 1")).WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+	redisCommands := miniRedis.CommandCount()
+	public := httptest.NewRecorder()
+	publicRequest := httptest.NewRequest(http.MethodGet, "/img/proxy/stable-key-secret", nil)
+	publicRequest.Header.Set("Origin", "https://wrong-origin.example")
+	publicRequest.AddCookie(&http.Cookie{Name: testConfig().Session.CookieName, Value: token})
+	router.ServeHTTP(public, publicRequest)
+	require.Equal(t, http.StatusNotFound, public.Code, public.Body.String())
+	requireProblemCode(t, public, "not_found")
+	require.Equal(t, redisCommands, miniRedis.CommandCount(), "public media must not load an Admin session")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBuildUsesOneSharedStage2DependencyGraph(t *testing.T) {
+	deps := testDependencies(t, io.Discard)
+	var observed buildObservation
+	deps.observeBuild = func(value buildObservation) { observed = value }
+
+	_, err := Build(testConfig(), deps)
+	require.NoError(t, err)
+	require.NotNil(t, observed.ids)
+	for _, repositoryIDs := range []*idgen.Generator{
+		observed.articleRepositoryIDs,
+		observed.revisionRepositoryIDs,
+		observed.tagRepositoryIDs,
+		observed.mediaRepositoryIDs,
+		observed.settingsRepositoryIDs,
+	} {
+		require.Same(t, observed.ids, repositoryIDs)
+	}
+	require.NotNil(t, observed.keys)
+	for _, consumerKeys := range []*randomkey.Generator{
+		observed.articleKeys,
+		observed.tagKeys,
+		observed.mediaKeys,
+		observed.signerKeys,
+	} {
+		require.Same(t, observed.keys, consumerKeys)
+	}
+	wantClock := reflect.ValueOf(deps.Now).Pointer()
+	for _, clock := range []func() time.Time{
+		observed.articleNow,
+		observed.revisionNow,
+		observed.mediaNow,
+		observed.siteNow,
+		observed.hotlinkNow,
+		observed.proxyNow,
+	} {
+		require.NotNil(t, clock)
+		require.Equal(t, wantClock, reflect.ValueOf(clock).Pointer())
+	}
+	require.Same(t, observed.hotlinkForAdmin, observed.hotlinkForProxy)
+}
+
 func TestBuildRejectsInvalidDependenciesAndAuthConfig(t *testing.T) {
 	typedNilRandom := (*bytes.Reader)(nil)
 	tests := []struct {
@@ -61,6 +180,8 @@ func TestBuildRejectsInvalidDependenciesAndAuthConfig(t *testing.T) {
 		{name: "random", mutate: func(_ *config.Config, deps *Dependencies) { deps.Random = nil }},
 		{name: "typed nil random", mutate: func(_ *config.Config, deps *Dependencies) { deps.Random = typedNilRandom }},
 		{name: "clock", mutate: func(_ *config.Config, deps *Dependencies) { deps.Now = nil }},
+		{name: "HTTP client", mutate: func(_ *config.Config, deps *Dependencies) { deps.HTTPClient = nil }},
+		{name: "HTTP client timeout", mutate: func(_ *config.Config, deps *Dependencies) { deps.HTTPClient.Timeout = time.Second }},
 		{name: "cookie name", mutate: func(cfg *config.Config, _ *Dependencies) { cfg.Session.CookieName = "bad cookie" }},
 		{name: "session TTL", mutate: func(cfg *config.Config, _ *Dependencies) { cfg.Session.TTL = 0 }},
 	}
@@ -102,6 +223,11 @@ func TestBuildRejectsInvalidDirectConfig(t *testing.T) {
 		{name: "cookie name", mutate: func(cfg *config.Config) { cfg.Session.CookieName = "bad cookie" }},
 		{name: "short session TTL", mutate: func(cfg *config.Config) { cfg.Session.TTL = 15*time.Minute - time.Nanosecond }},
 		{name: "long session TTL", mutate: func(cfg *config.Config) { cfg.Session.TTL = 168*time.Hour + time.Nanosecond }},
+		{name: "GFS base URL", mutate: func(cfg *config.Config) { cfg.GFS.BaseURL = "://gfs-url-secret" }},
+		{name: "noncanonical GFS base URL", mutate: func(cfg *config.Config) { cfg.GFS.BaseURL += "/" }},
+		{name: "GFS app ID", mutate: func(cfg *config.Config) { cfg.GFS.AppID = " " }},
+		{name: "GFS app secret", mutate: func(cfg *config.Config) { cfg.GFS.AppSecret = " " }},
+		{name: "GFS public read secret", mutate: func(cfg *config.Config) { cfg.GFS.PublicReadSecret = " " }},
 	}
 
 	for _, test := range tests {
@@ -123,12 +249,12 @@ func TestBuildRecoversWithSanitizedProblemAndStructuredAccessLog(t *testing.T) {
 	deps := testDependencies(t, &logs)
 	router, err := Build(testConfig(), deps)
 	require.NoError(t, err)
-	router.POST("/panic", func(*gin.Context) {
+	router.POST("/panic/:secret", func(*gin.Context) {
 		panic("panic-password-secret")
 	})
 
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/panic?token=query-token-secret", strings.NewReader(`{"password":"body-password-secret"}`))
+	request := httptest.NewRequest(http.MethodPost, "/panic/panic-path-secret?token=query-token-secret", strings.NewReader(`{"password":"body-password-secret"}`))
 	request.Header.Set("X-Request-ID", "panic-test")
 	request.Header.Set("Authorization", "Bearer authorization-secret")
 	request.Header.Set("Cookie", "admin_session=cookie-secret")
@@ -144,6 +270,7 @@ func TestBuildRecoversWithSanitizedProblemAndStructuredAccessLog(t *testing.T) {
 	logText := logs.String()
 	for _, secret := range []string{
 		"panic-password-secret",
+		"panic-path-secret",
 		"query-token-secret",
 		"body-password-secret",
 		"authorization-secret",
@@ -155,11 +282,75 @@ func TestBuildRecoversWithSanitizedProblemAndStructuredAccessLog(t *testing.T) {
 	entries := decodeLogEntries(t, logText)
 	require.Len(t, entries, 2)
 	require.Equal(t, "panic recovered", entries[0]["msg"])
+	require.Equal(t, "/panic/:secret", entries[0]["path"])
 	require.Equal(t, "panic-test", entries[0]["request_id"])
 	require.Equal(t, "http request", entries[1]["msg"])
+	require.Equal(t, "/panic/:secret", entries[1]["path"])
 	require.Equal(t, "panic-test", entries[1]["request_id"])
 	require.Equal(t, float64(http.StatusInternalServerError), entries[1]["status"])
 	require.Contains(t, entries[1], "duration_ms")
+}
+
+func TestBuildAccessLogUsesRouteTemplatesNumericIDsAndRedactsSensitiveRequestData(t *testing.T) {
+	var logs bytes.Buffer
+	deps, mock, _ := testDependenciesWithResources(t, &logs)
+	router, err := Build(testConfig(), deps)
+	require.NoError(t, err)
+	token := testAdminSessionToken()
+	seedAdminSession(t, deps.Redis, token, deps.Now())
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, username, password_hash, state FROM admins WHERE id = ?")).
+		WithArgs(int64(41)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "username", "password_hash", "state"}).
+			AddRow(int64(41), "admin.user", "database-password-hash-secret", "active"))
+	article := httptest.NewRecorder()
+	articleRequest := httptest.NewRequest(http.MethodPut, "/api/admin/v1/articles/11/draft", strings.NewReader(
+		`{"lockVersion":1,"title":"title","summary":"","coverMediaId":null,"contentMd":"![x](/img/proxy/m_body-media-key-secret)","tagIds":[],"originalName":"filename-secret.png","password":"body-password-secret"}`,
+	))
+	articleRequest.Header.Set("Content-Type", "application/json")
+	articleRequest.Header.Set("Origin", testConfig().HTTP.AdminOrigin)
+	articleRequest.Header.Set("Referer", "https://qiuxs.com/preview?signature=signed-target-secret")
+	articleRequest.Header.Set("Authorization", "Bearer authorization-secret")
+	articleRequest.AddCookie(&http.Cookie{Name: testConfig().Session.CookieName, Value: token})
+	router.ServeHTTP(article, articleRequest)
+	require.Equal(t, http.StatusBadRequest, article.Code, article.Body.String())
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, allow_empty_referer FROM hotlink_settings WHERE singleton_key = 1")).WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+	public := httptest.NewRecorder()
+	publicRequest := httptest.NewRequest(http.MethodGet, "/img/proxy/stable-key-secret?token=query-secret", nil)
+	publicRequest.Header.Set("Referer", "https://qiuxs.com/preview?signature=signed-target-secret")
+	router.ServeHTTP(public, publicRequest)
+	require.Equal(t, http.StatusNotFound, public.Code, public.Body.String())
+	unknown := httptest.NewRecorder()
+	unknownRequest := httptest.NewRequest(http.MethodGet, "/missing/unknown-media-key-secret?token=unknown-query-secret", nil)
+	router.ServeHTTP(unknown, unknownRequest)
+	require.Equal(t, http.StatusNotFound, unknown.Code, unknown.Body.String())
+
+	entries := decodeLogEntries(t, logs.String())
+	require.Len(t, entries, 3)
+	require.Equal(t, "/api/admin/v1/articles/:articleId/draft", entries[0]["path"])
+	require.Equal(t, float64(41), entries[0]["admin_id"])
+	require.Equal(t, float64(11), entries[0]["article_id"])
+	require.Equal(t, "/img/proxy/:publicKey", entries[1]["path"])
+	require.Equal(t, "<unmatched>", entries[2]["path"])
+	for _, secret := range []string{
+		token,
+		"database-password-hash-secret",
+		"m_body-media-key-secret",
+		"filename-secret.png",
+		"body-password-secret",
+		"authorization-secret",
+		"stable-key-secret",
+		"query-secret",
+		"signed-target-secret",
+		"unknown-media-key-secret",
+		"unknown-query-secret",
+	} {
+		require.NotContains(t, logs.String(), secret)
+	}
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestBuildTrustsNoForwardedClientIP(t *testing.T) {
@@ -187,10 +378,19 @@ func buildTestRouter(t *testing.T) *gin.Engine {
 
 func testDependencies(t *testing.T, logOutput io.Writer) Dependencies {
 	t.Helper()
+	deps, _, _ := testDependenciesWithResources(t, logOutput)
+	return deps
+}
+
+func testDependenciesWithResources(t *testing.T, logOutput io.Writer) (Dependencies, sqlmock.Sqlmock, *miniredis.Miniredis) {
+	t.Helper()
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	mock.ExpectClose()
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	t.Cleanup(func() {
+		mock.ExpectClose()
+		require.NoError(t, db.Close())
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
 
 	miniRedis := miniredis.RunT(t)
 	redisClient := redis.NewClient(&redis.Options{Addr: miniRedis.Addr()})
@@ -202,7 +402,10 @@ func testDependencies(t *testing.T, logOutput io.Writer) Dependencies {
 		Logger: slog.New(slog.NewJSONHandler(logOutput, nil)),
 		Random: bytes.NewReader(make([]byte, 256)),
 		Now:    func() time.Time { return time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC) },
-	}
+		HTTPClient: &http.Client{
+			Timeout: 5 * time.Second,
+		},
+	}, mock, miniRedis
 }
 
 func testConfig() config.Config {
@@ -229,14 +432,24 @@ func testConfig() config.Config {
 	}
 }
 
-func requireRoute(t *testing.T, router *gin.Engine, method, path string) {
+func requireProblemCode(t *testing.T, response *httptest.ResponseRecorder, code string) {
 	t.Helper()
-	for _, route := range router.Routes() {
-		if route.Method == method && route.Path == path {
-			return
-		}
-	}
-	t.Fatalf("route %s %s was not registered", method, path)
+	var problem httpapi.Problem
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &problem))
+	require.Equal(t, code, problem.Code)
+}
+
+func testAdminSessionToken() string {
+	return "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+}
+
+func seedAdminSession(t *testing.T, client *redis.Client, token string, now time.Time) {
+	t.Helper()
+	digest := sha256.Sum256([]byte(token))
+	key := "qiuxs-blog:session:" + hex.EncodeToString(digest[:])
+	encoded, err := json.Marshal(auth.Session{AdminID: 41, Username: "admin.user", ExpiresAt: now.Add(time.Hour)})
+	require.NoError(t, err)
+	require.NoError(t, client.Set(context.Background(), key, encoded, time.Hour).Err())
 }
 
 func decodeLogEntries(t *testing.T, raw string) []map[string]any {

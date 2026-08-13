@@ -22,11 +22,12 @@ import (
 const shutdownTimeout = 30 * time.Second
 
 type runtimeDependencies struct {
-	getenv  func(string) string
-	logger  *slog.Logger
-	random  io.Reader
-	now     func() time.Time
-	signals <-chan os.Signal
+	getenv     func(string) string
+	logger     *slog.Logger
+	random     io.Reader
+	now        func() time.Time
+	httpClient *http.Client
+	signals    <-chan os.Signal
 
 	openMySQL  func(config.MySQLConfig) (*sql.DB, error)
 	closeMySQL func(*sql.DB) error
@@ -64,11 +65,12 @@ func run(runtime runtimeDependencies) (resultErr error) {
 	}()
 
 	handler, err := runtime.build(cfg, app.Dependencies{
-		DB:     db,
-		Redis:  redisClient,
-		Logger: runtime.logger,
-		Random: runtime.random,
-		Now:    runtime.now,
+		DB:         db,
+		Redis:      redisClient,
+		Logger:     runtime.logger,
+		Random:     runtime.random,
+		Now:        runtime.now,
+		HTTPClient: runtime.httpClient,
 	})
 	if err != nil {
 		return errors.New("build application: operation failed")
@@ -125,6 +127,7 @@ func main() {
 		logger:     logger,
 		random:     rand.Reader,
 		now:        time.Now,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
 		signals:    signals,
 		openMySQL:  platform.OpenMySQL,
 		closeMySQL: func(db *sql.DB) error { return db.Close() },

@@ -69,6 +69,9 @@ func TestFirstAdminThroughLogoutFlow(t *testing.T) {
 		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Random: bytes.NewReader(bytes.Repeat([]byte{0x42}, 128)),
 		Now:    func() time.Time { return now },
+		HTTPClient: &http.Client{
+			Timeout: 5 * time.Second,
+		},
 	})
 	require.NoError(t, err)
 	server := httptest.NewServer(router)

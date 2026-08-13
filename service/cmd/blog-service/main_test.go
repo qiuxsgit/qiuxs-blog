@@ -23,6 +23,13 @@ import (
 
 func TestRunConfiguresServerAndShutsDownGracefully(t *testing.T) {
 	runtime, closes := validRuntime(t)
+	probeTransport := &countingRoundTripper{}
+	runtime.httpClient = &http.Client{Timeout: 5 * time.Second, Transport: probeTransport}
+	var buildDependencies app.Dependencies
+	runtime.build = func(_ config.Config, dependencies app.Dependencies) (http.Handler, error) {
+		buildDependencies = dependencies
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
+	}
 	serveDone := make(chan struct{})
 	var served *http.Server
 	runtime.serve = func(server *http.Server) error {
@@ -52,10 +59,28 @@ func TestRunConfiguresServerAndShutsDownGracefully(t *testing.T) {
 	require.Equal(t, 15*time.Second, served.ReadTimeout)
 	require.Equal(t, 30*time.Second, served.WriteTimeout)
 	require.Equal(t, 60*time.Second, served.IdleTimeout)
+	require.Same(t, runtime.httpClient, buildDependencies.HTTPClient)
+	require.Equal(t, 5*time.Second, buildDependencies.HTTPClient.Timeout)
+	require.Zero(t, probeTransport.calls, "startup must not probe GFS")
 	require.Greater(t, shutdownRemaining, 29*time.Second)
 	require.LessOrEqual(t, shutdownRemaining, 30*time.Second)
 	require.Equal(t, 1, closes.mysql)
 	require.Equal(t, 1, closes.redis)
+}
+
+func TestBlogServiceStartupNeverReadsOrExecutesDevelopmentSQL(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	require.NoError(t, err)
+	for _, forbidden := range []string{
+		"develop.sql",
+		"sqls/develop",
+		"os.ReadFile(",
+		"os.ReadDir(",
+		"ExecContext(",
+		"QueryContext(",
+	} {
+		require.NotContains(t, string(source), forbidden)
+	}
 }
 
 func TestExecuteReturnsFailureAndClosesOnlyOpenedResources(t *testing.T) {
@@ -142,6 +167,13 @@ type closeCounts struct {
 	redis int
 }
 
+type countingRoundTripper struct{ calls int }
+
+func (t *countingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	t.calls++
+	return nil, errors.New("unexpected HTTP dependency call")
+}
+
 func validRuntime(t *testing.T) (runtimeDependencies, *closeCounts) {
 	t.Helper()
 	db, _, err := sqlmock.New()
@@ -164,9 +196,12 @@ func validRuntime(t *testing.T) (runtimeDependencies, *closeCounts) {
 			"BLOG_GFS_APP_SECRET":         "test-app-secret",
 			"BLOG_GFS_PUBLIC_READ_SECRET": "test-public-read-secret",
 		}),
-		logger:  slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		random:  bytes.NewReader(make([]byte, 128)),
-		now:     time.Now,
+		logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		random: bytes.NewReader(make([]byte, 128)),
+		now:    time.Now,
+		httpClient: &http.Client{
+			Timeout: 5 * time.Second,
+		},
 		signals: make(chan os.Signal),
 		openMySQL: func(config.MySQLConfig) (*sql.DB, error) {
 			return db, nil

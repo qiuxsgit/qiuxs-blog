@@ -17,3 +17,168 @@ CREATE TABLE admins (
     CONSTRAINT chk_admins_singleton CHECK (singleton_key = 1),
     CONSTRAINT chk_admins_state CHECK (state IN ('active', 'disabled'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE media (
+    id BIGINT NOT NULL,
+    public_key VARCHAR(64) NOT NULL,
+    gfs_file_id BIGINT NOT NULL,
+    original_name VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(127) NOT NULL,
+    file_size BIGINT NOT NULL,
+    width INT NOT NULL,
+    height INT NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'active',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_media_public_key (public_key),
+    UNIQUE KEY uk_media_gfs_file_id (gfs_file_id),
+    CONSTRAINT chk_media_public_key CHECK (public_key REGEXP '^m_[a-z0-9_-]{22}$'),
+    CONSTRAINT chk_media_gfs_file_id CHECK (gfs_file_id > 0),
+    CONSTRAINT chk_media_state CHECK (state IN ('active', 'inactive')),
+    CONSTRAINT chk_media_file_size CHECK (file_size > 0),
+    CONSTRAINT chk_media_dimensions CHECK (width > 0 AND height > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE tags (
+    id BIGINT NOT NULL,
+    name VARCHAR(64) NOT NULL,
+    slug VARCHAR(64) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_tags_name (name),
+    UNIQUE KEY uk_tags_slug (slug),
+    CONSTRAINT chk_tags_name CHECK (CHAR_LENGTH(TRIM(name)) > 0),
+    CONSTRAINT chk_tags_slug CHECK (slug REGEXP '^t_[a-z0-9_-]{12}$')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE articles (
+    id BIGINT NOT NULL,
+    slug VARCHAR(12) NOT NULL,
+    draft_revision_id BIGINT NULL,
+    published_revision_id BIGINT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'active',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_articles_slug (slug),
+    CONSTRAINT chk_articles_slug CHECK (slug REGEXP '^[a-z0-9_-]{12}$'),
+    CONSTRAINT chk_articles_state CHECK (state IN ('active', 'trashed'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE article_revisions (
+    id BIGINT NOT NULL,
+    article_id BIGINT NOT NULL,
+    revision_no BIGINT NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    reason VARCHAR(32) NOT NULL,
+    editing_article_id BIGINT GENERATED ALWAYS AS (CASE WHEN status = 'editing' THEN article_id ELSE NULL END) STORED,
+    title VARCHAR(200) NOT NULL,
+    summary VARCHAR(600) NOT NULL,
+    cover_media_id BIGINT NULL,
+    content_md LONGTEXT NOT NULL,
+    content_hash CHAR(64) NOT NULL,
+    lock_version BIGINT NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_article_revisions_no (article_id, revision_no),
+    UNIQUE KEY uk_article_revisions_editing (editing_article_id),
+    KEY idx_article_revisions_article_status (article_id, status),
+    CONSTRAINT fk_article_revisions_article FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE RESTRICT,
+    CONSTRAINT fk_article_revisions_cover_media FOREIGN KEY (cover_media_id) REFERENCES media (id) ON DELETE RESTRICT,
+    CONSTRAINT chk_article_revisions_no CHECK (revision_no > 0),
+    CONSTRAINT chk_article_revisions_status CHECK (status IN ('editing', 'frozen')),
+    CONSTRAINT chk_article_revisions_reason CHECK (reason IN ('draft', 'manual_version', 'publish_snapshot')),
+    CONSTRAINT chk_article_revisions_hash CHECK (content_hash REGEXP '^[a-f0-9]{64}$'),
+    CONSTRAINT chk_article_revisions_lock_version CHECK (lock_version > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE article_revision_tags (
+    id BIGINT NOT NULL,
+    revision_id BIGINT NOT NULL,
+    tag_id BIGINT NOT NULL,
+    tag_name VARCHAR(64) NOT NULL,
+    tag_slug VARCHAR(64) NOT NULL,
+    position INT NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_article_revision_tags_position (revision_id, position),
+    UNIQUE KEY uk_article_revision_tags_tag (revision_id, tag_id),
+    CONSTRAINT fk_article_revision_tags_revision FOREIGN KEY (revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT,
+    CONSTRAINT fk_article_revision_tags_tag FOREIGN KEY (tag_id) REFERENCES tags (id) ON DELETE RESTRICT,
+    CONSTRAINT chk_article_revision_tags_position CHECK (position >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE article_revision_media (
+    id BIGINT NOT NULL,
+    revision_id BIGINT NOT NULL,
+    media_id BIGINT NOT NULL,
+    purpose VARCHAR(16) NOT NULL,
+    position INT NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_article_revision_media_position (revision_id, position),
+    UNIQUE KEY uk_article_revision_media_reference (revision_id, media_id, purpose),
+    CONSTRAINT fk_article_revision_media_revision FOREIGN KEY (revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT,
+    CONSTRAINT fk_article_revision_media_media FOREIGN KEY (media_id) REFERENCES media (id) ON DELETE RESTRICT,
+    CONSTRAINT chk_article_revision_media_purpose CHECK (purpose IN ('content', 'cover')),
+    CONSTRAINT chk_article_revision_media_position CHECK (position >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE site_settings (
+    id BIGINT NOT NULL,
+    singleton_key TINYINT NOT NULL DEFAULT 1,
+    site_name VARCHAR(100) NOT NULL,
+    author_name VARCHAR(100) NOT NULL,
+    author_bio VARCHAR(1000) NOT NULL,
+    home_status VARCHAR(500) NOT NULL,
+    about_md LONGTEXT NOT NULL,
+    social_links_json JSON NOT NULL,
+    seo_default_title VARCHAR(100) NOT NULL,
+    seo_default_description VARCHAR(300) NOT NULL,
+    seo_default_image_media_id BIGINT NULL,
+    filing_name VARCHAR(100) NOT NULL,
+    filing_number VARCHAR(100) NOT NULL,
+    lock_version BIGINT NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_site_settings_singleton (singleton_key),
+    CONSTRAINT fk_site_settings_seo_media FOREIGN KEY (seo_default_image_media_id) REFERENCES media (id) ON DELETE RESTRICT,
+    CONSTRAINT chk_site_settings_singleton CHECK (singleton_key = 1),
+    CONSTRAINT chk_site_settings_site_name CHECK (CHAR_LENGTH(TRIM(site_name)) > 0),
+    CONSTRAINT chk_site_settings_author_name CHECK (CHAR_LENGTH(TRIM(author_name)) > 0),
+    CONSTRAINT chk_site_settings_filing_name CHECK (CHAR_LENGTH(TRIM(filing_name)) > 0),
+    CONSTRAINT chk_site_settings_filing_number CHECK (CHAR_LENGTH(TRIM(filing_number)) > 0),
+    CONSTRAINT chk_site_settings_lock_version CHECK (lock_version > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE hotlink_settings (
+    id BIGINT NOT NULL,
+    singleton_key TINYINT NOT NULL DEFAULT 1,
+    allow_empty_referer BOOLEAN NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_hotlink_settings_singleton (singleton_key),
+    CONSTRAINT chk_hotlink_settings_singleton CHECK (singleton_key = 1),
+    CONSTRAINT chk_hotlink_settings_allow_empty CHECK (allow_empty_referer IN (0, 1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE referer_allowlist (
+    id BIGINT NOT NULL,
+    hostname VARCHAR(253) NOT NULL,
+    enabled BOOLEAN NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_referer_allowlist_hostname (hostname),
+    CONSTRAINT chk_referer_allowlist_hostname CHECK (CHAR_LENGTH(TRIM(hostname)) > 0),
+    CONSTRAINT chk_referer_allowlist_enabled CHECK (enabled IN (0, 1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+ALTER TABLE articles
+    ADD CONSTRAINT fk_articles_draft_revision FOREIGN KEY (draft_revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT,
+    ADD CONSTRAINT fk_articles_published_revision FOREIGN KEY (published_revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT;

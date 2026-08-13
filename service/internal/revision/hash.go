@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 )
 
 type hashTag struct {
@@ -31,8 +32,8 @@ func ComputeHash(content PreparedContent) string {
 		tags = append(tags, hashTag{TagID: snapshot.TagID, Name: snapshot.Name, Slug: snapshot.Slug})
 	}
 	canonical, _ := json.Marshal(hashContent{
-		Title:          content.Title,
-		Summary:        content.Summary,
+		Title:          strings.TrimSpace(content.Title),
+		Summary:        strings.TrimSpace(content.Summary),
 		CoverPublicKey: coverPublicKey,
 		ContentMD:      content.ContentMD,
 		Tags:           tags,

@@ -1,0 +1,151 @@
+package revision
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/media"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/tag"
+)
+
+type Service interface {
+	GetDraft(context.Context, int64) (Draft, error)
+	SaveDraft(context.Context, int64, int64, Content) (Draft, error)
+	Preview(context.Context, int64) (Draft, error)
+	ValidateFreezable(Draft) error
+}
+
+type service struct {
+	repository Repository
+	tags       TagResolver
+	media      MediaResolver
+	now        func() time.Time
+}
+
+func NewService(repository Repository, tags TagResolver, mediaResolver MediaResolver, now func() time.Time) (Service, error) {
+	if nilRevisionDependency(repository) {
+		return nil, errors.New("revision repository is required")
+	}
+	if nilRevisionDependency(tags) {
+		return nil, errors.New("revision tag resolver is required")
+	}
+	if nilRevisionDependency(mediaResolver) {
+		return nil, errors.New("revision media resolver is required")
+	}
+	if now == nil {
+		return nil, errors.New("revision clock is required")
+	}
+	return &service{repository: repository, tags: tags, media: mediaResolver, now: now}, nil
+}
+
+func (s *service) GetDraft(ctx context.Context, articleID int64) (Draft, error) {
+	if err := s.validate(ctx, articleID); err != nil {
+		return Draft{}, err
+	}
+	draft, err := s.repository.GetDraft(ctx, articleID)
+	if err != nil {
+		return Draft{}, revisionSafeWrap("get article draft", err)
+	}
+	return draft, nil
+}
+
+func (s *service) SaveDraft(ctx context.Context, articleID, lockVersion int64, content Content) (Draft, error) {
+	if err := s.validate(ctx, articleID); err != nil || lockVersion <= 0 {
+		return Draft{}, ErrInvalidContent
+	}
+	publicKeys, err := ValidateDraft(content)
+	if err != nil {
+		return Draft{}, err
+	}
+	snapshots, err := s.tags.Snapshots(ctx, append([]int64(nil), content.TagIDs...))
+	if err != nil {
+		if errors.Is(err, tag.ErrNotFound) || errors.Is(err, tag.ErrInvalidSelection) || errors.Is(err, tag.ErrInvalidName) {
+			return Draft{}, revisionDomainError("resolve revision tags", ErrInvalidContent, err)
+		}
+		return Draft{}, revisionSafeWrap("resolve revision tags", err)
+	}
+	cover, references, err := s.media.ResolveReferences(ctx, content.CoverMediaID, publicKeys)
+	if err != nil {
+		if errors.Is(err, media.ErrNotFound) || errors.Is(err, media.ErrInvalidMetadata) {
+			return Draft{}, revisionDomainError("resolve revision media", ErrInvalidContent, err)
+		}
+		return Draft{}, revisionSafeWrap("resolve revision media", err)
+	}
+	prepared := PreparedContent{
+		Title:     strings.TrimSpace(content.Title),
+		Summary:   strings.TrimSpace(content.Summary),
+		Cover:     cover,
+		ContentMD: content.ContentMD,
+		Tags:      append([]tag.Snapshot(nil), snapshots...),
+		Media:     append([]media.Reference(nil), references...),
+	}
+	prepared.ContentHash = ComputeHash(prepared)
+	saved, err := s.repository.SaveDraft(ctx, articleID, lockVersion, prepared, s.now().UTC())
+	if err != nil {
+		return Draft{}, revisionSafeWrap("save article draft", err)
+	}
+	return saved, nil
+}
+
+func (s *service) Preview(ctx context.Context, articleID int64) (Draft, error) {
+	return s.GetDraft(ctx, articleID)
+}
+
+func (s *service) ValidateFreezable(draft Draft) error {
+	if s == nil {
+		return ErrInvalidContent
+	}
+	return ValidateFreezable(Content{
+		Title: draft.Title, Summary: draft.Summary, CoverMediaID: draft.CoverMediaID, ContentMD: draft.ContentMD,
+	})
+}
+
+func (s *service) validate(ctx context.Context, articleID int64) error {
+	if s == nil || nilRevisionDependency(s.repository) || nilRevisionDependency(s.tags) || nilRevisionDependency(s.media) || s.now == nil || nilRevisionDependency(ctx) || articleID <= 0 {
+		return ErrInvalidContent
+	}
+	return nil
+}
+
+type revisionSanitizedError struct {
+	operation string
+	cause     error
+}
+
+func (e *revisionSanitizedError) Error() string { return e.operation + " failed" }
+func (e *revisionSanitizedError) Unwrap() error { return e.cause }
+
+func revisionSafeWrap(operation string, cause error) error {
+	return &revisionSanitizedError{operation: operation, cause: cause}
+}
+
+type revisionDomainJoinedError struct {
+	operation string
+	domain    error
+	cause     error
+}
+
+func (e *revisionDomainJoinedError) Error() string   { return e.operation + " failed" }
+func (e *revisionDomainJoinedError) Unwrap() []error { return []error{e.domain, e.cause} }
+
+func revisionDomainError(operation string, domain, cause error) error {
+	return &revisionDomainJoinedError{operation: operation, domain: domain, cause: cause}
+}
+
+func nilRevisionDependency(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
+
+var _ Service = (*service)(nil)

@@ -36,7 +36,8 @@ type Dependencies struct {
 	Now        func() time.Time
 	HTTPClient *http.Client
 
-	observeBuild func(buildObservation)
+	observeBuild        func(buildObservation)
+	mutateBuildArgument func(buildRole, any) any
 }
 
 type applicationComponents struct {
@@ -49,28 +50,41 @@ type applicationComponents struct {
 // constructor inputs, rather than exposing package-private repository fields or
 // introducing global hooks.
 type buildObservation struct {
-	ids                   *idgen.Generator
-	articleRepositoryIDs  *idgen.Generator
-	revisionRepositoryIDs *idgen.Generator
-	tagRepositoryIDs      *idgen.Generator
-	mediaRepositoryIDs    *idgen.Generator
-	settingsRepositoryIDs *idgen.Generator
+	arguments map[buildRole]any
+}
 
-	keys        *randomkey.Generator
-	articleKeys *randomkey.Generator
-	tagKeys     *randomkey.Generator
-	mediaKeys   *randomkey.Generator
-	signerKeys  *randomkey.Generator
+type buildRole string
 
-	articleNow  func() time.Time
-	revisionNow func() time.Time
-	mediaNow    func() time.Time
-	siteNow     func() time.Time
-	hotlinkNow  func() time.Time
-	proxyNow    func() time.Time
+const (
+	buildAuthRepositoryIDs     buildRole = "auth repository ID generator"
+	buildArticleRepositoryIDs  buildRole = "article repository ID generator"
+	buildRevisionRepositoryIDs buildRole = "revision repository ID generator"
+	buildTagRepositoryIDs      buildRole = "tag repository ID generator"
+	buildMediaRepositoryIDs    buildRole = "media repository ID generator"
+	buildSettingsRepositoryIDs buildRole = "settings repository ID generator"
+	buildGFSSignerKeys         buildRole = "GFS signer random key generator"
+	buildArticleServiceKeys    buildRole = "article service random key generator"
+	buildTagServiceKeys        buildRole = "tag service random key generator"
+	buildMediaServiceKeys      buildRole = "media service random key generator"
+	buildArticleServiceClock   buildRole = "article service clock"
+	buildRevisionServiceClock  buildRole = "revision service clock"
+	buildTagServiceClock       buildRole = "tag service clock"
+	buildMediaServiceClock     buildRole = "media service clock"
+	buildSiteServiceClock      buildRole = "site settings service clock"
+	buildHotlinkServiceClock   buildRole = "hotlink settings service clock"
+	buildMediaProxyClock       buildRole = "media proxy clock"
+	buildAdminHotlink          buildRole = "Admin hotlink service"
+	buildMediaProxyHotlink     buildRole = "media proxy hotlink service"
+)
 
-	hotlinkForAdmin settings.HotlinkService
-	hotlinkForProxy settings.HotlinkService
+type buildCapture struct {
+	observation buildObservation
+	mutate      func(buildRole, any) any
+	err         error
+}
+
+type buildClock struct {
+	now func() time.Time
 }
 
 // Build composes the service's shared repositories and HTTP middleware.
@@ -110,6 +124,11 @@ func Build(cfg config.Config, deps Dependencies) (*gin.Engine, error) {
 }
 
 func buildComponents(cfg config.Config, deps Dependencies) (applicationComponents, buildObservation, error) {
+	capture := &buildCapture{
+		observation: buildObservation{arguments: make(map[buildRole]any)},
+		mutate:      deps.mutateBuildArgument,
+	}
+	clock := &buildClock{now: deps.Now}
 	counter := idgen.NewRedisCounter(deps.Redis)
 	ids, err := idgen.New(counter, deps.DB, cfg.IDGen.Offset, cfg.IDGen.Step, cfg.IDGen.Heal)
 	if err != nil {
@@ -123,42 +142,80 @@ func buildComponents(cfg config.Config, deps Dependencies) (applicationComponent
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct GFS metadata client: %w", err)
 	}
-	gfsSigner, err := media.NewGFSSigner(cfg.GFS.BaseURL, cfg.GFS.AppID, cfg.GFS.AppSecret, cfg.GFS.PublicReadSecret, keys)
+	gfsSigner, err := media.NewGFSSigner(
+		cfg.GFS.BaseURL,
+		cfg.GFS.AppID,
+		cfg.GFS.AppSecret,
+		cfg.GFS.PublicReadSecret,
+		captureBuildArgument(capture, buildGFSSignerKeys, keys),
+	)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct GFS signer: %w", err)
 	}
 
-	tagRepository := tag.NewMySQLRepository(deps.DB, ids)
-	mediaRepository := media.NewMySQLRepository(deps.DB, ids)
-	revisionRepository := revision.NewMySQLRepository(deps.DB, ids)
-	articleRepository := article.NewMySQLRepository(deps.DB, ids)
-	settingsRepository := settings.NewMySQLRepository(deps.DB, ids)
+	tagRepository := tag.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildTagRepositoryIDs, ids))
+	mediaRepository := media.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildMediaRepositoryIDs, ids))
+	revisionRepository := revision.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildRevisionRepositoryIDs, ids))
+	articleRepository := article.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildArticleRepositoryIDs, ids))
+	settingsRepository := settings.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildSettingsRepositoryIDs, ids))
 
-	tagService, err := tag.NewService(tagRepository, keys, deps.Now)
+	tagService, err := tag.NewService(
+		tagRepository,
+		captureBuildArgument(capture, buildTagServiceKeys, keys),
+		captureBuildClock(capture, buildTagServiceClock, clock),
+	)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct tag service: %w", err)
 	}
-	mediaService, err := media.NewService(mediaRepository, gfsClient, gfsSigner, keys, deps.Now)
+	mediaService, err := media.NewService(
+		mediaRepository,
+		gfsClient,
+		gfsSigner,
+		captureBuildArgument(capture, buildMediaServiceKeys, keys),
+		captureBuildClock(capture, buildMediaServiceClock, clock),
+	)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct media service: %w", err)
 	}
-	revisionService, err := revision.NewService(revisionRepository, tagService, mediaService, deps.Now)
+	revisionService, err := revision.NewService(
+		revisionRepository,
+		tagService,
+		mediaService,
+		captureBuildClock(capture, buildRevisionServiceClock, clock),
+	)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct revision service: %w", err)
 	}
-	articleService, err := article.NewService(articleRepository, revisionService, keys, deps.Now)
+	articleService, err := article.NewService(
+		articleRepository,
+		revisionService,
+		captureBuildArgument(capture, buildArticleServiceKeys, keys),
+		captureBuildClock(capture, buildArticleServiceClock, clock),
+	)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct article service: %w", err)
 	}
-	siteService, err := settings.NewSiteService(settingsRepository, mediaService, deps.Now)
+	siteService, err := settings.NewSiteService(
+		settingsRepository,
+		mediaService,
+		captureBuildClock(capture, buildSiteServiceClock, clock),
+	)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct site settings service: %w", err)
 	}
-	hotlinkService, err := settings.NewHotlinkService(settingsRepository, deps.Now)
+	hotlinkService, err := settings.NewHotlinkService(
+		settingsRepository,
+		captureBuildClock(capture, buildHotlinkServiceClock, clock),
+	)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct hotlink settings service: %w", err)
 	}
-	proxyService, err := media.NewProxyService(hotlinkService, mediaService, gfsSigner, deps.Now)
+	proxyService, err := media.NewProxyService(
+		captureBuildArgument(capture, buildMediaProxyHotlink, hotlinkService),
+		mediaService,
+		gfsSigner,
+		captureBuildClock(capture, buildMediaProxyClock, clock),
+	)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct media proxy service: %w", err)
 	}
@@ -167,24 +224,99 @@ func buildComponents(cfg config.Config, deps Dependencies) (applicationComponent
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct media proxy handler: %w", err)
 	}
 
-	authRepository := auth.NewMySQLRepository(deps.DB, ids)
+	authRepository := auth.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildAuthRepositoryIDs, ids))
 	store := auth.NewRedisSessionStore(deps.Redis, deps.Now)
 	sessions := auth.NewSessionManager(store, cfg.Session.TTL, deps.Random, deps.Now)
 	limiter := auth.NewRedisLoginLimiter(deps.Redis, deps.Now)
 	authService := auth.NewServiceWithLogger(authRepository, auth.DefaultPasswordHasher(), sessions, limiter, deps.Now, deps.Logger)
 	authHandler := httpapi.NewAuthHandler(authService, cfg.Session)
-	adminHandler, err := httpapi.NewAdminHandler(authHandler, articleService, revisionService, tagService, mediaService, siteService, hotlinkService)
+	adminHandler, err := httpapi.NewAdminHandler(
+		authHandler,
+		articleService,
+		revisionService,
+		tagService,
+		mediaService,
+		siteService,
+		captureBuildArgument(capture, buildAdminHotlink, hotlinkService),
+	)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct Admin handler: %w", err)
 	}
 
-	return applicationComponents{auth: authService, admin: adminHandler, mediaProxy: mediaProxyHandler}, buildObservation{
-		ids: ids, articleRepositoryIDs: ids, revisionRepositoryIDs: ids, tagRepositoryIDs: ids,
-		mediaRepositoryIDs: ids, settingsRepositoryIDs: ids,
-		keys: keys, articleKeys: keys, tagKeys: keys, mediaKeys: keys, signerKeys: keys,
-		articleNow: deps.Now, revisionNow: deps.Now, mediaNow: deps.Now, siteNow: deps.Now, hotlinkNow: deps.Now, proxyNow: deps.Now,
-		hotlinkForAdmin: hotlinkService, hotlinkForProxy: hotlinkService,
-	}, nil
+	if capture.err != nil {
+		return applicationComponents{}, capture.observation, capture.err
+	}
+	return applicationComponents{auth: authService, admin: adminHandler, mediaProxy: mediaProxyHandler}, capture.observation, nil
+}
+
+func captureBuildArgument[T any](capture *buildCapture, role buildRole, value T) T {
+	if capture == nil {
+		return value
+	}
+	if capture.mutate != nil {
+		mutated, ok := capture.mutate(role, value).(T)
+		if !ok {
+			capture.err = errors.New("build argument mutation returned an invalid type")
+		} else {
+			value = mutated
+		}
+	}
+	capture.observation.arguments[role] = value
+	return value
+}
+
+func captureBuildClock(capture *buildCapture, role buildRole, clock *buildClock) func() time.Time {
+	actual := captureBuildArgument(capture, role, clock)
+	if actual == nil {
+		return nil
+	}
+	return actual.now
+}
+
+func (o buildObservation) validateShared() error {
+	groups := []struct {
+		name  string
+		roles []buildRole
+	}{
+		{"ID generator", []buildRole{
+			buildAuthRepositoryIDs, buildArticleRepositoryIDs, buildRevisionRepositoryIDs,
+			buildTagRepositoryIDs, buildMediaRepositoryIDs, buildSettingsRepositoryIDs,
+		}},
+		{"random key generator", []buildRole{
+			buildGFSSignerKeys, buildArticleServiceKeys, buildTagServiceKeys, buildMediaServiceKeys,
+		}},
+		{"clock", []buildRole{
+			buildArticleServiceClock, buildRevisionServiceClock, buildTagServiceClock,
+			buildMediaServiceClock, buildSiteServiceClock, buildHotlinkServiceClock, buildMediaProxyClock,
+		}},
+		{"hotlink service", []buildRole{buildAdminHotlink, buildMediaProxyHotlink}},
+	}
+	for _, group := range groups {
+		first, exists := o.arguments[group.roles[0]]
+		if !exists || isNil(first) {
+			return fmt.Errorf("%s wiring was not observed", group.name)
+		}
+		for _, role := range group.roles[1:] {
+			candidate, candidateExists := o.arguments[role]
+			if !candidateExists || !sameBuildIdentity(first, candidate) {
+				return fmt.Errorf("%s wiring is not shared", group.name)
+			}
+		}
+	}
+	return nil
+}
+
+func sameBuildIdentity(left, right any) bool {
+	leftValue, rightValue := reflect.ValueOf(left), reflect.ValueOf(right)
+	if !leftValue.IsValid() || !rightValue.IsValid() || leftValue.Type() != rightValue.Type() {
+		return false
+	}
+	switch leftValue.Kind() {
+	case reflect.Ptr, reflect.UnsafePointer:
+		return leftValue.Pointer() == rightValue.Pointer()
+	default:
+		return false
+	}
 }
 
 func validate(cfg config.Config, deps Dependencies) error {

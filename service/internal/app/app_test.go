@@ -26,6 +26,7 @@ import (
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/httpapi"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/idgen"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/randomkey"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/settings"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
@@ -131,39 +132,76 @@ func TestBuildUsesOneSharedStage2DependencyGraph(t *testing.T) {
 
 	_, err := Build(testConfig(), deps)
 	require.NoError(t, err)
-	require.NotNil(t, observed.ids)
-	for _, repositoryIDs := range []*idgen.Generator{
-		observed.articleRepositoryIDs,
-		observed.revisionRepositoryIDs,
-		observed.tagRepositoryIDs,
-		observed.mediaRepositoryIDs,
-		observed.settingsRepositoryIDs,
-	} {
-		require.Same(t, observed.ids, repositoryIDs)
-	}
-	require.NotNil(t, observed.keys)
-	for _, consumerKeys := range []*randomkey.Generator{
-		observed.articleKeys,
-		observed.tagKeys,
-		observed.mediaKeys,
-		observed.signerKeys,
-	} {
-		require.Same(t, observed.keys, consumerKeys)
-	}
-	wantClock := reflect.ValueOf(deps.Now).Pointer()
-	for _, clock := range []func() time.Time{
-		observed.articleNow,
-		observed.revisionNow,
-		observed.mediaNow,
-		observed.siteNow,
-		observed.hotlinkNow,
-		observed.proxyNow,
-	} {
-		require.NotNil(t, clock)
-		require.Equal(t, wantClock, reflect.ValueOf(clock).Pointer())
-	}
-	require.Same(t, observed.hotlinkForAdmin, observed.hotlinkForProxy)
+	require.NoError(t, observed.validateShared())
 }
+
+func TestBuildObservationDetectsDistinctActualConstructorArguments(t *testing.T) {
+	tests := []struct {
+		name, want string
+		role       buildRole
+		replace    func(any) any
+	}{
+		{
+			name: "repository ID generator", want: "ID generator", role: buildArticleRepositoryIDs,
+			replace: func(any) any { return &idgen.Generator{} },
+		},
+		{
+			name: "service random keys", want: "random key generator", role: buildTagServiceKeys,
+			replace: func(any) any {
+				keys, err := randomkey.New(bytes.NewReader(make([]byte, 128)))
+				require.NoError(t, err)
+				return keys
+			},
+		},
+		{
+			name: "service clock", want: "clock", role: buildRevisionServiceClock,
+			replace: func(any) any { return &buildClock{now: makeBuildClock(time.Unix(2, 0).UTC())} },
+		},
+		{
+			name: "proxy hotlink cache", want: "hotlink service", role: buildMediaProxyHotlink,
+			replace: func(value any) any {
+				return &distinctHotlinkService{HotlinkService: value.(settings.HotlinkService)}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			deps := testDependencies(t, io.Discard)
+			var clockReplacement any
+			if test.role == buildRevisionServiceClock {
+				deps.Now = makeBuildClock(time.Unix(1, 0).UTC())
+				clockReplacement = test.replace(nil)
+				replacementClock := clockReplacement.(*buildClock).now
+				require.Equal(t, reflect.ValueOf(deps.Now).Pointer(), reflect.ValueOf(replacementClock).Pointer(), "regression requires identical function code with different captured state")
+				require.NotEqual(t, deps.Now(), replacementClock())
+			}
+			deps.mutateBuildArgument = func(role buildRole, value any) any {
+				if role == test.role {
+					if clockReplacement != nil {
+						return clockReplacement
+					}
+					return test.replace(value)
+				}
+				return value
+			}
+
+			_, observed, err := buildComponents(testConfig(), deps)
+			require.NoError(t, err)
+			require.ErrorContains(t, observed.validateShared(), test.want)
+		})
+	}
+}
+
+type distinctHotlinkService struct{ settings.HotlinkService }
+
+func makeBuildClock(at time.Time) func() time.Time {
+	return (&capturedBuildClock{at: at}).Now
+}
+
+type capturedBuildClock struct{ at time.Time }
+
+func (c *capturedBuildClock) Now() time.Time { return c.at }
 
 func TestBuildRejectsInvalidDependenciesAndAuthConfig(t *testing.T) {
 	typedNilRandom := (*bytes.Reader)(nil)

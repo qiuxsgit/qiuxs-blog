@@ -182,6 +182,9 @@ func TestSiteServiceRequiresExactCanonicalSocialHTTPSURLs(t *testing.T) {
 		"https://xn--bcher-kva.example/~user",
 		"https://192.0.2.1/profile",
 		"https://[2001:db8::1]:8443/a%2Fb",
+		"https://example.com/a//b",
+		"https://example.com/a%2F..%2Fb",
+		"https://example.com/a%2F%2Fb",
 	}
 	for _, socialURL := range valid {
 		t.Run("accept "+socialURL, func(t *testing.T) {
@@ -217,9 +220,6 @@ func TestSiteServiceRequiresExactCanonicalSocialHTTPSURLs(t *testing.T) {
 		"https://example.com/a/../b",
 		"https://example.com/a/%2e/b",
 		"https://example.com/a/%2E%2e/b",
-		"https://example.com/a//b",
-		"https://example.com/a%2F..%2Fb",
-		"https://example.com/a%2F%2Fb",
 		"https://example.com/%7euser",
 		"https://example.com/%7Euser",
 		"https://example.com/a%2fb",

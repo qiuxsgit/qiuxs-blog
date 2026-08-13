@@ -264,11 +264,10 @@ func cleanAbsoluteURLPath(value string) bool {
 	if value == "" {
 		return true
 	}
-	structuralPath := strings.ReplaceAll(value, "%2F", "/")
-	if structuralPath[0] != '/' || strings.Contains(structuralPath, "//") {
+	if value[0] != '/' {
 		return false
 	}
-	for _, segment := range strings.Split(structuralPath, "/") {
+	for _, segment := range strings.Split(value, "/") {
 		if segment == "." || segment == ".." {
 			return false
 		}

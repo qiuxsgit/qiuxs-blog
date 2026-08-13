@@ -131,7 +131,16 @@ func validSession(session Session, now time.Time) bool {
 }
 
 func (m SessionManager) configurationError() error {
-	if m.initErr != nil {
+	switch {
+	case isNilDependency(m.store):
+		return errors.New("session store is required")
+	case m.ttl <= 0:
+		return errors.New("session TTL must be positive")
+	case isNilDependency(m.random):
+		return errors.New("session random source is required")
+	case m.now == nil:
+		return errors.New("session clock is required")
+	case m.initErr != nil:
 		return m.initErr
 	}
 	return nil

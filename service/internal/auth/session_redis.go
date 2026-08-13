@@ -16,14 +16,16 @@ const redisSessionKeyPrefix = "qiuxs-blog:session:"
 // RedisSessionStore stores session records in Redis by SHA-256 token digest.
 type RedisSessionStore struct {
 	client  *redis.Client
+	now     func() time.Time
 	initErr error
 }
 
-// NewRedisSessionStore constructs a session store. A nil client is recorded so
-// subsequent calls return a safe configuration error rather than panicking.
-func NewRedisSessionStore(client *redis.Client) *RedisSessionStore {
-	store := &RedisSessionStore{client: client}
-	if client == nil {
+// NewRedisSessionStore constructs a session store. Missing dependencies are
+// recorded so subsequent calls return a safe configuration error rather than
+// panicking.
+func NewRedisSessionStore(client *redis.Client, now func() time.Time) *RedisSessionStore {
+	store := &RedisSessionStore{client: client, now: now}
+	if client == nil || now == nil {
 		store.initErr = errors.New("redis session client is required")
 	}
 	return store
@@ -33,7 +35,7 @@ func (s *RedisSessionStore) Set(ctx context.Context, digest string, session Sess
 	if err := s.configurationError(); err != nil {
 		return err
 	}
-	if !validSession(session, time.Now()) || ttl <= 0 || !validSessionDigest(digest) {
+	if !validSession(session, s.now()) || ttl <= 0 || !validSessionDigest(digest) {
 		return errors.New("invalid session record")
 	}
 	encoded, err := json.Marshal(session)
@@ -62,7 +64,7 @@ func (s *RedisSessionStore) Get(ctx context.Context, digest string) (Session, er
 	}
 
 	session, ok := decodeStoredSession(raw)
-	if !ok || !validSession(session, time.Now()) {
+	if !ok || !validSession(session, s.now()) {
 		_ = s.client.Del(ctx, redisSessionKey(digest)).Err()
 		return Session{}, ErrSessionNotFound
 	}
@@ -83,7 +85,7 @@ func (s *RedisSessionStore) Delete(ctx context.Context, digest string) error {
 }
 
 func (s *RedisSessionStore) configurationError() error {
-	if s == nil || s.initErr != nil {
+	if s == nil || s.client == nil || s.now == nil || s.initErr != nil {
 		return errors.New("redis session store is not configured")
 	}
 	return nil

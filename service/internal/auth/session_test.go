@@ -115,6 +115,19 @@ func TestSessionManagerInvalidConfigurationFailsSafely(t *testing.T) {
 	}
 }
 
+func TestZeroValueSessionManagerFailsSafely(t *testing.T) {
+	var manager SessionManager
+	ctx := context.Background()
+	const token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+
+	_, _, err := manager.Create(ctx, Admin{ID: 1, Username: "qiuxs"})
+	require.Error(t, err)
+	_, err = manager.Get(ctx, token)
+	require.Error(t, err)
+	err = manager.Delete(ctx, token)
+	require.Error(t, err)
+}
+
 func bytesFromZeroTo31() []byte {
 	bytes := make([]byte, 32)
 	for i := range bytes {

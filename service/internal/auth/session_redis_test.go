@@ -22,7 +22,7 @@ func openSessionRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
 
 func TestRedisSessionStoreSetUsesNamespacedDigestKeyAndMinimalJSON(t *testing.T) {
 	server, client := openSessionRedis(t)
-	store := NewRedisSessionStore(client)
+	store := NewRedisSessionStore(client, time.Now)
 	ctx := context.Background()
 	const digest = "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0"
 	session := Session{AdminID: 42, Username: "qiuxs", ExpiresAt: time.Now().Add(2 * time.Hour).UTC().Round(0)}
@@ -46,7 +46,7 @@ func TestRedisSessionStoreSetUsesNamespacedDigestKeyAndMinimalJSON(t *testing.T)
 
 func TestRedisSessionStoreGetMapsMissingExpiredAndMalformedValuesToNotFound(t *testing.T) {
 	server, client := openSessionRedis(t)
-	store := NewRedisSessionStore(client)
+	store := NewRedisSessionStore(client, time.Now)
 	ctx := context.Background()
 	const digest = "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0"
 	const key = "qiuxs-blog:session:ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0"
@@ -62,6 +62,10 @@ func TestRedisSessionStoreGetMapsMissingExpiredAndMalformedValuesToNotFound(t *t
 	_, err = store.Get(ctx, digest)
 	require.ErrorIs(t, err, ErrSessionNotFound)
 
+	require.NoError(t, client.Set(ctx, key, `{"adminId":42,"username":"qiuxs","expiresAt":"2099-01-01T00:00:00Z","extra":true}`, time.Minute).Err())
+	_, err = store.Get(ctx, digest)
+	require.ErrorIs(t, err, ErrSessionNotFound)
+
 	require.NoError(t, client.Set(ctx, key, `{"adminId":0,"username":"qiuxs","expiresAt":"2099-01-01T00:00:00Z"}`, time.Minute).Err())
 	_, err = store.Get(ctx, digest)
 	require.ErrorIs(t, err, ErrSessionNotFound)
@@ -74,7 +78,7 @@ func TestRedisSessionStoreGetMapsMissingExpiredAndMalformedValuesToNotFound(t *t
 
 func TestRedisSessionStoreGetReturnsStoredSession(t *testing.T) {
 	_, client := openSessionRedis(t)
-	store := NewRedisSessionStore(client)
+	store := NewRedisSessionStore(client, time.Now)
 	session := Session{AdminID: 42, Username: "qiuxs", ExpiresAt: time.Now().Add(time.Hour).UTC().Round(0)}
 
 	require.NoError(t, store.Set(context.Background(), "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0", session, time.Minute))
@@ -86,7 +90,7 @@ func TestRedisSessionStoreGetReturnsStoredSession(t *testing.T) {
 
 func TestRedisSessionStoreDeleteIsIdempotent(t *testing.T) {
 	server, client := openSessionRedis(t)
-	store := NewRedisSessionStore(client)
+	store := NewRedisSessionStore(client, time.Now)
 	ctx := context.Background()
 	const digest = "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0"
 	const key = "qiuxs-blog:session:ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0"
@@ -99,7 +103,7 @@ func TestRedisSessionStoreDeleteIsIdempotent(t *testing.T) {
 
 func TestRedisSessionStoreSetRejectsInvalidSession(t *testing.T) {
 	_, client := openSessionRedis(t)
-	store := NewRedisSessionStore(client)
+	store := NewRedisSessionStore(client, time.Now)
 
 	for _, session := range []Session{
 		{},
@@ -111,4 +115,48 @@ func TestRedisSessionStoreSetRejectsInvalidSession(t *testing.T) {
 		require.Error(t, err)
 		require.False(t, errors.Is(err, ErrSessionNotFound))
 	}
+}
+
+func TestRedisSessionStoreUsesInjectedClockForSessionValidity(t *testing.T) {
+	_, client := openSessionRedis(t)
+	now := time.Date(2020, time.January, 1, 12, 0, 0, 0, time.UTC)
+	store := NewRedisSessionStore(client, func() time.Time { return now })
+	session := Session{AdminID: 42, Username: "qiuxs", ExpiresAt: now.Add(time.Hour)}
+
+	require.NoError(t, store.Set(context.Background(), "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0", session, time.Minute))
+	got, err := store.Get(context.Background(), "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0")
+
+	require.NoError(t, err)
+	require.Equal(t, session, got)
+}
+
+func TestRedisSessionStoreZeroValueAndNilDependenciesFailSafely(t *testing.T) {
+	ctx := context.Background()
+	const digest = "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0"
+	session := Session{AdminID: 42, Username: "qiuxs", ExpiresAt: time.Now().Add(time.Hour)}
+	var zero RedisSessionStore
+
+	require.Error(t, zero.Set(ctx, digest, session, time.Minute))
+	_, err := zero.Get(ctx, digest)
+	require.Error(t, err)
+	require.Error(t, zero.Delete(ctx, digest))
+
+	require.Error(t, NewRedisSessionStore(nil, time.Now).Set(ctx, digest, session, time.Minute))
+	missingClockClient := redis.NewClient(&redis.Options{})
+	t.Cleanup(func() { require.NoError(t, missingClockClient.Close()) })
+	_, err = NewRedisSessionStore(missingClockClient, nil).Get(ctx, digest)
+	require.Error(t, err)
+}
+
+func TestRedisSessionStoreSanitizesOperationalErrors(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	store := NewRedisSessionStore(client, time.Now)
+	require.NoError(t, client.Close())
+
+	_, err := store.Get(context.Background(), "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0")
+
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrSessionNotFound)
+	require.NotContains(t, err.Error(), "ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0")
 }

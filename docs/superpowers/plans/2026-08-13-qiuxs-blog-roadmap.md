@@ -42,6 +42,8 @@
 
 交付三个独立流水线、Site 构建镜像、Release 目录 rsync、原子软链接切换、Nginx 双域名路由、关键产物门禁、历史 Release 保留和 Playwright 端到端发布验证。
 
+部署目标固定为：Service → `root@blogweb1:/web/deploy/blog`，Admin → `root@ngx1:/web/deploy/blog-admin`，Site → `root@ngx1:/web/deploy/blog-site`。SSH 主机别名和密钥由 Jenkins 宿主机管理，不写入仓库。
+
 **验收出口：** Admin 构建使用宿主机 Node.js `20.19.4`，Service 使用宿主机 Go `1.25.7`，Site 使用 Docker Node.js `22.20.0`；任一构建或部署阶段失败时 `qiuxs.com` 保持上一成功版本。
 
 ## 跨阶段规则

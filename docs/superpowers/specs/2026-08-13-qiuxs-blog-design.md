@@ -85,7 +85,9 @@ Go 服务使用 Gin，MySQL 保存持久数据；Redis 保存主键序列、Sess
 家庭 Jenkins
   ├─ 调用 Internal API 下载不可变 Release Bundle
   ├─ 在 Docker 中构建 site
-  ├─ rsync 到云服务器 Release 目录
+  ├─ SSH root@blogweb1 → /web/deploy/blog（Go Service）
+  ├─ SSH root@ngx1 → /web/deploy/blog-admin（React Admin）
+  ├─ SSH root@ngx1 → /web/deploy/blog-site（Astro Site Release）
   └─ 回调 Go Service 报告阶段和结果
 
 Go Service
@@ -486,21 +488,25 @@ Jenkins 调用失败时 Job 标记失败并释放活动锁；Release 保留用�
 → 回调 success；任一步失败则回调 failed
 ```
 
-Nginx 始终指向：
+Jenkins 使用宿主机已经配置好的 SSH 主机别名 `blogweb1` 与 `ngx1`，仓库和流水线不保存 SSH 私钥。Service 的部署根目录固定为 `/web/deploy/blog`，Admin 的静态部署根目录固定为 `/web/deploy/blog-admin`，Site 的静态部署根目录固定为 `/web/deploy/blog-site`。
+
+Nginx 的公开站根目录始终指向：
 
 ```text
-/var/www/qiuxs-blog/current
+/web/deploy/blog-site/current
 ```
 
 构建产物布局：
 
 ```text
-/var/www/qiuxs-blog/
+/web/deploy/blog-site/
 ├── releases/
 │   ├── rel_xxx/
 │   └── rel_yyy/
 └── current -> releases/rel_yyy/
 ```
+
+Admin 使用相同的版本化静态目录与原子软链接结构，根目录为 `/web/deploy/blog-admin`。Service 在 `/web/deploy/blog` 下保留版本化二进制与配置外置入口，通过原子软链接切换当前版本；流水线只部署二进制和受版本控制的运维文件，不覆盖服务器环境密钥。
 
 上传和检查完成前不切换 `current`。部署成功后保留最近若干 Release；具体保留数量是部署配置项，不影响内容模型。
 

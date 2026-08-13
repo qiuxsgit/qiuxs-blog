@@ -369,12 +369,178 @@ paths:
         '409': {$ref: '#/components/responses/ProblemResponse'}
         '422': {$ref: '#/components/responses/ProblemResponse'}
         '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/builder:
+    get:
+      operationId: getBuilderConfig
+      security:
+        - AdminSession: []
+      responses:
+        '200':
+          description: Current Jenkins builder configuration without token material
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BuilderConfigView'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+    put:
+      operationId: putBuilderConfig
+      security:
+        - AdminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PutBuilderConfigRequest'}
+      responses:
+        '200':
+          description: Saved Jenkins builder configuration without token material
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BuilderConfigView'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '422': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/builder/test:
+    post:
+      operationId: testBuilderConfig
+      security:
+        - AdminSession: []
+      responses:
+        '204': {description: Jenkins connection accepted}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '412': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/releases:
+    get:
+      operationId: listReleases
+      security:
+        - AdminSession: []
+      responses:
+        '200':
+          description: Immutable releases in descending creation order
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseList'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+    post:
+      operationId: createRelease
+      security:
+        - AdminSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateReleaseRequest'}
+      responses:
+        '202':
+          description: Immutable release accepted for serial publication
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CreateReleaseResult'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '412': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/releases/{releaseId}:
+    parameters:
+      - {$ref: '#/components/parameters/ReleaseId'}
+    get:
+      operationId: getRelease
+      security:
+        - AdminSession: []
+      responses:
+        '200':
+          description: Immutable release record
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseView'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/releases/{releaseId}/retry:
+    parameters:
+      - {$ref: '#/components/parameters/ReleaseId'}
+    post:
+      operationId: retryRelease
+      security:
+        - AdminSession: []
+      responses:
+        '202':
+          description: New publish job for the same immutable release
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PublishJobView'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '412': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/internal/v1/releases/{releaseId}/bundle:
+    parameters:
+      - {$ref: '#/components/parameters/ReleaseId'}
+    get:
+      operationId: getReleaseBundle
+      security:
+        - BundleToken: []
+      responses:
+        '200':
+          description: Immutable release bundle; may use Content-Encoding gzip
+          headers:
+            ETag:
+              schema: {type: string}
+            Vary:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReleaseBundle'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/internal/v1/jenkins/callback:
+    post:
+      operationId: acceptJenkinsCallback
+      security:
+        - JenkinsSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JenkinsCallbackRequest'}
+      responses:
+        '204': {description: Callback accepted or already applied}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
 components:
   securitySchemes:
     AdminSession:
       type: apiKey
       in: cookie
       name: qx_blog_session
+    BundleToken:
+      type: http
+      scheme: bearer
+    JenkinsSignature:
+      type: apiKey
+      in: header
+      name: X-Jenkins-Signature
   parameters:
     ArticleId:
       name: articleId
@@ -388,6 +554,11 @@ components:
       schema: {type: integer, format: int64, minimum: 1}
     TagId:
       name: tagId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    ReleaseId:
+      name: releaseId
       in: path
       required: true
       schema: {type: integer, format: int64, minimum: 1}
@@ -728,6 +899,140 @@ components:
         entries:
           type: array
           items: {$ref: '#/components/schemas/HotlinkEntry'}
+    BuilderConfigView:
+      type: object
+      additionalProperties: false
+      required: [id, name, baseUrl, username, jobName, enabled, tokenConfigured]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string}
+        baseUrl: {type: string, format: uri}
+        username: {type: string}
+        jobName: {type: string}
+        enabled: {type: boolean}
+        tokenConfigured: {type: boolean}
+    PutBuilderConfigRequest:
+      type: object
+      additionalProperties: false
+      required: [name, baseUrl, username, jobName, enabled]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100}
+        baseUrl: {type: string, format: uri, maxLength: 2048}
+        username: {type: string, minLength: 1, maxLength: 255}
+        token: {type: string, minLength: 1, maxLength: 4096, writeOnly: true}
+        jobName: {type: string, minLength: 1, maxLength: 128}
+        enabled: {type: boolean}
+    CreateReleaseRequest:
+      type: object
+      additionalProperties: false
+      required: [mode, articleId]
+      properties:
+        mode: {type: string, enum: [publish_article, unpublish_article, publish_settings]}
+        articleId: {type: integer, format: int64, minimum: 1, nullable: true}
+    ReleaseView:
+      type: object
+      additionalProperties: false
+      required: [id, status, checksum, createdAt, completedAt]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [queued, success, failed]}
+        checksum: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        createdAt: {type: string, format: date-time}
+        completedAt: {type: string, format: date-time, nullable: true}
+    CreateReleaseResult:
+      type: object
+      additionalProperties: false
+      required: [release, job]
+      properties:
+        release: {$ref: '#/components/schemas/ReleaseView'}
+        job: {$ref: '#/components/schemas/PublishJobView'}
+    ReleaseList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ReleaseView'}
+    PublishJobView:
+      type: object
+      additionalProperties: false
+      required: [id, releaseId, builderId, status, stage, buildNumber, errorSummary, createdAt, finishedAt]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        releaseId: {type: integer, format: int64, minimum: 1}
+        builderId: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [pending, queued, building, deploying, success, failed]}
+        stage: {type: string}
+        buildNumber: {type: integer, format: int64, minimum: 1, nullable: true}
+        errorSummary: {type: string, maxLength: 512}
+        createdAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time, nullable: true}
+    JenkinsCallbackRequest:
+      type: object
+      additionalProperties: false
+      required: [releaseId, buildNumber, stage, status, errorSummary, timestamp, nonce]
+      properties:
+        releaseId: {type: integer, format: int64, minimum: 1}
+        buildNumber: {type: integer, format: int64, minimum: 0}
+        stage: {type: string, minLength: 1, maxLength: 64}
+        status: {type: string, enum: [queued, building, deploying, success, failed]}
+        errorSummary: {type: string, maxLength: 512}
+        timestamp: {type: string, format: date-time}
+        nonce: {type: string, pattern: '^[A-Za-z0-9_-]{16,128}$'}
+    ReleaseBundle:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, releaseId, generatedAt, site, tags, articles, checksum]
+      properties:
+        schemaVersion: {type: integer, enum: [1]}
+        releaseId: {type: integer, format: int64, minimum: 1}
+        generatedAt: {type: string, format: date-time}
+        site: {$ref: '#/components/schemas/BundleSite'}
+        tags:
+          type: array
+          items: {$ref: '#/components/schemas/BundleTag'}
+        articles:
+          type: array
+          items: {$ref: '#/components/schemas/BundleArticle'}
+        checksum: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+    BundleSite:
+      type: object
+      additionalProperties: false
+      required: [name, authorBio, aboutMarkdown, filingName, filingNumber, socialLinks]
+      properties:
+        name: {type: string}
+        authorBio: {type: string}
+        aboutMarkdown: {type: string}
+        filingName: {type: string}
+        filingNumber: {type: string}
+        socialLinks:
+          type: array
+          items: {$ref: '#/components/schemas/SocialLink'}
+    BundleTag:
+      type: object
+      additionalProperties: false
+      required: [id, name, slug]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string}
+        slug: {type: string, minLength: 1}
+    BundleArticle:
+      type: object
+      additionalProperties: false
+      required: [articleId, revisionId, slug, title, summary, contentMarkdown, contentHash, publishedAt, tags]
+      properties:
+        articleId: {type: integer, format: int64, minimum: 1}
+        revisionId: {type: integer, format: int64, minimum: 1}
+        slug: {type: string, minLength: 1}
+        title: {type: string}
+        summary: {type: string}
+        contentMarkdown: {type: string}
+        contentHash: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        publishedAt: {type: string, format: date-time}
+        tags:
+          type: array
+          items: {type: string, minLength: 1}
     Problem:
       type: object
       additionalProperties: false

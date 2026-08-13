@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qiuxs.com/contracts/release-bundle-v1.schema.json",
+  "title": "qiuxs-blog immutable release bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "releaseId", "generatedAt", "site", "tags", "articles", "checksum"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "releaseId": {"$ref": "#/$defs/positiveSignedInt64"},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "site": {"$ref": "#/$defs/site"},
+    "tags": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/tag"}
+    },
+    "articles": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/article"}
+    },
+    "checksum": {"$ref": "#/$defs/checksum"}
+  },
+  "$defs": {
+    "positiveSignedInt64": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "checksum": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "socialLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "url"],
+      "properties": {
+        "label": {"type": "string"},
+        "url": {"type": "string", "format": "uri"}
+      }
+    },
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "authorBio", "aboutMarkdown", "filingName", "filingNumber", "socialLinks"],
+      "properties": {
+        "name": {"type": "string"},
+        "authorBio": {"type": "string"},
+        "aboutMarkdown": {"type": "string"},
+        "filingName": {"type": "string"},
+        "filingNumber": {"type": "string"},
+        "socialLinks": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/socialLink"}
+        }
+      }
+    },
+    "tag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "slug"],
+      "properties": {
+        "id": {"$ref": "#/$defs/positiveSignedInt64"},
+        "name": {"type": "string"},
+        "slug": {"type": "string", "minLength": 1}
+      }
+    },
+    "article": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["articleId", "revisionId", "slug", "title", "summary", "contentMarkdown", "contentHash", "publishedAt", "tags"],
+      "properties": {
+        "articleId": {"$ref": "#/$defs/positiveSignedInt64"},
+        "revisionId": {"$ref": "#/$defs/positiveSignedInt64"},
+        "slug": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "contentMarkdown": {"type": "string"},
+        "contentHash": {"$ref": "#/$defs/checksum"},
+        "publishedAt": {"type": "string", "format": "date-time"},
+        "tags": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

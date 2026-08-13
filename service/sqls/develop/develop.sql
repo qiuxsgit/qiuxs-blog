@@ -182,3 +182,96 @@ CREATE TABLE referer_allowlist (
 ALTER TABLE articles
     ADD CONSTRAINT fk_articles_draft_revision FOREIGN KEY (draft_revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT,
     ADD CONSTRAINT fk_articles_published_revision FOREIGN KEY (published_revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT;
+
+CREATE TABLE releases (
+    id BIGINT NOT NULL,
+    site_snapshot_json JSON NOT NULL,
+    checksum CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'queued',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    completed_at DATETIME(6) NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT chk_releases_checksum CHECK (REGEXP_LIKE(checksum, '^sha256:[a-f0-9]{64}$', 'c')),
+    CONSTRAINT chk_releases_status CHECK (status IN ('queued', 'success', 'failed')),
+    CONSTRAINT chk_releases_completion CHECK ((status = 'queued' AND completed_at IS NULL) OR (status IN ('success', 'failed') AND completed_at IS NOT NULL))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE release_articles (
+    id BIGINT NOT NULL,
+    release_id BIGINT NOT NULL,
+    article_id BIGINT NOT NULL,
+    revision_id BIGINT NOT NULL,
+    slug VARCHAR(12) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    title VARCHAR(200) NOT NULL,
+    summary VARCHAR(600) NOT NULL,
+    content_md LONGTEXT NOT NULL,
+    content_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    published_at DATETIME(6) NOT NULL,
+    tags_snapshot_json JSON NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_release_articles_article (release_id, article_id),
+    KEY idx_release_articles_revision (revision_id),
+    CONSTRAINT fk_release_articles_release FOREIGN KEY (release_id) REFERENCES releases (id) ON DELETE RESTRICT,
+    CONSTRAINT fk_release_articles_article FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE RESTRICT,
+    CONSTRAINT fk_release_articles_revision FOREIGN KEY (revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT,
+    CONSTRAINT chk_release_articles_slug CHECK (REGEXP_LIKE(slug, '^[a-z0-9_-]{12}$', 'c')),
+    CONSTRAINT chk_release_articles_hash CHECK (REGEXP_LIKE(content_hash, '^sha256:[a-f0-9]{64}$', 'c'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE builder_config (
+    id BIGINT NOT NULL,
+    singleton_key TINYINT NOT NULL DEFAULT 1,
+    name VARCHAR(100) NOT NULL,
+    base_url VARCHAR(2048) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    username VARCHAR(255) NOT NULL,
+    token_ciphertext TEXT CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    job_name VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    enabled BOOLEAN NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_builder_config_singleton (singleton_key),
+    CONSTRAINT chk_builder_config_singleton CHECK (singleton_key = 1),
+    CONSTRAINT chk_builder_config_name CHECK (CHAR_LENGTH(TRIM(name)) > 0),
+    CONSTRAINT chk_builder_config_base_url CHECK (REGEXP_LIKE(base_url, '^https://[a-z0-9.-]+(:[1-9][0-9]{0,4})?$', 'c')),
+    CONSTRAINT chk_builder_config_username CHECK (CHAR_LENGTH(TRIM(username)) > 0),
+    CONSTRAINT chk_builder_config_ciphertext CHECK (REGEXP_LIKE(token_ciphertext, '^[A-Za-z0-9_-]+$', 'c')),
+    CONSTRAINT chk_builder_config_job_name CHECK (REGEXP_LIKE(job_name, '^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$', 'c') AND job_name NOT LIKE '%//%'),
+    CONSTRAINT chk_builder_config_enabled CHECK (enabled IN (0, 1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE publish_jobs (
+    id BIGINT NOT NULL,
+    release_id BIGINT NOT NULL,
+    builder_id BIGINT NOT NULL,
+    status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending',
+    stage VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending',
+    build_number BIGINT NULL,
+    error_summary VARCHAR(512) NOT NULL DEFAULT '',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    finished_at DATETIME(6) NULL,
+    PRIMARY KEY (id),
+    KEY idx_publish_jobs_release_created (release_id, created_at),
+    CONSTRAINT fk_publish_jobs_release FOREIGN KEY (release_id) REFERENCES releases (id) ON DELETE RESTRICT,
+    CONSTRAINT fk_publish_jobs_builder FOREIGN KEY (builder_id) REFERENCES builder_config (id) ON DELETE RESTRICT,
+    CONSTRAINT chk_publish_jobs_status CHECK (status IN ('pending', 'queued', 'building', 'deploying', 'success', 'failed')),
+    CONSTRAINT chk_publish_jobs_stage CHECK (CHAR_LENGTH(TRIM(stage)) > 0),
+    CONSTRAINT chk_publish_jobs_build_number CHECK (build_number IS NULL OR build_number > 0),
+    CONSTRAINT chk_publish_jobs_finished CHECK ((status IN ('success', 'failed') AND finished_at IS NOT NULL) OR (status NOT IN ('success', 'failed') AND finished_at IS NULL))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE site_state (
+    id BIGINT NOT NULL,
+    singleton_key TINYINT NOT NULL DEFAULT 1,
+    current_release_id BIGINT NULL,
+    active_publish_job_id BIGINT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_site_state_singleton (singleton_key),
+    CONSTRAINT fk_site_state_current_release FOREIGN KEY (current_release_id) REFERENCES releases (id) ON DELETE RESTRICT,
+    CONSTRAINT fk_site_state_active_job FOREIGN KEY (active_publish_job_id) REFERENCES publish_jobs (id) ON DELETE RESTRICT,
+    CONSTRAINT chk_site_state_singleton CHECK (singleton_key = 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

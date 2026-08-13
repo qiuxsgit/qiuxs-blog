@@ -273,6 +273,37 @@ func TestAdminHandlerServesEveryStage2Operation(t *testing.T) {
 	require.Equal(t, []int64{22, 21}, system.revisions.saveContent.TagIDs)
 }
 
+func TestRegisterAdminHandlersDoesNotExposeReleaseContractBeforeTask7(t *testing.T) {
+	system := newStage2System(t, true)
+	requests := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/admin/v1/builder"},
+		{http.MethodPut, "/api/admin/v1/builder"},
+		{http.MethodPost, "/api/admin/v1/builder/test"},
+		{http.MethodGet, "/api/admin/v1/releases"},
+		{http.MethodPost, "/api/admin/v1/releases"},
+		{http.MethodGet, "/api/admin/v1/releases/1"},
+		{http.MethodPost, "/api/admin/v1/releases/1/retry"},
+		{http.MethodGet, "/api/internal/v1/releases/1/bundle"},
+		{http.MethodPost, "/api/internal/v1/jenkins/callback"},
+	}
+	for _, request := range requests {
+		t.Run(request.method+" "+request.path, func(t *testing.T) {
+			response := performHandlerRequest(system.router, request.method, request.path, "application/json", `{}`, nil)
+			require.Equal(t, http.StatusNotFound, response.Code, response.Body.String())
+		})
+	}
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/admin/v1/builder", nil)
+	context.Set(requestIDKey, "handler-request-42")
+	(&stage3ContractAdapter{}).GetBuilderConfig(context)
+	requireProblemResponse(t, recorder, http.StatusServiceUnavailable, "dependency_unavailable")
+}
+
 func TestAdminHandlerPreviewUsesArticleDetailForImmutableSlugAndDraft(t *testing.T) {
 	system := newStage2System(t, true)
 	response := performHandlerRequest(system.router, http.MethodGet, "/api/admin/v1/articles/11/preview", "", "", nil)

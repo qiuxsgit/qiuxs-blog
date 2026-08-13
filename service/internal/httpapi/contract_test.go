@@ -2,17 +2,23 @@ package httpapi_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/stretchr/testify/require"
 )
 
-const adminContractPath = "../../../contracts/openapi/admin-v1.yaml"
+const (
+	adminContractPath       = "../../../contracts/openapi/admin-v1.yaml"
+	releaseBundleSchemaPath = "../../../contracts/release-bundle-v1.schema.json"
+)
 
 type operationContract struct {
 	method      string
@@ -48,6 +54,21 @@ var stage2OperationContracts = []operationContract{
 	{"PUT", "/api/admin/v1/settings/site", "putSiteSettings", 200, "SiteSettingsView"},
 	{"GET", "/api/admin/v1/settings/hotlink", "getHotlinkSettings", 200, "HotlinkSettingsView"},
 	{"PUT", "/api/admin/v1/settings/hotlink", "putHotlinkSettings", 200, "HotlinkSettingsView"},
+}
+
+var releaseAdminOperationContracts = []operationContract{
+	{"GET", "/api/admin/v1/builder", "getBuilderConfig", 200, "BuilderConfigView"},
+	{"PUT", "/api/admin/v1/builder", "putBuilderConfig", 200, "BuilderConfigView"},
+	{"POST", "/api/admin/v1/builder/test", "testBuilderConfig", 204, ""},
+	{"POST", "/api/admin/v1/releases", "createRelease", 202, "CreateReleaseResult"},
+	{"GET", "/api/admin/v1/releases", "listReleases", 200, "ReleaseList"},
+	{"GET", "/api/admin/v1/releases/{releaseId}", "getRelease", 200, "ReleaseView"},
+	{"POST", "/api/admin/v1/releases/{releaseId}/retry", "retryRelease", 202, "PublishJobView"},
+}
+
+var releaseInternalOperationContracts = []operationContract{
+	{"GET", "/api/internal/v1/releases/{releaseId}/bundle", "getReleaseBundle", 200, "ReleaseBundle"},
+	{"POST", "/api/internal/v1/jenkins/callback", "acceptJenkinsCallback", 204, ""},
 }
 
 func loadAdminContract(t *testing.T) *openapi3.T {
@@ -93,6 +114,77 @@ func TestAdminContractContainsExactStage2Operations(t *testing.T) {
 	require.Nil(t, doc.Paths.Find("/img/proxy/{publicKey}"))
 }
 
+func TestAdminContractContainsExactReleaseAndJenkinsOperations(t *testing.T) {
+	doc := loadAdminContract(t)
+	for _, expected := range append(append([]operationContract(nil), releaseAdminOperationContracts...), releaseInternalOperationContracts...) {
+		t.Run(expected.operationID, func(t *testing.T) {
+			pathItem := doc.Paths.Find(expected.path)
+			require.NotNil(t, pathItem)
+			operation := pathItem.Operations()[expected.method]
+			require.NotNil(t, operation)
+			require.Equal(t, expected.operationID, operation.OperationID)
+			response := operation.Responses.Status(expected.success)
+			require.NotNil(t, response)
+			if expected.schema != "" {
+				mediaType := response.Value.Content.Get("application/json")
+				require.NotNil(t, mediaType)
+				require.Equal(t, "#/components/schemas/"+expected.schema, mediaType.Schema.Ref)
+			}
+		})
+	}
+}
+
+func TestReleaseBundleSchemaRequiresExactImmutablePublicShape(t *testing.T) {
+	schema := loadReleaseBundleSchema(t)
+	valid := map[string]any{
+		"schemaVersion": 1,
+		"releaseId":     int64(7),
+		"generatedAt":   "2026-08-13T12:00:00Z",
+		"site": map[string]any{
+			"name": "", "authorBio": "", "aboutMarkdown": "", "filingName": "长安休息室", "filingNumber": "浙ICP备17057726号-1",
+			"socialLinks": []any{map[string]any{"label": "GitHub", "url": "https://github.com/qiuxsgit"}},
+		},
+		"tags": []any{map[string]any{"id": int64(1), "name": "Go", "slug": "go"}},
+		"articles": []any{map[string]any{
+			"articleId": int64(2), "revisionId": int64(3), "slug": "example", "title": "", "summary": "",
+			"contentMarkdown": "", "contentHash": "sha256:" + strings.Repeat("b", 64),
+			"publishedAt": "2026-08-13T12:00:00Z", "tags": []any{"go"},
+		}},
+		"checksum": "sha256:" + strings.Repeat("a", 64),
+	}
+	require.NoError(t, schema.Validate(valid))
+
+	invalidCases := map[string]func(map[string]any){
+		"unknown root field":          func(value map[string]any) { value["builderToken"] = "secret" },
+		"unsigned overflow":           func(value map[string]any) { value["releaseId"] = json.Number("9223372036854775808") },
+		"nonpositive release ID":      func(value map[string]any) { value["releaseId"] = int64(0) },
+		"fractional release ID":       func(value map[string]any) { value["releaseId"] = json.Number("1.5") },
+		"wrong version":               func(value map[string]any) { value["schemaVersion"] = 2 },
+		"missing required field":      func(value map[string]any) { delete(value, "generatedAt") },
+		"invalid generated timestamp": func(value map[string]any) { value["generatedAt"] = "2026-08-13" },
+		"uppercase checksum":          func(value map[string]any) { value["checksum"] = "sha256:" + strings.Repeat("A", 64) },
+		"extra site field":            func(value map[string]any) { value["site"].(map[string]any)["homeStatus"] = "private" },
+		"extra social field": func(value map[string]any) {
+			value["site"].(map[string]any)["socialLinks"].([]any)[0].(map[string]any)["token"] = "secret"
+		},
+		"extra tag field":     func(value map[string]any) { value["tags"].([]any)[0].(map[string]any)["position"] = 0 },
+		"extra article field": func(value map[string]any) { value["articles"].([]any)[0].(map[string]any)["draft"] = true },
+		"invalid content hash": func(value map[string]any) {
+			value["articles"].([]any)[0].(map[string]any)["contentHash"] = strings.Repeat("b", 64)
+		},
+		"invalid published timestamp": func(value map[string]any) {
+			value["articles"].([]any)[0].(map[string]any)["publishedAt"] = "not-a-time"
+		},
+	}
+	for name, mutate := range invalidCases {
+		t.Run(name, func(t *testing.T) {
+			copy := cloneJSONValue(t, valid)
+			mutate(copy)
+			require.Error(t, schema.Validate(copy))
+		})
+	}
+}
+
 func TestAdminContractPreviewContainsImmutableSlugAndDraft(t *testing.T) {
 	doc := loadAdminContract(t)
 	preview := doc.Components.Schemas["PreviewView"]
@@ -106,8 +198,11 @@ func TestAdminContractPreviewContainsImmutableSlugAndDraft(t *testing.T) {
 
 func TestAdminContractContainsExactOperationSet(t *testing.T) {
 	doc := loadAdminContract(t)
-	wanted := make([]string, 0, len(authOperationContracts)+len(stage2OperationContracts))
-	for _, operation := range append(append([]operationContract(nil), authOperationContracts...), stage2OperationContracts...) {
+	wanted := make([]string, 0, len(authOperationContracts)+len(stage2OperationContracts)+len(releaseAdminOperationContracts)+len(releaseInternalOperationContracts))
+	operations := append(append([]operationContract(nil), authOperationContracts...), stage2OperationContracts...)
+	operations = append(operations, releaseAdminOperationContracts...)
+	operations = append(operations, releaseInternalOperationContracts...)
+	for _, operation := range operations {
 		wanted = append(wanted, operation.method+" "+operation.path+" "+operation.operationID)
 	}
 	actual := make([]string, 0, len(wanted))
@@ -136,14 +231,33 @@ func TestAdminContractDefinesAndAppliesExactSessionSecurity(t *testing.T) {
 	require.NotNil(t, logoutSecurity, "logout must explicitly preserve anonymous idempotency")
 	require.Empty(t, *logoutSecurity, "logout must remain unauthenticated")
 
-	protected := append(append([]operationContract(nil), stage2OperationContracts...),
+	protected := append(append([]operationContract(nil), stage2OperationContracts...), releaseAdminOperationContracts...)
+	protected = append(protected,
 		operationContract{"GET", "/api/admin/v1/me", "getCurrentAdmin", 200, "AdminView"},
 	)
 	for _, expected := range protected {
-		operation := doc.Paths.Find(expected.path).Operations()[expected.method]
+		pathItem := doc.Paths.Find(expected.path)
+		require.NotNilf(t, pathItem, "%s path", expected.operationID)
+		operation := pathItem.Operations()[expected.method]
 		require.NotNilf(t, operation.Security, "%s security", expected.operationID)
 		require.Equalf(t, openapi3.SecurityRequirements{{"AdminSession": []string{}}}, *operation.Security, "%s security", expected.operationID)
 	}
+
+	bundleSecurity := doc.Components.SecuritySchemes["BundleToken"]
+	require.NotNil(t, bundleSecurity)
+	require.Equal(t, "http", bundleSecurity.Value.Type)
+	require.Equal(t, "bearer", bundleSecurity.Value.Scheme)
+	callbackSecurity := doc.Components.SecuritySchemes["JenkinsSignature"]
+	require.NotNil(t, callbackSecurity)
+	require.Equal(t, "apiKey", callbackSecurity.Value.Type)
+	require.Equal(t, "header", callbackSecurity.Value.In)
+	require.Equal(t, "X-Jenkins-Signature", callbackSecurity.Value.Name)
+	bundlePath := doc.Paths.Find("/api/internal/v1/releases/{releaseId}/bundle")
+	require.NotNil(t, bundlePath)
+	require.Equal(t, openapi3.SecurityRequirements{{"BundleToken": []string{}}}, *bundlePath.Get.Security)
+	callbackPath := doc.Paths.Find("/api/internal/v1/jenkins/callback")
+	require.NotNil(t, callbackPath)
+	require.Equal(t, openapi3.SecurityRequirements{{"JenkinsSignature": []string{}}}, *callbackPath.Post.Security)
 }
 
 func TestAdminContractDocumentsExactOperationResponseStatuses(t *testing.T) {
@@ -171,6 +285,15 @@ func TestAdminContractDocumentsExactOperationResponseStatuses(t *testing.T) {
 		"putSiteSettings":         {"200", "400", "401", "403", "409", "422", "503"},
 		"getHotlinkSettings":      {"200", "400", "401", "503"},
 		"putHotlinkSettings":      {"200", "400", "401", "403", "409", "422", "503"},
+		"getBuilderConfig":        {"200", "400", "401", "404", "503"},
+		"putBuilderConfig":        {"200", "400", "401", "403", "409", "422", "503"},
+		"testBuilderConfig":       {"204", "400", "401", "403", "412", "503"},
+		"createRelease":           {"202", "400", "401", "403", "409", "412", "503"},
+		"listReleases":            {"200", "400", "401", "503"},
+		"getRelease":              {"200", "400", "401", "404", "503"},
+		"retryRelease":            {"202", "400", "401", "403", "404", "409", "412", "503"},
+		"getReleaseBundle":        {"200", "400", "401", "404", "409", "503"},
+		"acceptJenkinsCallback":   {"204", "400", "401", "409", "503"},
 	}
 	for path, pathItem := range doc.Paths.Map() {
 		for _, operation := range pathItem.Operations() {
@@ -198,6 +321,9 @@ func TestAdminContractRequestShapesAreExactAndClosed(t *testing.T) {
 		"RegisterMediaRequest":      {"gfsFileId", "originalName"},
 		"PutSiteSettingsRequest":    {"aboutMd", "authorBio", "authorName", "filingName", "filingNumber", "homeStatus", "lockVersion", "seoDefaultDescription", "seoDefaultImageMediaId", "seoDefaultTitle", "siteName", "socialLinks"},
 		"PutHotlinkSettingsRequest": {"allowEmptyReferer", "entries"},
+		"PutBuilderConfigRequest":   {"baseUrl", "enabled", "jobName", "name", "token", "username"},
+		"CreateReleaseRequest":      {"articleId", "mode"},
+		"JenkinsCallbackRequest":    {"buildNumber", "errorSummary", "nonce", "releaseId", "stage", "status", "timestamp"},
 	}
 	for schemaName, wanted := range expected {
 		t.Run(schemaName, func(t *testing.T) {
@@ -222,6 +348,20 @@ func TestAdminContractRequestShapesAreExactAndClosed(t *testing.T) {
 	require.NotNil(t, entry.Value.AdditionalProperties.Has)
 	require.False(t, *entry.Value.AdditionalProperties.Has)
 	require.ElementsMatch(t, []string{"hostname", "enabled"}, schemaPropertyNames(entry.Value))
+
+	builderView := doc.Components.Schemas["BuilderConfigView"]
+	require.NotNil(t, builderView)
+	require.ElementsMatch(t, []string{"id", "name", "baseUrl", "username", "jobName", "enabled", "tokenConfigured"}, schemaPropertyNames(builderView.Value))
+	require.NotContains(t, schemaPropertyNames(builderView.Value), "token")
+	require.NotContains(t, schemaPropertyNames(builderView.Value), "tokenCiphertext")
+
+	createResult := doc.Components.Schemas["CreateReleaseResult"]
+	require.NotNil(t, createResult)
+	require.NotNil(t, createResult.Value.AdditionalProperties.Has)
+	require.False(t, *createResult.Value.AdditionalProperties.Has)
+	require.ElementsMatch(t, []string{"release", "job"}, createResult.Value.Required)
+	require.Equal(t, "#/components/schemas/ReleaseView", createResult.Value.Properties["release"].Ref)
+	require.Equal(t, "#/components/schemas/PublishJobView", createResult.Value.Properties["job"].Ref)
 }
 
 func TestAdminContractUsesSignedInt64IdentityAndLockFields(t *testing.T) {
@@ -268,6 +408,53 @@ func TestAdminContractDocumentsStage2ProtectionAndDependencies(t *testing.T) {
 			require.NotNilf(t, operation.Responses.Status(403), "%s must document Origin rejection", expected.operationID)
 		}
 	}
+}
+
+func TestAdminContractDocumentsReleaseProtectionAndDependencies(t *testing.T) {
+	doc := loadAdminContract(t)
+	for _, expected := range releaseAdminOperationContracts {
+		pathItem := doc.Paths.Find(expected.path)
+		require.NotNilf(t, pathItem, "%s path", expected.operationID)
+		operation := pathItem.Operations()[expected.method]
+		require.NotNilf(t, operation.Responses.Status(401), "%s must document authentication", expected.operationID)
+		require.NotNilf(t, operation.Responses.Status(503), "%s must document dependency failure", expected.operationID)
+		if expected.method != http.MethodGet {
+			require.NotNilf(t, operation.Responses.Status(403), "%s must document Origin rejection", expected.operationID)
+		}
+	}
+	for _, expected := range releaseInternalOperationContracts {
+		pathItem := doc.Paths.Find(expected.path)
+		require.NotNilf(t, pathItem, "%s path", expected.operationID)
+		operation := pathItem.Operations()[expected.method]
+		require.NotNilf(t, operation.Responses.Status(401), "%s must document independent authentication", expected.operationID)
+		require.NotNilf(t, operation.Responses.Status(503), "%s must document dependency failure", expected.operationID)
+	}
+}
+
+func loadReleaseBundleSchema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	file, err := os.Open(releaseBundleSchemaPath)
+	require.NoError(t, err)
+	defer file.Close()
+	document, err := jsonschema.UnmarshalJSON(file)
+	require.NoError(t, err)
+	compiler := jsonschema.NewCompiler()
+	compiler.AssertFormat()
+	require.NoError(t, compiler.AddResource("release-bundle-v1.schema.json", document))
+	schema, err := compiler.Compile("release-bundle-v1.schema.json")
+	require.NoError(t, err)
+	return schema
+}
+
+func cloneJSONValue(t *testing.T, value map[string]any) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	require.NoError(t, err)
+	var copy map[string]any
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	require.NoError(t, decoder.Decode(&copy))
+	return copy
 }
 
 func walkSchemaProperties(t *testing.T, doc *openapi3.T, owner string, ref *openapi3.SchemaRef, seen map[*openapi3.Schema]bool) {

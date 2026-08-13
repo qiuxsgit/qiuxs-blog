@@ -55,6 +55,27 @@ func (e ArticleSummaryState) Valid() bool {
 	}
 }
 
+// Defines values for CreateReleaseRequestMode.
+const (
+	PublishArticle   CreateReleaseRequestMode = "publish_article"
+	PublishSettings  CreateReleaseRequestMode = "publish_settings"
+	UnpublishArticle CreateReleaseRequestMode = "unpublish_article"
+)
+
+// Valid indicates whether the value is a known member of the CreateReleaseRequestMode enum.
+func (e CreateReleaseRequestMode) Valid() bool {
+	switch e {
+	case PublishArticle:
+		return true
+	case PublishSettings:
+		return true
+	case UnpublishArticle:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DraftViewReason.
 const (
 	Draft DraftViewReason = "draft"
@@ -79,6 +100,33 @@ const (
 func (e DraftViewStatus) Valid() bool {
 	switch e {
 	case Editing:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for JenkinsCallbackRequestStatus.
+const (
+	JenkinsCallbackRequestStatusBuilding  JenkinsCallbackRequestStatus = "building"
+	JenkinsCallbackRequestStatusDeploying JenkinsCallbackRequestStatus = "deploying"
+	JenkinsCallbackRequestStatusFailed    JenkinsCallbackRequestStatus = "failed"
+	JenkinsCallbackRequestStatusQueued    JenkinsCallbackRequestStatus = "queued"
+	JenkinsCallbackRequestStatusSuccess   JenkinsCallbackRequestStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the JenkinsCallbackRequestStatus enum.
+func (e JenkinsCallbackRequestStatus) Valid() bool {
+	switch e {
+	case JenkinsCallbackRequestStatusBuilding:
+		return true
+	case JenkinsCallbackRequestStatusDeploying:
+		return true
+	case JenkinsCallbackRequestStatusFailed:
+		return true
+	case JenkinsCallbackRequestStatusQueued:
+		return true
+	case JenkinsCallbackRequestStatusSuccess:
 		return true
 	default:
 		return false
@@ -136,6 +184,72 @@ const (
 func (e MediaViewState) Valid() bool {
 	switch e {
 	case MediaViewStateActive:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PublishJobViewStatus.
+const (
+	PublishJobViewStatusBuilding  PublishJobViewStatus = "building"
+	PublishJobViewStatusDeploying PublishJobViewStatus = "deploying"
+	PublishJobViewStatusFailed    PublishJobViewStatus = "failed"
+	PublishJobViewStatusPending   PublishJobViewStatus = "pending"
+	PublishJobViewStatusQueued    PublishJobViewStatus = "queued"
+	PublishJobViewStatusSuccess   PublishJobViewStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the PublishJobViewStatus enum.
+func (e PublishJobViewStatus) Valid() bool {
+	switch e {
+	case PublishJobViewStatusBuilding:
+		return true
+	case PublishJobViewStatusDeploying:
+		return true
+	case PublishJobViewStatusFailed:
+		return true
+	case PublishJobViewStatusPending:
+		return true
+	case PublishJobViewStatusQueued:
+		return true
+	case PublishJobViewStatusSuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReleaseBundleSchemaVersion.
+const (
+	N1 ReleaseBundleSchemaVersion = 1
+)
+
+// Valid indicates whether the value is a known member of the ReleaseBundleSchemaVersion enum.
+func (e ReleaseBundleSchemaVersion) Valid() bool {
+	switch e {
+	case N1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ReleaseViewStatus.
+const (
+	ReleaseViewStatusFailed  ReleaseViewStatus = "failed"
+	ReleaseViewStatusQueued  ReleaseViewStatus = "queued"
+	ReleaseViewStatusSuccess ReleaseViewStatus = "success"
+)
+
+// Valid indicates whether the value is a known member of the ReleaseViewStatus enum.
+func (e ReleaseViewStatus) Valid() bool {
+	switch e {
+	case ReleaseViewStatusFailed:
+		return true
+	case ReleaseViewStatusQueued:
+		return true
+	case ReleaseViewStatusSuccess:
 		return true
 	default:
 		return false
@@ -235,6 +349,62 @@ type ArticleSummary struct {
 // ArticleSummaryState defines model for ArticleSummary.State.
 type ArticleSummaryState string
 
+// BuilderConfigView defines model for BuilderConfigView.
+type BuilderConfigView struct {
+	BaseUrl         string `json:"baseUrl"`
+	Enabled         bool   `json:"enabled"`
+	Id              int64  `json:"id"`
+	JobName         string `json:"jobName"`
+	Name            string `json:"name"`
+	TokenConfigured bool   `json:"tokenConfigured"`
+	Username        string `json:"username"`
+}
+
+// BundleArticle defines model for BundleArticle.
+type BundleArticle struct {
+	ArticleId       int64     `json:"articleId"`
+	ContentHash     string    `json:"contentHash"`
+	ContentMarkdown string    `json:"contentMarkdown"`
+	PublishedAt     time.Time `json:"publishedAt"`
+	RevisionId      int64     `json:"revisionId"`
+	Slug            string    `json:"slug"`
+	Summary         string    `json:"summary"`
+	Tags            []string  `json:"tags"`
+	Title           string    `json:"title"`
+}
+
+// BundleSite defines model for BundleSite.
+type BundleSite struct {
+	AboutMarkdown string       `json:"aboutMarkdown"`
+	AuthorBio     string       `json:"authorBio"`
+	FilingName    string       `json:"filingName"`
+	FilingNumber  string       `json:"filingNumber"`
+	Name          string       `json:"name"`
+	SocialLinks   []SocialLink `json:"socialLinks"`
+}
+
+// BundleTag defines model for BundleTag.
+type BundleTag struct {
+	Id   int64  `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+// CreateReleaseRequest defines model for CreateReleaseRequest.
+type CreateReleaseRequest struct {
+	ArticleId *int64                   `json:"articleId"`
+	Mode      CreateReleaseRequestMode `json:"mode"`
+}
+
+// CreateReleaseRequestMode defines model for CreateReleaseRequest.Mode.
+type CreateReleaseRequestMode string
+
+// CreateReleaseResult defines model for CreateReleaseResult.
+type CreateReleaseResult struct {
+	Job     PublishJobView `json:"job"`
+	Release ReleaseView    `json:"release"`
+}
+
 // CreateTagRequest defines model for CreateTagRequest.
 type CreateTagRequest struct {
 	Name string `json:"name"`
@@ -276,6 +446,20 @@ type HotlinkSettingsView struct {
 	AllowEmptyReferer bool           `json:"allowEmptyReferer"`
 	Entries           []HotlinkEntry `json:"entries"`
 }
+
+// JenkinsCallbackRequest defines model for JenkinsCallbackRequest.
+type JenkinsCallbackRequest struct {
+	BuildNumber  int64                        `json:"buildNumber"`
+	ErrorSummary string                       `json:"errorSummary"`
+	Nonce        string                       `json:"nonce"`
+	ReleaseId    int64                        `json:"releaseId"`
+	Stage        string                       `json:"stage"`
+	Status       JenkinsCallbackRequestStatus `json:"status"`
+	Timestamp    time.Time                    `json:"timestamp"`
+}
+
+// JenkinsCallbackRequestStatus defines model for JenkinsCallbackRequest.Status.
+type JenkinsCallbackRequestStatus string
 
 // LockVersionRequest defines model for LockVersionRequest.
 type LockVersionRequest struct {
@@ -349,6 +533,32 @@ type Problem struct {
 	Type      string `json:"type"`
 }
 
+// PublishJobView defines model for PublishJobView.
+type PublishJobView struct {
+	BuildNumber  *int64               `json:"buildNumber"`
+	BuilderId    int64                `json:"builderId"`
+	CreatedAt    time.Time            `json:"createdAt"`
+	ErrorSummary string               `json:"errorSummary"`
+	FinishedAt   *time.Time           `json:"finishedAt"`
+	Id           int64                `json:"id"`
+	ReleaseId    int64                `json:"releaseId"`
+	Stage        string               `json:"stage"`
+	Status       PublishJobViewStatus `json:"status"`
+}
+
+// PublishJobViewStatus defines model for PublishJobView.Status.
+type PublishJobViewStatus string
+
+// PutBuilderConfigRequest defines model for PutBuilderConfigRequest.
+type PutBuilderConfigRequest struct {
+	BaseUrl  string  `json:"baseUrl"`
+	Enabled  bool    `json:"enabled"`
+	JobName  string  `json:"jobName"`
+	Name     string  `json:"name"`
+	Token    *string `json:"token,omitempty"`
+	Username string  `json:"username"`
+}
+
 // PutHotlinkSettingsRequest defines model for PutHotlinkSettingsRequest.
 type PutHotlinkSettingsRequest struct {
 	AllowEmptyReferer bool           `json:"allowEmptyReferer"`
@@ -376,6 +586,37 @@ type RegisterMediaRequest struct {
 	GfsFileId    int64  `json:"gfsFileId"`
 	OriginalName string `json:"originalName"`
 }
+
+// ReleaseBundle defines model for ReleaseBundle.
+type ReleaseBundle struct {
+	Articles      []BundleArticle            `json:"articles"`
+	Checksum      string                     `json:"checksum"`
+	GeneratedAt   time.Time                  `json:"generatedAt"`
+	ReleaseId     int64                      `json:"releaseId"`
+	SchemaVersion ReleaseBundleSchemaVersion `json:"schemaVersion"`
+	Site          BundleSite                 `json:"site"`
+	Tags          []BundleTag                `json:"tags"`
+}
+
+// ReleaseBundleSchemaVersion defines model for ReleaseBundle.SchemaVersion.
+type ReleaseBundleSchemaVersion int
+
+// ReleaseList defines model for ReleaseList.
+type ReleaseList struct {
+	Items []ReleaseView `json:"items"`
+}
+
+// ReleaseView defines model for ReleaseView.
+type ReleaseView struct {
+	Checksum    string            `json:"checksum"`
+	CompletedAt *time.Time        `json:"completedAt"`
+	CreatedAt   time.Time         `json:"createdAt"`
+	Id          int64             `json:"id"`
+	Status      ReleaseViewStatus `json:"status"`
+}
+
+// ReleaseViewStatus defines model for ReleaseView.Status.
+type ReleaseViewStatus string
 
 // RenameTagRequest defines model for RenameTagRequest.
 type RenameTagRequest struct {
@@ -478,6 +719,9 @@ type VersionResult struct {
 // ArticleId defines model for ArticleId.
 type ArticleId = int64
 
+// ReleaseId defines model for ReleaseId.
+type ReleaseId = int64
+
 // RevisionId defines model for RevisionId.
 type RevisionId = int64
 
@@ -516,8 +760,14 @@ type CreateArticleVersionJSONRequestBody = LockVersionRequest
 // RestoreArticleVersionJSONRequestBody defines body for RestoreArticleVersion for application/json ContentType.
 type RestoreArticleVersionJSONRequestBody = LockVersionRequest
 
+// PutBuilderConfigJSONRequestBody defines body for PutBuilderConfig for application/json ContentType.
+type PutBuilderConfigJSONRequestBody = PutBuilderConfigRequest
+
 // RegisterMediaJSONRequestBody defines body for RegisterMedia for application/json ContentType.
 type RegisterMediaJSONRequestBody = RegisterMediaRequest
+
+// CreateReleaseJSONRequestBody defines body for CreateRelease for application/json ContentType.
+type CreateReleaseJSONRequestBody = CreateReleaseRequest
 
 // LoginAdminJSONRequestBody defines body for LoginAdmin for application/json ContentType.
 type LoginAdminJSONRequestBody = LoginRequest
@@ -533,6 +783,9 @@ type CreateTagJSONRequestBody = CreateTagRequest
 
 // RenameTagJSONRequestBody defines body for RenameTag for application/json ContentType.
 type RenameTagJSONRequestBody = RenameTagRequest
+
+// AcceptJenkinsCallbackJSONRequestBody defines body for AcceptJenkinsCallback for application/json ContentType.
+type AcceptJenkinsCallbackJSONRequestBody = JenkinsCallbackRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -567,6 +820,15 @@ type ServerInterface interface {
 	// (POST /api/admin/v1/articles/{articleId}/versions/{revisionId}/restore)
 	RestoreArticleVersion(c *gin.Context, articleId ArticleId, revisionId RevisionId)
 
+	// (GET /api/admin/v1/builder)
+	GetBuilderConfig(c *gin.Context)
+
+	// (PUT /api/admin/v1/builder)
+	PutBuilderConfig(c *gin.Context)
+
+	// (POST /api/admin/v1/builder/test)
+	TestBuilderConfig(c *gin.Context)
+
 	// (GET /api/admin/v1/me)
 	GetCurrentAdmin(c *gin.Context)
 
@@ -575,6 +837,18 @@ type ServerInterface interface {
 
 	// (POST /api/admin/v1/media/upload-policy)
 	CreateMediaUploadPolicy(c *gin.Context)
+
+	// (GET /api/admin/v1/releases)
+	ListReleases(c *gin.Context)
+
+	// (POST /api/admin/v1/releases)
+	CreateRelease(c *gin.Context)
+
+	// (GET /api/admin/v1/releases/{releaseId})
+	GetRelease(c *gin.Context, releaseId ReleaseId)
+
+	// (POST /api/admin/v1/releases/{releaseId}/retry)
+	RetryRelease(c *gin.Context, releaseId ReleaseId)
 
 	// (DELETE /api/admin/v1/session)
 	LogoutAdmin(c *gin.Context)
@@ -602,6 +876,12 @@ type ServerInterface interface {
 
 	// (PATCH /api/admin/v1/tags/{tagId})
 	RenameTag(c *gin.Context, tagId TagId)
+
+	// (POST /api/internal/v1/jenkins/callback)
+	AcceptJenkinsCallback(c *gin.Context)
+
+	// (GET /api/internal/v1/releases/{releaseId}/bundle)
+	GetReleaseBundle(c *gin.Context, releaseId ReleaseId)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -862,6 +1142,45 @@ func (siw *ServerInterfaceWrapper) RestoreArticleVersion(c *gin.Context) {
 	siw.Handler.RestoreArticleVersion(c, articleId, revisionId)
 }
 
+// GetBuilderConfig operation middleware
+func (siw *ServerInterfaceWrapper) GetBuilderConfig(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetBuilderConfig(c)
+}
+
+// PutBuilderConfig operation middleware
+func (siw *ServerInterfaceWrapper) PutBuilderConfig(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PutBuilderConfig(c)
+}
+
+// TestBuilderConfig operation middleware
+func (siw *ServerInterfaceWrapper) TestBuilderConfig(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.TestBuilderConfig(c)
+}
+
 // GetCurrentAdmin operation middleware
 func (siw *ServerInterfaceWrapper) GetCurrentAdmin(c *gin.Context) {
 
@@ -899,6 +1218,82 @@ func (siw *ServerInterfaceWrapper) CreateMediaUploadPolicy(c *gin.Context) {
 	}
 
 	siw.Handler.CreateMediaUploadPolicy(c)
+}
+
+// ListReleases operation middleware
+func (siw *ServerInterfaceWrapper) ListReleases(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListReleases(c)
+}
+
+// CreateRelease operation middleware
+func (siw *ServerInterfaceWrapper) CreateRelease(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateRelease(c)
+}
+
+// GetRelease operation middleware
+func (siw *ServerInterfaceWrapper) GetRelease(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "releaseId" -------------
+	var releaseId ReleaseId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "releaseId", c.Param("releaseId"), &releaseId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter releaseId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetRelease(c, releaseId)
+}
+
+// RetryRelease operation middleware
+func (siw *ServerInterfaceWrapper) RetryRelease(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "releaseId" -------------
+	var releaseId ReleaseId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "releaseId", c.Param("releaseId"), &releaseId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter releaseId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RetryRelease(c, releaseId)
 }
 
 // LogoutAdmin operation middleware
@@ -1030,6 +1425,44 @@ func (siw *ServerInterfaceWrapper) RenameTag(c *gin.Context) {
 	siw.Handler.RenameTag(c, tagId)
 }
 
+// AcceptJenkinsCallback operation middleware
+func (siw *ServerInterfaceWrapper) AcceptJenkinsCallback(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AcceptJenkinsCallback(c)
+}
+
+// GetReleaseBundle operation middleware
+func (siw *ServerInterfaceWrapper) GetReleaseBundle(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "releaseId" -------------
+	var releaseId ReleaseId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "releaseId", c.Param("releaseId"), &releaseId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter releaseId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetReleaseBundle(c, releaseId)
+}
+
 // GinServerOptions provides options for the Gin server.
 type GinServerOptions struct {
 	BaseURL      string
@@ -1079,6 +1512,15 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PUT(options.BaseURL+"/api/admin/v1/settings/site", wrapper.PutSiteSettings)
 	router.GET(options.BaseURL+"/api/admin/v1/settings/hotlink", wrapper.GetHotlinkSettings)
 	router.PUT(options.BaseURL+"/api/admin/v1/settings/hotlink", wrapper.PutHotlinkSettings)
+	router.GET(options.BaseURL+"/api/admin/v1/builder", wrapper.GetBuilderConfig)
+	router.PUT(options.BaseURL+"/api/admin/v1/builder", wrapper.PutBuilderConfig)
+	router.POST(options.BaseURL+"/api/admin/v1/builder/test", wrapper.TestBuilderConfig)
+	router.GET(options.BaseURL+"/api/admin/v1/releases", wrapper.ListReleases)
+	router.POST(options.BaseURL+"/api/admin/v1/releases", wrapper.CreateRelease)
+	router.GET(options.BaseURL+"/api/admin/v1/releases/:releaseId", wrapper.GetRelease)
+	router.POST(options.BaseURL+"/api/admin/v1/releases/:releaseId/retry", wrapper.RetryRelease)
+	router.GET(options.BaseURL+"/api/internal/v1/releases/:releaseId/bundle", wrapper.GetReleaseBundle)
+	router.POST(options.BaseURL+"/api/internal/v1/jenkins/callback", wrapper.AcceptJenkinsCallback)
 }
 
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
@@ -1086,52 +1528,71 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

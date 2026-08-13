@@ -74,7 +74,7 @@ func RegisterAdminHandlers(router gin.IRouter, handler *AdminHandler) {
 }
 
 func registerAdminHandlersWithErrorHandler(router gin.IRouter, handler *AdminHandler, errorHandler func(*gin.Context, error, int)) {
-	wrapper := &ServerInterfaceWrapper{Handler: handler, ErrorHandler: errorHandler}
+	wrapper := &ServerInterfaceWrapper{Handler: &stage3ContractAdapter{AdminHandler: handler}, ErrorHandler: errorHandler}
 	protected := requireAdminBeforeBinding()
 
 	// Existing authentication operations retain their original behavior.
@@ -103,6 +103,27 @@ func registerAdminHandlersWithErrorHandler(router gin.IRouter, handler *AdminHan
 	router.PUT("/api/admin/v1/settings/site", protected, wrapper.PutSiteSettings)
 	router.GET("/api/admin/v1/settings/hotlink", protected, wrapper.GetHotlinkSettings)
 	router.PUT("/api/admin/v1/settings/hotlink", protected, wrapper.PutHotlinkSettings)
+}
+
+// stage3ContractAdapter is a temporary compile bridge for the generated release
+// contract. RegisterAdminHandlers deliberately exposes none of these routes;
+// Task 7 replaces this adapter with the real release handlers and registrars.
+type stage3ContractAdapter struct {
+	*AdminHandler
+}
+
+func (*stage3ContractAdapter) GetBuilderConfig(c *gin.Context)              { stage3Unavailable(c) }
+func (*stage3ContractAdapter) PutBuilderConfig(c *gin.Context)              { stage3Unavailable(c) }
+func (*stage3ContractAdapter) TestBuilderConfig(c *gin.Context)             { stage3Unavailable(c) }
+func (*stage3ContractAdapter) ListReleases(c *gin.Context)                  { stage3Unavailable(c) }
+func (*stage3ContractAdapter) CreateRelease(c *gin.Context)                 { stage3Unavailable(c) }
+func (*stage3ContractAdapter) GetRelease(c *gin.Context, _ ReleaseId)       { stage3Unavailable(c) }
+func (*stage3ContractAdapter) RetryRelease(c *gin.Context, _ ReleaseId)     { stage3Unavailable(c) }
+func (*stage3ContractAdapter) AcceptJenkinsCallback(c *gin.Context)         { stage3Unavailable(c) }
+func (*stage3ContractAdapter) GetReleaseBundle(c *gin.Context, _ ReleaseId) { stage3Unavailable(c) }
+
+func stage3Unavailable(c *gin.Context) {
+	WriteProblem(c, ErrDependencyUnavailable)
 }
 
 func requireAdminBeforeBinding() gin.HandlerFunc {
@@ -205,4 +226,4 @@ func nilAdminDependency(value any) bool {
 	}
 }
 
-var _ ServerInterface = (*AdminHandler)(nil)
+var _ ServerInterface = (*stage3ContractAdapter)(nil)

@@ -47,6 +47,32 @@ func TestGFSClientMetadataUsesExactEndpointAndMapsActualMetadata(t *testing.T) {
 	require.Equal(t, 5*time.Second, httpClient.Timeout)
 }
 
+func TestGFSClientMetadataRejectsRedirectWithoutContactingTarget(t *testing.T) {
+	targetCalls := 0
+	target := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		targetCalls++
+		_, _ = io.WriteString(response, validMetadataEnvelope)
+	}))
+	t.Cleanup(target.Close)
+	redirectURL := target.URL + "/redirect-target-secret"
+	source := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Location", redirectURL)
+		response.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(source.Close)
+	injected := &http.Client{Timeout: 5 * time.Second}
+	client, err := media.NewGFSClient(source.URL, injected)
+	require.NoError(t, err)
+
+	got, err := client.Metadata(context.Background(), 41)
+
+	require.Equal(t, media.Metadata{}, got)
+	require.ErrorIs(t, err, media.ErrDependencyUnavailable)
+	require.NotContains(t, err.Error(), "redirect-target-secret")
+	require.Zero(t, targetCalls)
+	require.Nil(t, injected.CheckRedirect, "constructor must not mutate the injected client")
+}
+
 func TestGFSClientMetadataRejectsUnavailableOrMalformedResponsesWithoutLeaks(t *testing.T) {
 	tests := []struct {
 		name       string

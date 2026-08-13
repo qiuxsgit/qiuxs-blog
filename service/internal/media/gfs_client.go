@@ -41,7 +41,11 @@ func NewGFSClient(baseURL string, client *http.Client) (*GFSClient, error) {
 	if err != nil || client == nil || client.Timeout != gfsHTTPTimeout {
 		return nil, ErrInvalidGFSConfiguration
 	}
-	return &GFSClient{baseURL: parsedBaseURL, client: client}, nil
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &GFSClient{baseURL: parsedBaseURL, client: &noRedirectClient}, nil
 }
 
 func (c *GFSClient) Metadata(ctx context.Context, fileID int64) (Metadata, error) {

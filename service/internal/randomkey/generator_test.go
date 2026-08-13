@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
@@ -62,27 +63,64 @@ func TestRandomKeyGeneratorUsesFixedLengthsAlphabetAndVectors(t *testing.T) {
 	}
 }
 
-func TestRandomKeyGeneratorMasksEverySixBitValueIntoTheFixedAlphabet(t *testing.T) {
-	input := append(byteRange(0, 64), byteRange(64, 128)...)
+func TestRandomKeyGeneratorMapsAcceptedRangeUniformlyIntoTheFixedAlphabet(t *testing.T) {
+	input := byteRange(0, 228)
 	reader := &oneByteReader{bytes: input}
 	generator, err := randomkey.New(reader)
 	require.NoError(t, err)
-	wantBlock := "abcdefghijklmnopqrstuvwxyz0123456789-_abcdefghijklmnopqrstuvwxyz"
+	wantBlock := "abcdefghijklmnopqrstuvwxyz0123456789-_"
 
 	var got string
-	for range 2 {
+	for range 6 {
 		part, callErr := generator.Nonce()
 		require.NoError(t, callErr)
 		got += part
 	}
-	for range 7 {
+	for range 8 {
 		part, callErr := generator.ArticleSlug()
 		require.NoError(t, callErr)
 		got += part
 	}
 
-	require.Equal(t, wantBlock+wantBlock, got)
-	require.Equal(t, 128, reader.calls)
+	require.Equal(t, strings.Repeat(wantBlock, 6), got)
+	require.Equal(t, 228, reader.calls)
+}
+
+func TestRandomKeyGeneratorRejectsBytesAtBoundaryBeforeMapping(t *testing.T) {
+	input := append([]byte{228, 255}, byteRange(0, 22)...)
+	reader := &oneByteReader{bytes: input}
+	generator, err := randomkey.New(reader)
+	require.NoError(t, err)
+
+	got, err := generator.Nonce()
+
+	require.NoError(t, err)
+	require.Equal(t, "abcdefghijklmnopqrstuv", got)
+	require.Equal(t, 24, reader.calls)
+}
+
+func TestRandomKeyGeneratorFailsWhenOnlyRejectedBytesRemain(t *testing.T) {
+	reader := &oneByteReader{bytes: []byte{228, 255}}
+	generator, err := randomkey.New(reader)
+	require.NoError(t, err)
+
+	got, err := generator.ArticleSlug()
+
+	require.Empty(t, got)
+	require.ErrorIs(t, err, randomkey.ErrRandomSource)
+	require.Equal(t, 2, reader.calls)
+}
+
+func TestRandomKeyGeneratorBoundsContinuousRejection(t *testing.T) {
+	reader := &repeatingByteReader{value: 255}
+	generator, err := randomkey.New(reader)
+	require.NoError(t, err)
+
+	got, err := generator.ArticleSlug()
+
+	require.Empty(t, got)
+	require.ErrorIs(t, err, randomkey.ErrRandomSource)
+	require.Equal(t, 256, reader.calls)
 }
 
 func TestRandomKeyGeneratorFailsSafelyForInvalidReceiversAndSources(t *testing.T) {
@@ -172,6 +210,17 @@ type errorReader struct{}
 
 func (errorReader) Read([]byte) (int, error) {
 	return 0, errors.New("random-source-secret")
+}
+
+type repeatingByteReader struct {
+	value byte
+	calls int
+}
+
+func (r *repeatingByteReader) Read(target []byte) (int, error) {
+	target[0] = r.value
+	r.calls++
+	return 1, nil
 }
 
 func byteRange(start, end byte) []byte {

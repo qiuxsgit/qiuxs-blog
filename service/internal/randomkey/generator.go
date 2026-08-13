@@ -7,7 +7,11 @@ import (
 	"sync"
 )
 
-const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789-_abcdefghijklmnopqrstuvwxyz"
+const (
+	alphabet              = "abcdefghijklmnopqrstuvwxyz0123456789-_"
+	acceptedByteLimit     = 228
+	maximumRandomAttempts = 256
+)
 
 var (
 	ErrInvalidGenerator = errors.New("random key generator is not configured")
@@ -52,14 +56,31 @@ func (g *Generator) generate(prefix string, length int) (string, error) {
 
 	value := make([]byte, len(prefix)+length)
 	copy(value, prefix)
-	var randomByte [1]byte
 	for index := range length {
-		if _, err := io.ReadFull(g.reader, randomByte[:]); err != nil {
+		character, err := g.nextCharacter()
+		if err != nil {
 			return "", ErrRandomSource
 		}
-		value[len(prefix)+index] = alphabet[randomByte[0]&63]
+		value[len(prefix)+index] = character
 	}
 	return string(value), nil
+}
+
+func (g *Generator) nextCharacter() (byte, error) {
+	var randomByte [1]byte
+	for range maximumRandomAttempts {
+		count, err := g.reader.Read(randomByte[:])
+		if count != 1 {
+			return 0, ErrRandomSource
+		}
+		if randomByte[0] < acceptedByteLimit {
+			return alphabet[int(randomByte[0])%len(alphabet)], nil
+		}
+		if err != nil {
+			return 0, ErrRandomSource
+		}
+	}
+	return 0, ErrRandomSource
 }
 
 func nilReader(reader io.Reader) bool {

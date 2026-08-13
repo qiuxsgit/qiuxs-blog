@@ -65,7 +65,7 @@ The request has no GFS app secret, public-read secret, policy, or signature. Suc
 }
 ```
 
-Both values inside `imageMetadata` are positive decimal strings. The Service uses a caller-supplied HTTP client with a five-second timeout, reads no more than 64 KiB, verifies the ID, and maps transport, status, envelope, body, and dimension failures to a sanitized dependency error.
+Both values inside `imageMetadata` are positive decimal strings. The Service clones the caller-supplied five-second HTTP client without mutating it, disables redirects on the clone, accepts only the direct HTTP 200 response, reads no more than 64 KiB, verifies the ID, and maps transport, redirect, status, envelope, body, and dimension failures to a sanitized dependency error.
 
 ## Locally Signed Reads
 

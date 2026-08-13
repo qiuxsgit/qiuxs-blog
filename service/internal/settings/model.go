@@ -41,6 +41,17 @@ type Site struct {
 	UpdatedAt              time.Time
 }
 
+type HotlinkEntry struct {
+	ID       int64
+	Hostname string
+	Enabled  bool
+}
+
+type HotlinkPolicy struct {
+	AllowEmptyReferer bool
+	Entries           []HotlinkEntry
+}
+
 var (
 	ErrNotFound = errors.New("settings not found")
 	ErrConflict = errors.New("settings optimistic lock conflict")
@@ -319,6 +330,13 @@ func cloneSite(site Site) Site {
 		id := *site.SEODefaultImageMediaID
 		cloned.SEODefaultImageMediaID = &id
 	}
+	return cloned
+}
+
+func cloneHotlinkPolicy(policy HotlinkPolicy) HotlinkPolicy {
+	cloned := policy
+	cloned.Entries = make([]HotlinkEntry, len(policy.Entries))
+	copy(cloned.Entries, policy.Entries)
 	return cloned
 }
 

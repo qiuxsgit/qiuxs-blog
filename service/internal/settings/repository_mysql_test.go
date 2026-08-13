@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,10 +16,17 @@ import (
 )
 
 const (
-	testSiteColumns   = "id, site_name, author_name, author_bio, home_status, about_md, social_links_json, seo_default_title, seo_default_description, seo_default_image_media_id, filing_name, filing_number, lock_version, updated_at"
-	testSelectSiteSQL = "SELECT " + testSiteColumns + " FROM site_settings WHERE singleton_key = 1"
-	testInsertSiteSQL = "INSERT INTO site_settings (id, singleton_key, site_name, author_name, author_bio, home_status, about_md, social_links_json, seo_default_title, seo_default_description, seo_default_image_media_id, filing_name, filing_number, lock_version, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
-	testUpdateSiteSQL = "UPDATE site_settings SET site_name=?, author_name=?, author_bio=?, home_status=?, about_md=?, social_links_json=?, seo_default_title=?, seo_default_description=?, seo_default_image_media_id=?, filing_name=?, filing_number=?, lock_version=lock_version+1, updated_at=? WHERE singleton_key=1 AND lock_version=?"
+	testSiteColumns             = "id, site_name, author_name, author_bio, home_status, about_md, social_links_json, seo_default_title, seo_default_description, seo_default_image_media_id, filing_name, filing_number, lock_version, updated_at"
+	testSelectSiteSQL           = "SELECT " + testSiteColumns + " FROM site_settings WHERE singleton_key = 1"
+	testInsertSiteSQL           = "INSERT INTO site_settings (id, singleton_key, site_name, author_name, author_bio, home_status, about_md, social_links_json, seo_default_title, seo_default_description, seo_default_image_media_id, filing_name, filing_number, lock_version, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
+	testUpdateSiteSQL           = "UPDATE site_settings SET site_name=?, author_name=?, author_bio=?, home_status=?, about_md=?, social_links_json=?, seo_default_title=?, seo_default_description=?, seo_default_image_media_id=?, filing_name=?, filing_number=?, lock_version=lock_version+1, updated_at=? WHERE singleton_key=1 AND lock_version=?"
+	testSelectHotlinkSQL        = "SELECT id, allow_empty_referer FROM hotlink_settings WHERE singleton_key = 1"
+	testSelectHotlinkEntriesSQL = "SELECT id, hostname, enabled FROM referer_allowlist ORDER BY hostname ASC, id ASC"
+	testUpdateHotlinkSQL        = "UPDATE hotlink_settings SET allow_empty_referer=?, updated_at=? WHERE singleton_key=1"
+	testLockHotlinkSQL          = "SELECT id FROM hotlink_settings WHERE singleton_key=1 FOR UPDATE"
+	testInsertHotlinkSQL        = "INSERT INTO hotlink_settings (id, singleton_key, allow_empty_referer, created_at, updated_at) VALUES (?, 1, ?, ?, ?)"
+	testDeleteHotlinkEntriesSQL = "DELETE FROM referer_allowlist"
+	testInsertHotlinkEntrySQL   = "INSERT INTO referer_allowlist (id, hostname, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
 )
 
 func TestSiteMySQLGetUsesExactQueryAndStrictOrderedJSON(t *testing.T) {
@@ -286,6 +294,408 @@ func TestSiteMySQLRejectsNilConfigurationContextAndInvalidWritesWithoutPanic(t *
 		})
 	}
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestHotlinkRepositoryGetReadsSingletonThenOrderedEntries(t *testing.T) {
+	repository, mock, _ := newHotlinkRepositoryTest(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery(testSelectHotlinkSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "allow_empty_referer"}).AddRow(int64(11), false))
+	mock.ExpectQuery(testSelectHotlinkEntriesSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "hostname", "enabled"}).
+		AddRow(int64(2), "blog-admin.qiuxs.com", true).
+		AddRow(int64(5), "qiuxs.com", false))
+	mock.ExpectCommit()
+
+	got, err := repository.GetHotlinkPolicy(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, HotlinkPolicy{AllowEmptyReferer: false, Entries: []HotlinkEntry{
+		{ID: 2, Hostname: "blog-admin.qiuxs.com", Enabled: true},
+		{ID: 5, Hostname: "qiuxs.com", Enabled: false},
+	}}, got)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestHotlinkRepositoryGetDistinguishesMissingSingletonFromPersistedEmptyAndOrphans(t *testing.T) {
+	t.Run("missing singleton stops before orphan query", func(t *testing.T) {
+		repository, mock, _ := newHotlinkRepositoryTest(t)
+		mock.ExpectBegin()
+		mock.ExpectQuery(testSelectHotlinkSQL).WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+
+		_, err := repository.GetHotlinkPolicy(context.Background())
+
+		require.ErrorIs(t, err, ErrNotFound)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("persisted empty remains empty", func(t *testing.T) {
+		repository, mock, _ := newHotlinkRepositoryTest(t)
+		mock.ExpectBegin()
+		mock.ExpectQuery(testSelectHotlinkSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "allow_empty_referer"}).AddRow(int64(11), false))
+		mock.ExpectQuery(testSelectHotlinkEntriesSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "hostname", "enabled"}))
+		mock.ExpectCommit()
+
+		got, err := repository.GetHotlinkPolicy(context.Background())
+
+		require.NoError(t, err)
+		require.Equal(t, HotlinkPolicy{AllowEmptyReferer: false, Entries: []HotlinkEntry{}}, got)
+		require.NotNil(t, got.Entries)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestHotlinkRepositoryGetRejectsInvalidStoredEntriesWithSanitizedError(t *testing.T) {
+	for _, rows := range []*sqlmock.Rows{
+		sqlmock.NewRows([]string{"id", "hostname", "enabled"}).AddRow(int64(0), "secret.example", true),
+		sqlmock.NewRows([]string{"id", "hostname", "enabled"}).AddRow(int64(2), "UPPER-secret.example", true),
+		sqlmock.NewRows([]string{"id", "hostname", "enabled"}).AddRow(int64(2), "duplicate-secret.example", true).AddRow(int64(5), "duplicate-secret.example", false),
+	} {
+		repository, mock, _ := newHotlinkRepositoryTest(t)
+		mock.ExpectBegin()
+		mock.ExpectQuery(testSelectHotlinkSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "allow_empty_referer"}).AddRow(int64(11), true))
+		mock.ExpectQuery(testSelectHotlinkEntriesSQL).WillReturnRows(rows)
+		mock.ExpectRollback()
+
+		_, err := repository.GetHotlinkPolicy(context.Background())
+
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrInvalid)
+		require.NotContains(t, err.Error(), "secret")
+		require.NoError(t, mock.ExpectationsWereMet())
+	}
+}
+
+func TestHotlinkRepositoryGetRollsBackAndSanitizesReadFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(sqlmock.Sqlmock)
+	}{
+		{name: "begin", setup: func(mock sqlmock.Sqlmock) { mock.ExpectBegin().WillReturnError(errors.New("begin-read-secret")) }},
+		{name: "singleton query", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectQuery(testSelectHotlinkSQL).WillReturnError(errors.New("singleton-read-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "entries query", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectQuery(testSelectHotlinkSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "allow_empty_referer"}).AddRow(int64(11), true))
+			mock.ExpectQuery(testSelectHotlinkEntriesSQL).WillReturnError(errors.New("entries-read-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "entries scan", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectQuery(testSelectHotlinkSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "allow_empty_referer"}).AddRow(int64(11), true))
+			mock.ExpectQuery(testSelectHotlinkEntriesSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "hostname", "enabled"}).AddRow("bad-secret", "example.com", true))
+			mock.ExpectRollback()
+		}},
+		{name: "entries row", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectQuery(testSelectHotlinkSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "allow_empty_referer"}).AddRow(int64(11), true))
+			mock.ExpectQuery(testSelectHotlinkEntriesSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "hostname", "enabled"}).AddRow(int64(2), "example.com", true).RowError(0, errors.New("row-read-secret")))
+			mock.ExpectRollback()
+		}},
+		{name: "commit", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectQuery(testSelectHotlinkSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "allow_empty_referer"}).AddRow(int64(11), true))
+			mock.ExpectQuery(testSelectHotlinkEntriesSQL).WillReturnRows(sqlmock.NewRows([]string{"id", "hostname", "enabled"}))
+			mock.ExpectCommit().WillReturnError(errors.New("commit-read-secret"))
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository, mock, _ := newHotlinkRepositoryTest(t)
+			test.setup(mock)
+			_, err := repository.GetHotlinkPolicy(context.Background())
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "secret")
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestReplaceHotlinkPolicyUpdatesAndReplacesEntriesInInputOrder(t *testing.T) {
+	repository, mock, counter := newHotlinkRepositoryTest(t)
+	at := time.Date(2026, 8, 14, 21, 0, 0, 123000, time.FixedZone("CST", 8*60*60))
+	input := HotlinkPolicy{AllowEmptyReferer: false, Entries: []HotlinkEntry{
+		{Hostname: "qiuxs.com", Enabled: true},
+		{Hostname: "blog-admin.qiuxs.com", Enabled: false},
+	}}
+	mock.ExpectBegin()
+	mock.ExpectExec(testUpdateHotlinkSQL).WithArgs(false, at.UTC()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(testDeleteHotlinkEntriesSQL).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(testInsertHotlinkEntrySQL).WithArgs(int64(2), "qiuxs.com", true, at.UTC(), at.UTC()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(testInsertHotlinkEntrySQL).WithArgs(int64(5), "blog-admin.qiuxs.com", false, at.UTC(), at.UTC()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	got, err := repository.ReplaceHotlinkPolicy(context.Background(), input, at)
+
+	require.NoError(t, err)
+	require.Equal(t, HotlinkPolicy{AllowEmptyReferer: false, Entries: []HotlinkEntry{
+		{ID: 2, Hostname: "qiuxs.com", Enabled: true},
+		{ID: 5, Hostname: "blog-admin.qiuxs.com", Enabled: false},
+	}}, got)
+	require.Equal(t, []string{"idseq:referer_allowlist", "idseq:referer_allowlist"}, counter.keys)
+	input.Entries[0].Hostname = "mutated"
+	require.Equal(t, "qiuxs.com", got.Entries[0].Hostname)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestReplaceHotlinkPolicyTreatsZeroChangedRowsAsExistingWhenLockQueryFindsSingleton(t *testing.T) {
+	repository, mock, counter := newHotlinkRepositoryTest(t)
+	at := time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectExec(testUpdateHotlinkSQL).WithArgs(true, at).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(testLockHotlinkSQL).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(11)))
+	mock.ExpectExec(testDeleteHotlinkEntriesSQL).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+
+	got, err := repository.ReplaceHotlinkPolicy(context.Background(), HotlinkPolicy{AllowEmptyReferer: true, Entries: []HotlinkEntry{}}, at)
+
+	require.NoError(t, err)
+	require.Equal(t, HotlinkPolicy{AllowEmptyReferer: true, Entries: []HotlinkEntry{}}, got)
+	require.NotNil(t, got.Entries)
+	require.Empty(t, counter.keys, "unchanged existing singleton must not allocate a replacement ID")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestReplaceHotlinkPolicyCreatesMissingSingletonWithSharedIDThenRemovesOrphans(t *testing.T) {
+	repository, mock, counter := newHotlinkRepositoryTest(t)
+	at := time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectExec(testUpdateHotlinkSQL).WithArgs(false, at).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(testLockHotlinkSQL).WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec(testInsertHotlinkSQL).WithArgs(int64(2), false, at, at).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(testDeleteHotlinkEntriesSQL).WillReturnResult(sqlmock.NewResult(0, 7))
+	mock.ExpectExec(testInsertHotlinkEntrySQL).WithArgs(int64(2), "example.com", true, at, at).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	got, err := repository.ReplaceHotlinkPolicy(context.Background(), HotlinkPolicy{
+		AllowEmptyReferer: false,
+		Entries:           []HotlinkEntry{{Hostname: "example.com", Enabled: true}},
+	}, at)
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"idseq:hotlink_settings", "idseq:referer_allowlist"}, counter.keys)
+	require.Equal(t, int64(2), got.Entries[0].ID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestReplaceHotlinkPolicyMapsOnlyNamedBusinessConflicts(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		key     string
+		atEntry bool
+		want    error
+	}{
+		{name: "singleton", key: "uk_hotlink_settings_singleton", want: ErrConflict},
+		{name: "qualified singleton", key: "hotlink_settings.uk_hotlink_settings_singleton", want: ErrConflict},
+		{name: "allowlist", key: "uk_referer_allowlist_hostname", atEntry: true, want: ErrInvalid},
+		{name: "qualified allowlist", key: "referer_allowlist.uk_referer_allowlist_hostname", atEntry: true, want: ErrInvalid},
+		{name: "singleton substring", key: "uk_hotlink_settings_singleton_backup"},
+		{name: "allowlist substring", key: "uk_referer_allowlist_hostname_backup", atEntry: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, mock, _ := newHotlinkRepositoryTest(t)
+			mysqlErr := &mysql.MySQLError{Number: 1062, Message: fmt.Sprintf("Duplicate entry 'hotlink-secret' for key '%s'", test.key)}
+			mock.ExpectBegin()
+			mock.ExpectExec(testUpdateHotlinkSQL).WillReturnResult(sqlmock.NewResult(0, boolToRows(test.atEntry)))
+			if test.atEntry {
+				mock.ExpectExec(testDeleteHotlinkEntriesSQL).WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectExec(testInsertHotlinkEntrySQL).WillReturnError(mysqlErr)
+			} else {
+				mock.ExpectQuery(testLockHotlinkSQL).WillReturnError(sql.ErrNoRows)
+				mock.ExpectExec(testInsertHotlinkSQL).WillReturnError(mysqlErr)
+			}
+			mock.ExpectRollback()
+
+			_, err := repository.ReplaceHotlinkPolicy(context.Background(), HotlinkPolicy{
+				Entries: []HotlinkEntry{{Hostname: "example.com", Enabled: true}},
+			}, time.Now())
+
+			require.Error(t, err)
+			if test.want != nil {
+				require.ErrorIs(t, err, test.want)
+			} else {
+				require.NotErrorIs(t, err, ErrConflict)
+				require.NotErrorIs(t, err, ErrInvalid)
+			}
+			require.ErrorIs(t, err, mysqlErr)
+			require.NotContains(t, err.Error(), "hotlink-secret")
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestReplaceHotlinkPolicyRollsBackEveryFailure(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(sqlmock.Sqlmock, *hotlinkCounter)
+	}{
+		{name: "begin", setup: func(mock sqlmock.Sqlmock, _ *hotlinkCounter) {
+			mock.ExpectBegin().WillReturnError(errors.New("begin-secret"))
+		}},
+		{name: "update", setup: func(mock sqlmock.Sqlmock, _ *hotlinkCounter) {
+			mock.ExpectBegin()
+			mock.ExpectExec(testUpdateHotlinkSQL).WillReturnError(errors.New("update-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "update rows", setup: func(mock sqlmock.Sqlmock, _ *hotlinkCounter) {
+			mock.ExpectBegin()
+			mock.ExpectExec(testUpdateHotlinkSQL).WillReturnResult(sqlmock.NewErrorResult(errors.New("rows-secret")))
+			mock.ExpectRollback()
+		}},
+		{name: "unexpected update rows", setup: func(mock sqlmock.Sqlmock, _ *hotlinkCounter) {
+			mock.ExpectBegin()
+			mock.ExpectExec(testUpdateHotlinkSQL).WillReturnResult(sqlmock.NewResult(0, 2))
+			mock.ExpectRollback()
+		}},
+		{name: "existence query", setup: func(mock sqlmock.Sqlmock, _ *hotlinkCounter) {
+			mock.ExpectBegin()
+			mock.ExpectExec(testUpdateHotlinkSQL).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectQuery(testLockHotlinkSQL).WillReturnError(errors.New("query-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "singleton counter", setup: func(mock sqlmock.Sqlmock, counter *hotlinkCounter) {
+			counter.failKey = "idseq:hotlink_settings"
+			mock.ExpectBegin()
+			mock.ExpectExec(testUpdateHotlinkSQL).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectQuery(testLockHotlinkSQL).WillReturnError(sql.ErrNoRows)
+			mock.ExpectRollback()
+		}},
+		{name: "singleton insert", setup: func(mock sqlmock.Sqlmock, _ *hotlinkCounter) {
+			mock.ExpectBegin()
+			mock.ExpectExec(testUpdateHotlinkSQL).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectQuery(testLockHotlinkSQL).WillReturnError(sql.ErrNoRows)
+			mock.ExpectExec(testInsertHotlinkSQL).WillReturnError(errors.New("singleton-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "delete", setup: func(mock sqlmock.Sqlmock, _ *hotlinkCounter) {
+			mock.ExpectBegin()
+			mock.ExpectExec(testUpdateHotlinkSQL).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(testDeleteHotlinkEntriesSQL).WillReturnError(errors.New("delete-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "entry counter", setup: func(mock sqlmock.Sqlmock, counter *hotlinkCounter) {
+			counter.failKey = "idseq:referer_allowlist"
+			mock.ExpectBegin()
+			mock.ExpectExec(testUpdateHotlinkSQL).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(testDeleteHotlinkEntriesSQL).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectRollback()
+		}},
+		{name: "entry insert", setup: func(mock sqlmock.Sqlmock, _ *hotlinkCounter) {
+			mock.ExpectBegin()
+			mock.ExpectExec(testUpdateHotlinkSQL).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(testDeleteHotlinkEntriesSQL).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectExec(testInsertHotlinkEntrySQL).WillReturnError(errors.New("entry-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "commit", setup: func(mock sqlmock.Sqlmock, _ *hotlinkCounter) {
+			mock.ExpectBegin()
+			mock.ExpectExec(testUpdateHotlinkSQL).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(testDeleteHotlinkEntriesSQL).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectExec(testInsertHotlinkEntrySQL).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit().WillReturnError(errors.New("commit-secret"))
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository, mock, counter := newHotlinkRepositoryTest(t)
+			test.setup(mock, counter)
+			_, err := repository.ReplaceHotlinkPolicy(context.Background(), HotlinkPolicy{
+				Entries: []HotlinkEntry{{Hostname: "example.com", Enabled: true}},
+			}, time.Now())
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "secret")
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestHotlinkRepositoryRejectsInvalidConfigurationContextAndPolicyWithoutSQL(t *testing.T) {
+	valid, mock, _ := newHotlinkRepositoryTest(t)
+	var nilRepository *MySQLRepository
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	for _, test := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "nil receiver", call: func() error { _, err := nilRepository.GetHotlinkPolicy(context.Background()); return err }},
+		{name: "nil database", call: func() error {
+			_, err := NewMySQLRepository(nil, valid.ids).GetHotlinkPolicy(context.Background())
+			return err
+		}},
+		{name: "nil generator", call: func() error { _, err := NewMySQLRepository(db, nil).GetHotlinkPolicy(context.Background()); return err }},
+		{name: "zero generator", call: func() error {
+			_, err := NewMySQLRepository(db, &idgen.Generator{}).ReplaceHotlinkPolicy(context.Background(), HotlinkPolicy{Entries: []HotlinkEntry{}}, time.Now())
+			return err
+		}},
+		{name: "nil get context", call: func() error { _, err := valid.GetHotlinkPolicy(nil); return err }},
+		{name: "nil replace context", call: func() error {
+			_, err := valid.ReplaceHotlinkPolicy(nil, HotlinkPolicy{Entries: []HotlinkEntry{}}, time.Now())
+			return err
+		}},
+		{name: "unnormalized host", call: func() error {
+			_, err := valid.ReplaceHotlinkPolicy(context.Background(), HotlinkPolicy{Entries: []HotlinkEntry{{Hostname: "EXAMPLE.COM"}}}, time.Now())
+			return err
+		}},
+		{name: "duplicate host", call: func() error {
+			_, err := valid.ReplaceHotlinkPolicy(context.Background(), HotlinkPolicy{Entries: []HotlinkEntry{{Hostname: "example.com"}, {Hostname: "example.com"}}}, time.Now())
+			return err
+		}},
+		{name: "caller ID", call: func() error {
+			_, err := valid.ReplaceHotlinkPolicy(context.Background(), HotlinkPolicy{Entries: []HotlinkEntry{{ID: 1, Hostname: "example.com"}}}, time.Now())
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var callErr error
+			require.NotPanics(t, func() { callErr = test.call() })
+			require.Error(t, callErr)
+		})
+	}
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+type hotlinkCounter struct {
+	mu      sync.Mutex
+	values  map[string]int64
+	keys    []string
+	failKey string
+}
+
+func (c *hotlinkCounter) Increment(_ context.Context, key string) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.keys = append(c.keys, key)
+	if key == c.failKey {
+		return 0, errors.New("counter-secret")
+	}
+	c.values[key]++
+	return c.values[key], nil
+}
+
+func (*hotlinkCounter) Raise(context.Context, string, int64) (int64, error) {
+	return 0, errors.New("unexpected counter raise")
+}
+
+func newHotlinkRepositoryTest(t *testing.T) (*MySQLRepository, sqlmock.Sqlmock, *hotlinkCounter) {
+	t.Helper()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	counter := &hotlinkCounter{values: make(map[string]int64)}
+	ids, err := idgen.New(counter, nil, 2, 3, false)
+	require.NoError(t, err)
+	return NewMySQLRepository(db, ids), mock, counter
+}
+
+func boolToRows(value bool) int64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 type settingsCounter struct {

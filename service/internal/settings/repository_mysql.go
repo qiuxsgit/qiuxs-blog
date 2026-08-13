@@ -16,13 +16,24 @@ import (
 )
 
 const (
-	siteColumns         = "id, site_name, author_name, author_bio, home_status, about_md, social_links_json, seo_default_title, seo_default_description, seo_default_image_media_id, filing_name, filing_number, lock_version, updated_at"
-	selectSiteStatement = "SELECT " + siteColumns + " FROM site_settings WHERE singleton_key = 1"
-	insertSiteStatement = "INSERT INTO site_settings (id, singleton_key, site_name, author_name, author_bio, home_status, about_md, social_links_json, seo_default_title, seo_default_description, seo_default_image_media_id, filing_name, filing_number, lock_version, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
-	updateSiteStatement = "UPDATE site_settings SET site_name=?, author_name=?, author_bio=?, home_status=?, about_md=?, social_links_json=?, seo_default_title=?, seo_default_description=?, seo_default_image_media_id=?, filing_name=?, filing_number=?, lock_version=lock_version+1, updated_at=? WHERE singleton_key=1 AND lock_version=?"
+	siteColumns                   = "id, site_name, author_name, author_bio, home_status, about_md, social_links_json, seo_default_title, seo_default_description, seo_default_image_media_id, filing_name, filing_number, lock_version, updated_at"
+	selectSiteStatement           = "SELECT " + siteColumns + " FROM site_settings WHERE singleton_key = 1"
+	insertSiteStatement           = "INSERT INTO site_settings (id, singleton_key, site_name, author_name, author_bio, home_status, about_md, social_links_json, seo_default_title, seo_default_description, seo_default_image_media_id, filing_name, filing_number, lock_version, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
+	updateSiteStatement           = "UPDATE site_settings SET site_name=?, author_name=?, author_bio=?, home_status=?, about_md=?, social_links_json=?, seo_default_title=?, seo_default_description=?, seo_default_image_media_id=?, filing_name=?, filing_number=?, lock_version=lock_version+1, updated_at=? WHERE singleton_key=1 AND lock_version=?"
+	selectHotlinkStatement        = "SELECT id, allow_empty_referer FROM hotlink_settings WHERE singleton_key = 1"
+	selectHotlinkEntriesStatement = "SELECT id, hostname, enabled FROM referer_allowlist ORDER BY hostname ASC, id ASC"
+	updateHotlinkStatement        = "UPDATE hotlink_settings SET allow_empty_referer=?, updated_at=? WHERE singleton_key=1"
+	lockHotlinkStatement          = "SELECT id FROM hotlink_settings WHERE singleton_key=1 FOR UPDATE"
+	insertHotlinkStatement        = "INSERT INTO hotlink_settings (id, singleton_key, allow_empty_referer, created_at, updated_at) VALUES (?, 1, ?, ?, ?)"
+	deleteHotlinkEntriesStatement = "DELETE FROM referer_allowlist"
+	insertHotlinkEntryStatement   = "INSERT INTO referer_allowlist (id, hostname, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
 )
 
-var singletonUniquePattern = regexp.MustCompile("(?i)for key ['`](?:[^'`.]+\\.)?uk_site_settings_singleton['`]")
+var (
+	singletonUniquePattern        = regexp.MustCompile("(?i)for key ['`](?:[^'`.]+\\.)?uk_site_settings_singleton['`]")
+	hotlinkSingletonUniquePattern = regexp.MustCompile("(?i)for key ['`](?:[^'`.]+\\.)?uk_hotlink_settings_singleton['`]")
+	hotlinkHostnameUniquePattern  = regexp.MustCompile("(?i)for key ['`](?:[^'`.]+\\.)?uk_referer_allowlist_hostname['`]")
+)
 
 type MySQLRepository struct {
 	db      *sql.DB
@@ -144,6 +155,144 @@ func (r *MySQLRepository) UpdateSite(ctx context.Context, site Site, expectedLoc
 	}
 	committed = true
 	return cloneSite(stored), nil
+}
+
+func (r *MySQLRepository) GetHotlinkPolicy(ctx context.Context) (HotlinkPolicy, error) {
+	if err := r.validate(ctx); err != nil {
+		return HotlinkPolicy{}, err
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return HotlinkPolicy{}, settingsDependencyError("begin hotlink policy read", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	var singletonID int64
+	var policy HotlinkPolicy
+	if err := tx.QueryRowContext(ctx, selectHotlinkStatement).Scan(&singletonID, &policy.AllowEmptyReferer); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return HotlinkPolicy{}, ErrNotFound
+		}
+		return HotlinkPolicy{}, settingsDependencyError("get hotlink singleton", err)
+	}
+	if singletonID <= 0 {
+		return HotlinkPolicy{}, settingsDependencyError("get hotlink singleton", errors.New("stored singleton ID is invalid"))
+	}
+	rows, err := tx.QueryContext(ctx, selectHotlinkEntriesStatement)
+	if err != nil {
+		return HotlinkPolicy{}, settingsDependencyError("get hotlink entries", err)
+	}
+	defer rows.Close()
+	policy.Entries = make([]HotlinkEntry, 0)
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var entry HotlinkEntry
+		if err := rows.Scan(&entry.ID, &entry.Hostname, &entry.Enabled); err != nil {
+			return HotlinkPolicy{}, settingsDependencyError("get hotlink entries", err)
+		}
+		normalized, normalizeErr := NormalizeHostname(entry.Hostname)
+		if entry.ID <= 0 || normalizeErr != nil || normalized != entry.Hostname {
+			return HotlinkPolicy{}, settingsDependencyError("get hotlink entries", errors.New("stored hotlink entry is invalid"))
+		}
+		if _, duplicate := seen[entry.Hostname]; duplicate {
+			return HotlinkPolicy{}, settingsDependencyError("get hotlink entries", errors.New("stored hotlink entry is duplicated"))
+		}
+		seen[entry.Hostname] = struct{}{}
+		policy.Entries = append(policy.Entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return HotlinkPolicy{}, settingsDependencyError("get hotlink entries", err)
+	}
+	if err := rows.Close(); err != nil {
+		return HotlinkPolicy{}, settingsDependencyError("get hotlink entries", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return HotlinkPolicy{}, settingsDependencyError("commit hotlink policy read", err)
+	}
+	committed = true
+	return cloneHotlinkPolicy(policy), nil
+}
+
+func (r *MySQLRepository) ReplaceHotlinkPolicy(ctx context.Context, policy HotlinkPolicy, at time.Time) (HotlinkPolicy, error) {
+	if err := r.validate(ctx); err != nil {
+		return HotlinkPolicy{}, err
+	}
+	if err := validateHotlinkPolicyForWrite(policy); err != nil {
+		return HotlinkPolicy{}, err
+	}
+	at = at.UTC()
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return HotlinkPolicy{}, settingsDependencyError("begin hotlink policy replacement", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	result, err := tx.ExecContext(ctx, updateHotlinkStatement, policy.AllowEmptyReferer, at)
+	if err != nil {
+		return HotlinkPolicy{}, classifyHotlinkWriteError("update hotlink singleton", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return HotlinkPolicy{}, settingsDependencyError("update hotlink singleton", err)
+	}
+	if rowsAffected > 1 {
+		return HotlinkPolicy{}, settingsDependencyError("update hotlink singleton", errors.New("unexpected affected row count"))
+	}
+	if rowsAffected == 0 {
+		var singletonID int64
+		err := tx.QueryRowContext(ctx, lockHotlinkStatement).Scan(&singletonID)
+		switch {
+		case err == nil && singletonID <= 0:
+			return HotlinkPolicy{}, settingsDependencyError("lock hotlink singleton", errors.New("stored singleton ID is invalid"))
+		case err == nil:
+		case errors.Is(err, sql.ErrNoRows):
+			if insertErr := r.ids.Insert(ctx, dbtable.HotlinkSettings, func(id int64) error {
+				insertResult, execErr := tx.ExecContext(ctx, insertHotlinkStatement, id, policy.AllowEmptyReferer, at, at)
+				if execErr != nil {
+					return execErr
+				}
+				return requireOneAffectedRow(insertResult, "hotlink singleton insert")
+			}); insertErr != nil {
+				return HotlinkPolicy{}, classifyHotlinkWriteError("create hotlink singleton", insertErr)
+			}
+		default:
+			return HotlinkPolicy{}, settingsDependencyError("lock hotlink singleton", err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, deleteHotlinkEntriesStatement); err != nil {
+		return HotlinkPolicy{}, settingsDependencyError("delete hotlink entries", err)
+	}
+	stored := HotlinkPolicy{AllowEmptyReferer: policy.AllowEmptyReferer, Entries: make([]HotlinkEntry, 0, len(policy.Entries))}
+	for _, input := range policy.Entries {
+		created := input
+		if err := r.ids.Insert(ctx, dbtable.RefererAllowlist, func(id int64) error {
+			created.ID = id
+			insertResult, execErr := tx.ExecContext(ctx, insertHotlinkEntryStatement, id, created.Hostname, created.Enabled, at, at)
+			if execErr != nil {
+				return execErr
+			}
+			return requireOneAffectedRow(insertResult, "hotlink entry insert")
+		}); err != nil {
+			return HotlinkPolicy{}, classifyHotlinkWriteError("create hotlink entry", err)
+		}
+		stored.Entries = append(stored.Entries, created)
+	}
+	if err := tx.Commit(); err != nil {
+		return HotlinkPolicy{}, settingsDependencyError("commit hotlink policy replacement", err)
+	}
+	committed = true
+	return cloneHotlinkPolicy(stored), nil
 }
 
 func (r *MySQLRepository) validate(ctx context.Context) error {
@@ -298,4 +447,47 @@ func isSingletonDuplicate(err error) bool {
 	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 && singletonUniquePattern.MatchString(mysqlErr.Message)
 }
 
+func validateHotlinkPolicyForWrite(policy HotlinkPolicy) error {
+	seen := make(map[string]struct{}, len(policy.Entries))
+	for _, entry := range policy.Entries {
+		normalized, err := NormalizeHostname(entry.Hostname)
+		if err != nil || normalized != entry.Hostname || entry.ID != 0 {
+			return settingsDomainError("validate hotlink policy persistence", ErrInvalid, nil)
+		}
+		if _, duplicate := seen[entry.Hostname]; duplicate {
+			return settingsDomainError("validate hotlink policy persistence", ErrInvalid, nil)
+		}
+		seen[entry.Hostname] = struct{}{}
+	}
+	return nil
+}
+
+func requireOneAffectedRow(result sql.Result, operation string) error {
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected != 1 {
+		return errors.New(operation + " affected an unexpected number of rows")
+	}
+	return nil
+}
+
+func classifyHotlinkWriteError(operation string, err error) error {
+	switch {
+	case isNamedMySQLDuplicate(err, hotlinkSingletonUniquePattern):
+		return settingsDomainError(operation, ErrConflict, err)
+	case isNamedMySQLDuplicate(err, hotlinkHostnameUniquePattern):
+		return settingsDomainError(operation, ErrInvalid, err)
+	default:
+		return settingsDependencyError(operation, err)
+	}
+}
+
+func isNamedMySQLDuplicate(err error, pattern *regexp.Regexp) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 && pattern.MatchString(mysqlErr.Message)
+}
+
 var _ SiteRepository = (*MySQLRepository)(nil)
+var _ HotlinkRepository = (*MySQLRepository)(nil)

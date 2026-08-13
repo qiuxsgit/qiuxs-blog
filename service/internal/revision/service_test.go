@@ -89,6 +89,54 @@ func TestServiceSaveDraftRejectsInvalidInputBeforeResolution(t *testing.T) {
 	}
 }
 
+func TestServiceSaveDraftBoundsAmplificationBeforeResolversAndRepository(t *testing.T) {
+	t.Run("exact tag and media limits", func(t *testing.T) {
+		repository := &revisionRepositoryFake{}
+		tags := &tagResolverFake{}
+		coverID := int64(91)
+		mediaResolver := &mediaResolverFake{cover: media.Media{ID: coverID, PublicKey: firstMediaKey, State: "active"}}
+		service := newRevisionService(t, repository, tags, mediaResolver, time.Now)
+		tagIDs := make([]int64, MaxTagCount)
+		for index := range tagIDs {
+			tagIDs[index] = int64(index + 1)
+		}
+
+		_, err := service.SaveDraft(context.Background(), 11, 1, Content{
+			Title: "Draft", TagIDs: tagIDs, CoverMediaID: &coverID, ContentMD: registeredImagesMarkdown(MaxBodyMediaCount, false),
+		})
+
+		require.NoError(t, err)
+		require.Len(t, tags.calls, 1)
+		require.Len(t, tags.calls[0], MaxTagCount)
+		require.Len(t, mediaResolver.calls, 1)
+		require.Equal(t, &coverID, mediaResolver.calls[0].coverID)
+		require.Len(t, mediaResolver.calls[0].publicKeys, MaxBodyMediaCount)
+		require.Len(t, repository.saveCalls, 1)
+	})
+
+	for _, test := range []struct {
+		name    string
+		content Content
+	}{
+		{name: "tags over limit", content: Content{Title: "Draft", TagIDs: make([]int64, MaxTagCount+1)}},
+		{name: "unique body media over limit", content: Content{Title: "Draft", ContentMD: registeredImagesMarkdown(MaxBodyMediaCount+1, false)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &revisionRepositoryFake{}
+			tags := &tagResolverFake{}
+			mediaResolver := &mediaResolverFake{}
+			service := newRevisionService(t, repository, tags, mediaResolver, time.Now)
+
+			_, err := service.SaveDraft(context.Background(), 11, 1, test.content)
+
+			require.ErrorIs(t, err, ErrInvalidContent)
+			require.Empty(t, tags.calls)
+			require.Empty(t, mediaResolver.calls)
+			require.Empty(t, repository.saveCalls)
+		})
+	}
+}
+
 func TestServiceSaveDraftMapsResolverDomainFailuresToInvalidContent(t *testing.T) {
 	for _, test := range []struct {
 		name     string

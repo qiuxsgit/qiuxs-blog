@@ -10,12 +10,18 @@ import (
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
 const (
 	maximumMarkdownBytes = 2 * 1024 * 1024
 	maximumTitleRunes    = 200
 	maximumSummaryRunes  = 600
+
+	// MaxTagCount bounds one draft's tag snapshot set.
+	MaxTagCount = 32
+	// MaxBodyMediaCount bounds unique registered media referenced by Markdown.
+	MaxBodyMediaCount = 256
 )
 
 var registeredImagePathPattern = regexp.MustCompile(`^/img/proxy/(m_[a-z0-9_-]{22})$`)
@@ -58,6 +64,9 @@ func validateMarkdown(content Content, rejectBlob bool) ([]string, error) {
 			}
 			if key, ok := registeredImageKey(destination); ok {
 				if _, exists := seen[key]; !exists {
+					if len(keys) == MaxBodyMediaCount {
+						return ast.WalkStop, ErrInvalidContent
+					}
 					seen[key] = struct{}{}
 					keys = append(keys, key)
 				}
@@ -80,6 +89,10 @@ func validateMarkdown(content Content, rejectBlob bool) ([]string, error) {
 }
 
 func registeredImageKey(destination string) (string, bool) {
+	destination = normalizeMarkdownDestination([]byte(destination))
+	if strings.ContainsAny(destination, "?#") {
+		return "", false
+	}
 	parsed, err := url.Parse(destination)
 	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" {
 		return "", false
@@ -92,6 +105,14 @@ func registeredImageKey(destination string) (string, bool) {
 }
 
 func hasBlobScheme(destination string) bool {
+	destination = normalizeMarkdownDestination([]byte(destination))
 	parsed, err := url.Parse(destination)
 	return err == nil && strings.EqualFold(parsed.Scheme, "blob")
+}
+
+func normalizeMarkdownDestination(destination []byte) string {
+	destination = util.UnescapePunctuations(destination)
+	destination = util.ResolveNumericReferences(destination)
+	destination = util.ResolveEntityNames(destination)
+	return string(destination)
 }

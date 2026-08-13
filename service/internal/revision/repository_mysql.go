@@ -24,6 +24,7 @@ const (
 	draftMediaDeleteStatement   = "DELETE FROM article_revision_media WHERE revision_id = ?"
 	draftMediaInsertStatement   = "INSERT INTO article_revision_media (id, revision_id, media_id, purpose, position, created_at) VALUES (?, ?, ?, ?, ?, ?)"
 	activeArticleTouchStatement = "UPDATE articles SET updated_at = ? WHERE id = ? AND state = 'active'"
+	articleStateForUpdateSelect = "SELECT state FROM articles WHERE id = ? FOR UPDATE"
 )
 
 var contentHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
@@ -51,18 +52,33 @@ func (r *MySQLRepository) GetDraft(ctx context.Context, articleID int64) (Draft,
 	if articleID <= 0 {
 		return Draft{}, ErrInvalidContent
 	}
-	draft, err := scanDraft(r.db.QueryRowContext(ctx, storedEditingDraftSelect, articleID), "get article draft")
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return Draft{}, revisionSafeWrap("begin draft read", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	draft, err := scanDraft(tx.QueryRowContext(ctx, storedEditingDraftSelect, articleID), "get article draft")
 	if err != nil {
 		return Draft{}, err
 	}
-	draft.Tags, err = r.loadTags(ctx, draft.ID)
+	draft.Tags, err = r.loadTags(ctx, tx, draft.ID)
 	if err != nil {
 		return Draft{}, err
 	}
-	draft.Media, err = r.loadMedia(ctx, draft.ID)
+	draft.Media, err = r.loadMedia(ctx, tx, draft.ID)
 	if err != nil {
 		return Draft{}, err
 	}
+	if err := tx.Commit(); err != nil {
+		return Draft{}, revisionSafeWrap("commit draft read", err)
+	}
+	committed = true
 	return draft, nil
 }
 
@@ -151,9 +167,18 @@ func (r *MySQLRepository) SaveDraft(ctx context.Context, articleID, lockVersion 
 		return Draft{}, revisionSafeWrap("touch active article after draft save", err)
 	}
 	if rowsAffected == 0 {
-		return Draft{}, ErrArticleInactive
+		var state string
+		if err := tx.QueryRowContext(ctx, articleStateForUpdateSelect, articleID).Scan(&state); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return Draft{}, ErrArticleInactive
+			}
+			return Draft{}, revisionSafeWrap("verify active article after draft save", err)
+		}
+		if state != "active" {
+			return Draft{}, ErrArticleInactive
+		}
 	}
-	if rowsAffected != 1 {
+	if rowsAffected > 1 {
 		return Draft{}, revisionSafeWrap("touch active article after draft save", errors.New("unexpected affected row count"))
 	}
 	if err := tx.Commit(); err != nil {
@@ -164,8 +189,8 @@ func (r *MySQLRepository) SaveDraft(ctx context.Context, articleID, lockVersion 
 	return draftFromPrepared(articleID, draftID, revisionNo, savedLock, content, createdAt, at), nil
 }
 
-func (r *MySQLRepository) loadTags(ctx context.Context, revisionID int64) ([]tag.Snapshot, error) {
-	rows, err := r.db.QueryContext(ctx, storedDraftTagsSelect, revisionID)
+func (r *MySQLRepository) loadTags(ctx context.Context, queryer revisionQueryer, revisionID int64) ([]tag.Snapshot, error) {
+	rows, err := queryer.QueryContext(ctx, storedDraftTagsSelect, revisionID)
 	if err != nil {
 		return nil, revisionSafeWrap("load draft tag snapshots", err)
 	}
@@ -184,8 +209,8 @@ func (r *MySQLRepository) loadTags(ctx context.Context, revisionID int64) ([]tag
 	return snapshots, nil
 }
 
-func (r *MySQLRepository) loadMedia(ctx context.Context, revisionID int64) ([]media.Reference, error) {
-	rows, err := r.db.QueryContext(ctx, storedDraftMediaSelect, revisionID)
+func (r *MySQLRepository) loadMedia(ctx context.Context, queryer revisionQueryer, revisionID int64) ([]media.Reference, error) {
+	rows, err := queryer.QueryContext(ctx, storedDraftMediaSelect, revisionID)
 	if err != nil {
 		return nil, revisionSafeWrap("load draft media references", err)
 	}
@@ -224,6 +249,10 @@ type revisionScanner interface {
 	Scan(...any) error
 }
 
+type revisionQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 func scanDraft(scanner revisionScanner, operation string) (Draft, error) {
 	var draft Draft
 	var cover sql.NullInt64
@@ -248,6 +277,9 @@ func scanDraft(scanner revisionScanner, operation string) (Draft, error) {
 }
 
 func validPreparedContent(content PreparedContent) bool {
+	if len(content.Tags) > MaxTagCount || len(content.Media) > MaxBodyMediaCount+1 {
+		return false
+	}
 	if !contentHashPattern.MatchString(content.ContentHash) || ComputeHash(content) != content.ContentHash {
 		return false
 	}

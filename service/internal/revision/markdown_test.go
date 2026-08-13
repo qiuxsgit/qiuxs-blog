@@ -1,6 +1,7 @@
 package revision
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -79,6 +80,65 @@ func TestValidateDraftAllowsTransientBlobDestinationsButFreezableRejectsThem(t *
 	}
 }
 
+func TestValidateFreezableRejectsBlobDestinationsAfterGoldmarkNormalization(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		destination string
+	}{
+		{name: "decimal entity", destination: "blob&#58;https://blog-admin.qiuxs.com/item"},
+		{name: "hex entity", destination: "blob&#x3a;https://blog-admin.qiuxs.com/item"},
+		{name: "named entity", destination: "blob&colon;https://blog-admin.qiuxs.com/item"},
+		{name: "backslash escape", destination: `blob\:https://blog-admin.qiuxs.com/item`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, markdown := range []string{
+				"[pending](" + test.destination + ")",
+				"![pending](" + test.destination + ")",
+			} {
+				err := ValidateFreezable(Content{Title: "Publishable", ContentMD: markdown})
+				require.ErrorIs(t, err, ErrInvalidContent)
+				require.NotContains(t, err.Error(), test.destination)
+			}
+		})
+	}
+}
+
+func TestValidateFreezableNormalizesDestinationOnlyOnce(t *testing.T) {
+	err := ValidateFreezable(Content{
+		Title:     "Publishable",
+		ContentMD: "[literal entity](blob&amp;#58;https://blog-admin.qiuxs.com/item)",
+	})
+
+	require.NoError(t, err)
+}
+
+func TestValidateDraftRejectsReservedProxyDelimitersEvenWhenEmpty(t *testing.T) {
+	for _, destination := range []string{
+		"/img/proxy/" + firstMediaKey + "?",
+		"/img/proxy/" + firstMediaKey + "#",
+		`/img/proxy/` + firstMediaKey + `\?`,
+		"/img/proxy/" + firstMediaKey + "&#35;",
+	} {
+		keys, err := ValidateDraft(Content{ContentMD: "![image](" + destination + ")"})
+
+		require.NoError(t, err)
+		require.Empty(t, keys)
+	}
+}
+
+func TestValidateDraftBoundsUniqueBodyMediaReferences(t *testing.T) {
+	keys, err := ValidateDraft(Content{ContentMD: registeredImagesMarkdown(MaxBodyMediaCount, false)})
+	require.NoError(t, err)
+	require.Len(t, keys, MaxBodyMediaCount)
+
+	_, err = ValidateDraft(Content{ContentMD: registeredImagesMarkdown(MaxBodyMediaCount+1, false)})
+	require.ErrorIs(t, err, ErrInvalidContent)
+
+	keys, err = ValidateDraft(Content{ContentMD: registeredImagesMarkdown(MaxBodyMediaCount+1, true)})
+	require.NoError(t, err)
+	require.Equal(t, []string{mediaKeyForIndex(0)}, keys)
+}
+
 func TestValidateFreezableRequiresNonblankTitle(t *testing.T) {
 	for _, title := range []string{"", " \t\n "} {
 		require.ErrorIs(t, ValidateFreezable(Content{Title: title, ContentMD: "body"}), ErrInvalidContent)
@@ -108,4 +168,20 @@ func TestValidateDraftEnforcesExactByteAndRuneLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+func registeredImagesMarkdown(count int, duplicate bool) string {
+	var markdown strings.Builder
+	for index := 0; index < count; index++ {
+		keyIndex := index
+		if duplicate {
+			keyIndex = 0
+		}
+		fmt.Fprintf(&markdown, "![image](/img/proxy/%s)\n", mediaKeyForIndex(keyIndex))
+	}
+	return markdown.String()
+}
+
+func mediaKeyForIndex(index int) string {
+	return fmt.Sprintf("m_%022d", index)
 }

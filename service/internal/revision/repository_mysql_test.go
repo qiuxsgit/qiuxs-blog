@@ -25,6 +25,7 @@ const (
 	deleteDraftMediaSQL    = `DELETE FROM article_revision_media WHERE revision_id = ?`
 	insertDraftMediaSQL    = `INSERT INTO article_revision_media (id, revision_id, media_id, purpose, position, created_at) VALUES (?, ?, ?, ?, ?, ?)`
 	touchActiveArticleSQL  = `UPDATE articles SET updated_at = ? WHERE id = ? AND state = 'active'`
+	selectArticleStateSQL  = `SELECT state FROM articles WHERE id = ? FOR UPDATE`
 	testContentHash        = `5b732fcfb7289a73704164ad25aaae5be4b188172d1a47932428a8d1cdc7d2dc`
 )
 
@@ -32,6 +33,7 @@ func TestMySQLRepositoryGetDraftLoadsEditingScalarAndOrderedAssociations(t *test
 	repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
 	createdAt := time.Date(2026, 8, 13, 1, 0, 0, 0, time.UTC)
 	updatedAt := createdAt.Add(time.Hour)
+	mock.ExpectBegin()
 	mock.ExpectQuery(selectEditingDraftSQL).WithArgs(int64(11)).WillReturnRows(draftScalarRows().AddRow(
 		int64(21), int64(11), int64(2), "editing", "draft", "Title", "Summary", int64(91), "body", testContentHash, int64(3), createdAt, updatedAt,
 	))
@@ -45,6 +47,7 @@ func TestMySQLRepositoryGetDraftLoadsEditingScalarAndOrderedAssociations(t *test
 			AddRow(int64(91), firstMediaKey, "cover", 0).
 			AddRow(int64(92), secondMediaKey, "content", 1),
 	)
+	mock.ExpectCommit()
 
 	got, err := repository.GetDraft(context.Background(), 11)
 
@@ -69,11 +72,13 @@ func TestMySQLRepositoryGetDraftLoadsEditingScalarAndOrderedAssociations(t *test
 func TestMySQLRepositoryGetDraftReturnsNonNilEmptyAssociationsAndNullCover(t *testing.T) {
 	repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
 	at := time.Date(2026, 8, 13, 1, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
 	mock.ExpectQuery(selectEditingDraftSQL).WithArgs(int64(11)).WillReturnRows(draftScalarRows().AddRow(
 		int64(21), int64(11), int64(1), "editing", "draft", "", "", nil, "", ComputeHash(PreparedContent{}), int64(1), at, at,
 	))
 	mock.ExpectQuery(selectDraftTagsSQL).WithArgs(int64(21)).WillReturnRows(sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}))
 	mock.ExpectQuery(selectDraftMediaSQL).WithArgs(int64(21)).WillReturnRows(sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}))
+	mock.ExpectCommit()
 
 	got, err := repository.GetDraft(context.Background(), 11)
 
@@ -89,7 +94,9 @@ func TestMySQLRepositoryGetDraftReturnsNonNilEmptyAssociationsAndNullCover(t *te
 func TestMySQLRepositoryGetDraftMapsMissingAndSanitizesAssociationFailures(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+		mock.ExpectBegin()
 		mock.ExpectQuery(selectEditingDraftSQL).WithArgs(int64(11)).WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
 
 		_, err := repository.GetDraft(context.Background(), 11)
 
@@ -136,10 +143,21 @@ func TestMySQLRepositoryGetDraftMapsMissingAndSanitizesAssociationFailures(t *te
 				sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}).AddRow("media-id-secret", firstMediaKey, "content", 0),
 			)
 		}},
+		{name: "media rows", setup: func(mock sqlmock.Sqlmock) {
+			expectStoredDraftScalar(mock)
+			expectNoStoredTags(mock)
+			mock.ExpectQuery(selectDraftMediaSQL).WithArgs(int64(21)).WillReturnRows(
+				sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}).
+					AddRow(int64(91), firstMediaKey, "content", 0).
+					RowError(0, errors.New("media-rows-secret")),
+			)
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+			mock.ExpectBegin()
 			test.setup(mock)
+			mock.ExpectRollback()
 
 			_, err := repository.GetDraft(context.Background(), 11)
 
@@ -148,6 +166,34 @@ func TestMySQLRepositoryGetDraftMapsMissingAndSanitizesAssociationFailures(t *te
 			require.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+func TestMySQLRepositoryGetDraftSanitizesTransactionFailures(t *testing.T) {
+	t.Run("begin", func(t *testing.T) {
+		repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+		mock.ExpectBegin().WillReturnError(errors.New("begin-secret"))
+
+		_, err := repository.GetDraft(context.Background(), 11)
+
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "begin-secret")
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("commit", func(t *testing.T) {
+		repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+		mock.ExpectBegin()
+		expectStoredDraftScalar(mock)
+		expectNoStoredTags(mock)
+		mock.ExpectQuery(selectDraftMediaSQL).WithArgs(int64(21)).WillReturnRows(sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}))
+		mock.ExpectCommit().WillReturnError(errors.New("commit-secret"))
+
+		_, err := repository.GetDraft(context.Background(), 11)
+
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "commit-secret")
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
 }
 
 func TestMySQLRepositorySaveDraftUsesOneTransactionAndSharedAssociationIDs(t *testing.T) {
@@ -337,35 +383,78 @@ func TestMySQLRepositorySaveDraftRollsBackSQLAndAllocationFailures(t *testing.T)
 	}
 }
 
-func TestMySQLRepositorySaveDraftMapsInactiveArticleAndCommitFailure(t *testing.T) {
+func TestMySQLRepositorySaveDraftAcceptsNoopTouchForStillActiveArticle(t *testing.T) {
+	at := time.Date(2026, 8, 14, 1, 0, 0, 0, time.UTC)
+	createdAt := at.Add(-time.Hour)
+	content := preparedRepositoryContent()
+	repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+	expectSaveThroughMedia(mock, content, at, createdAt)
+	mock.ExpectExec(touchActiveArticleSQL).WithArgs(at, int64(11)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(selectArticleStateSQL).WithArgs(int64(11)).WillReturnRows(sqlmock.NewRows([]string{"state"}).AddRow("active"))
+	mock.ExpectCommit()
+
+	got, err := repository.SaveDraft(context.Background(), 11, 3, content, at)
+
+	require.NoError(t, err)
+	require.Equal(t, int64(4), got.LockVersion)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMySQLRepositorySaveDraftMapsNoopTouchStateFailures(t *testing.T) {
 	at := time.Date(2026, 8, 14, 1, 0, 0, 0, time.UTC)
 	createdAt := at.Add(-time.Hour)
 	content := preparedRepositoryContent()
 
-	t.Run("inactive article", func(t *testing.T) {
-		repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
-		expectSaveThroughMedia(mock, content, at, createdAt)
-		mock.ExpectExec(touchActiveArticleSQL).WithArgs(at, int64(11)).WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectRollback()
+	for _, test := range []struct {
+		name      string
+		stateRows *sqlmock.Rows
+		stateErr  error
+		domain    error
+	}{
+		{name: "inactive article", stateRows: sqlmock.NewRows([]string{"state"}).AddRow("trashed"), domain: ErrArticleInactive},
+		{name: "missing article", stateErr: sql.ErrNoRows, domain: ErrArticleInactive},
+		{name: "state query", stateErr: errors.New("article-state-secret")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+			expectSaveThroughMedia(mock, content, at, createdAt)
+			mock.ExpectExec(touchActiveArticleSQL).WithArgs(at, int64(11)).WillReturnResult(sqlmock.NewResult(0, 0))
+			query := mock.ExpectQuery(selectArticleStateSQL).WithArgs(int64(11))
+			if test.stateErr != nil {
+				query.WillReturnError(test.stateErr)
+			} else {
+				query.WillReturnRows(test.stateRows)
+			}
+			mock.ExpectRollback()
 
-		_, err := repository.SaveDraft(context.Background(), 11, 3, content, at)
+			_, err := repository.SaveDraft(context.Background(), 11, 3, content, at)
 
-		require.ErrorIs(t, err, ErrArticleInactive)
-		require.NoError(t, mock.ExpectationsWereMet())
-	})
+			if test.domain != nil {
+				require.ErrorIs(t, err, test.domain)
+			} else {
+				require.Error(t, err)
+				require.NotContains(t, err.Error(), "article-state-secret")
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
 
-	t.Run("commit", func(t *testing.T) {
-		repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
-		expectSaveThroughMedia(mock, content, at, createdAt)
-		mock.ExpectExec(touchActiveArticleSQL).WithArgs(at, int64(11)).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectCommit().WillReturnError(errors.New("commit-secret"))
+func TestMySQLRepositorySaveDraftSanitizesCommitFailure(t *testing.T) {
+	at := time.Date(2026, 8, 14, 1, 0, 0, 0, time.UTC)
+	createdAt := at.Add(-time.Hour)
+	content := preparedRepositoryContent()
 
-		_, err := repository.SaveDraft(context.Background(), 11, 3, content, at)
+	repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+	expectSaveThroughMedia(mock, content, at, createdAt)
+	mock.ExpectExec(touchActiveArticleSQL).WithArgs(at, int64(11)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit().WillReturnError(errors.New("commit-secret"))
 
-		require.Error(t, err)
-		require.NotContains(t, err.Error(), "commit-secret")
-		require.NoError(t, mock.ExpectationsWereMet())
-	})
+	_, err := repository.SaveDraft(context.Background(), 11, 3, content, at)
+
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "commit-secret")
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestMySQLRepositoryRejectsInvalidAndNilConfigurationSafely(t *testing.T) {
@@ -393,6 +482,30 @@ func TestMySQLRepositoryRejectsInvalidAndNilConfigurationSafely(t *testing.T) {
 	invalid.ContentHash = "not-a-hash-secret"
 	_, err = repository.SaveDraft(context.Background(), 11, 1, invalid, time.Now())
 	require.ErrorIs(t, err, ErrInvalidContent)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMySQLRepositoryRejectsAmplifiedPreparedContentBeforeTransaction(t *testing.T) {
+	repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+
+	overTags := preparedRepositoryContent()
+	overTags.Tags = make([]tag.Snapshot, MaxTagCount+1)
+	for index := range overTags.Tags {
+		overTags.Tags[index] = tag.Snapshot{TagID: int64(index + 1), Name: "Tag", Slug: "t_tag", Position: index}
+	}
+	overTags.ContentHash = ComputeHash(overTags)
+	_, err := repository.SaveDraft(context.Background(), 11, 1, overTags, time.Now())
+	require.ErrorIs(t, err, ErrInvalidContent)
+
+	overMedia := preparedRepositoryContent()
+	overMedia.Media = make([]media.Reference, MaxBodyMediaCount+2)
+	for index := range overMedia.Media {
+		overMedia.Media[index] = media.Reference{MediaID: int64(index + 1), PublicKey: firstMediaKey, Purpose: "content", Position: index}
+	}
+	overMedia.ContentHash = ComputeHash(overMedia)
+	_, err = repository.SaveDraft(context.Background(), 11, 1, overMedia, time.Now())
+	require.ErrorIs(t, err, ErrInvalidContent)
+
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

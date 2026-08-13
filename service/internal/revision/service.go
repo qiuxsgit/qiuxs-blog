@@ -53,7 +53,7 @@ func (s *service) GetDraft(ctx context.Context, articleID int64) (Draft, error) 
 }
 
 func (s *service) SaveDraft(ctx context.Context, articleID, lockVersion int64, content Content) (Draft, error) {
-	if err := s.validate(ctx, articleID); err != nil || lockVersion <= 0 {
+	if err := s.validate(ctx, articleID); err != nil || lockVersion <= 0 || len(content.TagIDs) > MaxTagCount {
 		return Draft{}, ErrInvalidContent
 	}
 	publicKeys, err := ValidateDraft(content)

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -26,6 +27,7 @@ type Config struct {
 	IDGen       IDGenConfig
 	Session     SessionConfig
 	GFS         GFSConfig
+	Release     ReleaseConfig
 }
 
 type HTTPConfig struct{ Addr, AdminOrigin string }
@@ -48,6 +50,12 @@ type GFSConfig struct {
 	AppID            string
 	AppSecret        string
 	PublicReadSecret string
+}
+type ReleaseConfig struct {
+	BundleToken            []byte
+	CallbackHMACKey        []byte
+	BuilderMasterKey       []byte
+	CurrentReleaseJSONPath string
 }
 
 func Load(getenv func(string) string) (Config, error) {
@@ -92,6 +100,19 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	bundleToken, err := parseOpaqueReleaseSecret("BLOG_BUNDLE_TOKEN", getenv("BLOG_BUNDLE_TOKEN"))
+	if err != nil {
+		return Config{}, err
+	}
+	callbackKey, err := parseOpaqueReleaseSecret("BLOG_CALLBACK_HMAC_KEY", getenv("BLOG_CALLBACK_HMAC_KEY"))
+	if err != nil {
+		return Config{}, err
+	}
+	builderKey, err := parseBuilderMasterKey(getenv("BLOG_BUILDER_MASTER_KEY"))
+	if err != nil {
+		return Config{}, err
+	}
+	currentReleasePath := valueOrDefault(getenv("BLOG_CURRENT_RELEASE_JSON_PATH"), "/web/deploy/blog-site/current/release.json")
 
 	cfg := Config{
 		Environment: environment,
@@ -120,6 +141,12 @@ func Load(getenv func(string) string) (Config, error) {
 			AppID:            getenv("BLOG_GFS_APP_ID"),
 			AppSecret:        getenv("BLOG_GFS_APP_SECRET"),
 			PublicReadSecret: getenv("BLOG_GFS_PUBLIC_READ_SECRET"),
+		},
+		Release: ReleaseConfig{
+			BundleToken:            bundleToken,
+			CallbackHMACKey:        callbackKey,
+			BuilderMasterKey:       builderKey,
+			CurrentReleaseJSONPath: currentReleasePath,
 		},
 	}
 	if err := Validate(cfg); err != nil {
@@ -184,7 +211,42 @@ func Validate(cfg Config) error {
 	if strings.TrimSpace(cfg.GFS.PublicReadSecret) == "" {
 		return fmt.Errorf("BLOG_GFS_PUBLIC_READ_SECRET is required")
 	}
+	if err := validateOpaqueReleaseSecret("BLOG_BUNDLE_TOKEN", cfg.Release.BundleToken); err != nil {
+		return err
+	}
+	if err := validateOpaqueReleaseSecret("BLOG_CALLBACK_HMAC_KEY", cfg.Release.CallbackHMACKey); err != nil {
+		return err
+	}
+	if len(cfg.Release.BuilderMasterKey) != 32 {
+		return fmt.Errorf("BLOG_BUILDER_MASTER_KEY must decode to 32 bytes")
+	}
+	if strings.TrimSpace(cfg.Release.CurrentReleaseJSONPath) == "" {
+		return fmt.Errorf("BLOG_CURRENT_RELEASE_JSON_PATH is required")
+	}
 	return nil
+}
+
+func parseOpaqueReleaseSecret(field, value string) ([]byte, error) {
+	secret := []byte(value)
+	if err := validateOpaqueReleaseSecret(field, secret); err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), secret...), nil
+}
+
+func validateOpaqueReleaseSecret(field string, secret []byte) error {
+	if len(secret) < 32 || len(secret) > 128 || strings.TrimSpace(string(secret)) == "" {
+		return fmt.Errorf("%s must be between 32 and 128 bytes", field)
+	}
+	return nil
+}
+
+func parseBuilderMasterKey(encoded string) ([]byte, error) {
+	decoded, err := base64.RawStdEncoding.Strict().DecodeString(encoded)
+	if err != nil || len(decoded) != 32 || base64.RawStdEncoding.EncodeToString(decoded) != encoded {
+		return nil, fmt.Errorf("BLOG_BUILDER_MASTER_KEY must be canonical RawStd base64 encoding 32 bytes")
+	}
+	return append([]byte(nil), decoded...), nil
 }
 
 // ValidateSessionCookieName requires an ASCII RFC token suitable for an HTTP

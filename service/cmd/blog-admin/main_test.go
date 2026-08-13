@@ -36,6 +36,9 @@ func validCLIEnvironment(password string) func(string) string {
 		"BLOG_GFS_APP_ID":             "blog-app",
 		"BLOG_GFS_APP_SECRET":         "test-app-secret",
 		"BLOG_GFS_PUBLIC_READ_SECRET": "test-public-read-secret",
+		"BLOG_BUNDLE_TOKEN":           "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"BLOG_CALLBACK_HMAC_KEY":      "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+		"BLOG_BUILDER_MASTER_KEY":     "a2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2s",
 	}
 	return func(key string) string { return env[key] }
 }

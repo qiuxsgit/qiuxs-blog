@@ -183,6 +183,12 @@ func flowConfig(redisAddr string) config.Config {
 			AppSecret:        "test-app-secret",
 			PublicReadSecret: "test-public-read-secret",
 		},
+		Release: config.ReleaseConfig{
+			BundleToken:            []byte(strings.Repeat("b", 32)),
+			CallbackHMACKey:        []byte(strings.Repeat("h", 32)),
+			BuilderMasterKey:       []byte(strings.Repeat("k", 32)),
+			CurrentReleaseJSONPath: "/srv/blog/current/release.json",
+		},
 	}
 }
 

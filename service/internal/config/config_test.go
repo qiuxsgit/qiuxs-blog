@@ -1,6 +1,11 @@
 package config_test
 
 import (
+	"encoding/base64"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +36,10 @@ func TestLoadProductionConfig(t *testing.T) {
 	require.Equal(t, "blog-app", got.GFS.AppID)
 	require.Equal(t, "raw-app-secret", got.GFS.AppSecret)
 	require.Equal(t, "public-read-secret", got.GFS.PublicReadSecret)
+	require.Equal(t, []byte(strings.Repeat("b", 32)), got.Release.BundleToken)
+	require.Equal(t, []byte(strings.Repeat("h", 32)), got.Release.CallbackHMACKey)
+	require.Equal(t, []byte(strings.Repeat("k", 32)), got.Release.BuilderMasterKey)
+	require.Equal(t, "/srv/blog/current/release.json", got.Release.CurrentReleaseJSONPath)
 }
 
 func TestLoadUsesDevelopmentDefaults(t *testing.T) {
@@ -43,6 +52,7 @@ func TestLoadUsesDevelopmentDefaults(t *testing.T) {
 	delete(env, "IDGEN_HEAL")
 	delete(env, "BLOG_SESSION_COOKIE_NAME")
 	delete(env, "BLOG_SESSION_TTL")
+	delete(env, "BLOG_CURRENT_RELEASE_JSON_PATH")
 
 	got, err := config.Load(func(key string) string { return env[key] })
 
@@ -56,6 +66,106 @@ func TestLoadUsesDevelopmentDefaults(t *testing.T) {
 	require.Equal(t, "qx_blog_session", got.Session.CookieName)
 	require.False(t, got.Session.CookieSecure)
 	require.Equal(t, 24*time.Hour, got.Session.TTL)
+	require.Equal(t, "/web/deploy/blog-site/current/release.json", got.Release.CurrentReleaseJSONPath)
+}
+
+func TestLoadReleaseSecretsAcceptsExactBoundsAndDoesNotProbeArtifactPath(t *testing.T) {
+	for _, size := range []int{32, 128} {
+		t.Run("size_"+strconv.Itoa(size), func(t *testing.T) {
+			env := validEnv()
+			env["BLOG_BUNDLE_TOKEN"] = strings.Repeat("b", size)
+			env["BLOG_CALLBACK_HMAC_KEY"] = strings.Repeat("h", size)
+			env["BLOG_BUILDER_MASTER_KEY"] = base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("k", 32)))
+			env["BLOG_CURRENT_RELEASE_JSON_PATH"] = filepath.Join(t.TempDir(), "missing", "release.json")
+
+			got, err := config.Load(func(key string) string { return env[key] })
+
+			require.NoError(t, err)
+			require.Len(t, got.Release.BundleToken, size)
+			require.Len(t, got.Release.CallbackHMACKey, size)
+			_, statErr := os.Stat(env["BLOG_CURRENT_RELEASE_JSON_PATH"])
+			require.ErrorIs(t, statErr, os.ErrNotExist)
+		})
+	}
+}
+
+func TestLoadReleaseConfigDoesNotAliasEnvironmentValues(t *testing.T) {
+	env := validEnv()
+	got, err := config.Load(func(key string) string { return env[key] })
+	require.NoError(t, err)
+
+	env["BLOG_BUNDLE_TOKEN"] = strings.Repeat("x", 32)
+	env["BLOG_CALLBACK_HMAC_KEY"] = strings.Repeat("y", 32)
+	env["BLOG_BUILDER_MASTER_KEY"] = base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("z", 32)))
+	require.Equal(t, []byte(strings.Repeat("b", 32)), got.Release.BundleToken)
+	require.Equal(t, []byte(strings.Repeat("h", 32)), got.Release.CallbackHMACKey)
+	require.Equal(t, []byte(strings.Repeat("k", 32)), got.Release.BuilderMasterKey)
+}
+
+func TestLoadRejectsInvalidReleaseSecretsWithoutEchoingThem(t *testing.T) {
+	master := base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("m", 32)))
+	tests := []struct {
+		name, key, value string
+		remove           bool
+	}{
+		{name: "missing bundle token", key: "BLOG_BUNDLE_TOKEN", remove: true},
+		{name: "short bundle token", key: "BLOG_BUNDLE_TOKEN", value: "bundle-secret-short"},
+		{name: "blank bundle token", key: "BLOG_BUNDLE_TOKEN", value: strings.Repeat(" ", 32)},
+		{name: "long bundle token", key: "BLOG_BUNDLE_TOKEN", value: strings.Repeat("B", 129)},
+		{name: "missing callback key", key: "BLOG_CALLBACK_HMAC_KEY", remove: true},
+		{name: "short callback key", key: "BLOG_CALLBACK_HMAC_KEY", value: "callback-secret-short"},
+		{name: "blank callback key", key: "BLOG_CALLBACK_HMAC_KEY", value: strings.Repeat("\t", 32)},
+		{name: "long callback key", key: "BLOG_CALLBACK_HMAC_KEY", value: strings.Repeat("H", 129)},
+		{name: "missing builder key", key: "BLOG_BUILDER_MASTER_KEY", remove: true},
+		{name: "malformed builder key", key: "BLOG_BUILDER_MASTER_KEY", value: "builder-key-secret!"},
+		{name: "padded builder key", key: "BLOG_BUILDER_MASTER_KEY", value: master + "="},
+		{name: "noncanonical builder key", key: "BLOG_BUILDER_MASTER_KEY", value: master[:len(master)-1] + "R"},
+		{name: "wrong size builder key", key: "BLOG_BUILDER_MASTER_KEY", value: base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("m", 31)))},
+		{name: "blank artifact path", key: "BLOG_CURRENT_RELEASE_JSON_PATH", value: " \t"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := validEnv()
+			if test.remove {
+				delete(env, test.key)
+			} else {
+				env[test.key] = test.value
+			}
+
+			_, err := config.Load(func(key string) string { return env[key] })
+
+			require.ErrorContains(t, err, test.key)
+			for _, secret := range []string{test.value, env["BLOG_BUNDLE_TOKEN"], env["BLOG_CALLBACK_HMAC_KEY"], env["BLOG_BUILDER_MASTER_KEY"]} {
+				if secret != "" {
+					require.NotContains(t, err.Error(), secret)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateRejectsInvalidDirectReleaseConfigWithoutEchoingSecrets(t *testing.T) {
+	tests := []struct {
+		name, field, secret string
+		mutate              func(*config.Config)
+	}{
+		{name: "bundle token", field: "BLOG_BUNDLE_TOKEN", secret: "bundle-direct-secret", mutate: func(cfg *config.Config) { cfg.Release.BundleToken = []byte("bundle-direct-secret") }},
+		{name: "callback key", field: "BLOG_CALLBACK_HMAC_KEY", secret: "callback-direct-secret", mutate: func(cfg *config.Config) { cfg.Release.CallbackHMACKey = []byte("callback-direct-secret") }},
+		{name: "builder key", field: "BLOG_BUILDER_MASTER_KEY", secret: "builder-direct-secret", mutate: func(cfg *config.Config) { cfg.Release.BuilderMasterKey = []byte("builder-direct-secret") }},
+		{name: "artifact path", field: "BLOG_CURRENT_RELEASE_JSON_PATH", mutate: func(cfg *config.Config) { cfg.Release.CurrentReleaseJSONPath = " \t" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validDirectConfig()
+			test.mutate(&cfg)
+			err := config.Validate(cfg)
+			require.ErrorContains(t, err, test.field)
+			if test.secret != "" {
+				require.NotContains(t, err.Error(), test.secret)
+			}
+		})
+	}
 }
 
 func TestValidateAcceptsCanonicalDevelopmentAndProductionConfig(t *testing.T) {
@@ -364,22 +474,26 @@ func TestLoadNormalizesAndValidatesAdminOrigin(t *testing.T) {
 
 func validEnv() map[string]string {
 	return map[string]string{
-		"BLOG_ENV":                    "production",
-		"BLOG_HTTP_ADDR":              ":9010",
-		"BLOG_MYSQL_DSN":              "blog:secret@tcp(mysql:3306)/qiuxs_blog?parseTime=true&loc=UTC",
-		"BLOG_REDIS_ADDR":             "redis:6379",
-		"BLOG_REDIS_PASSWORD":         "redis-secret",
-		"BLOG_REDIS_DB":               "2",
-		"IDGEN_OFFSET":                "1",
-		"IDGEN_STEP":                  "1",
-		"IDGEN_HEAL":                  "false",
-		"BLOG_ADMIN_ORIGIN":           "https://blog-admin.qiuxs.com",
-		"BLOG_SESSION_COOKIE_NAME":    "qx_blog_session",
-		"BLOG_SESSION_TTL":            "24h",
-		"BLOG_GFS_BASE_URL":           "https://gfs.example.com/",
-		"BLOG_GFS_APP_ID":             "blog-app",
-		"BLOG_GFS_APP_SECRET":         "raw-app-secret",
-		"BLOG_GFS_PUBLIC_READ_SECRET": "public-read-secret",
+		"BLOG_ENV":                       "production",
+		"BLOG_HTTP_ADDR":                 ":9010",
+		"BLOG_MYSQL_DSN":                 "blog:secret@tcp(mysql:3306)/qiuxs_blog?parseTime=true&loc=UTC",
+		"BLOG_REDIS_ADDR":                "redis:6379",
+		"BLOG_REDIS_PASSWORD":            "redis-secret",
+		"BLOG_REDIS_DB":                  "2",
+		"IDGEN_OFFSET":                   "1",
+		"IDGEN_STEP":                     "1",
+		"IDGEN_HEAL":                     "false",
+		"BLOG_ADMIN_ORIGIN":              "https://blog-admin.qiuxs.com",
+		"BLOG_SESSION_COOKIE_NAME":       "qx_blog_session",
+		"BLOG_SESSION_TTL":               "24h",
+		"BLOG_GFS_BASE_URL":              "https://gfs.example.com/",
+		"BLOG_GFS_APP_ID":                "blog-app",
+		"BLOG_GFS_APP_SECRET":            "raw-app-secret",
+		"BLOG_GFS_PUBLIC_READ_SECRET":    "public-read-secret",
+		"BLOG_BUNDLE_TOKEN":              strings.Repeat("b", 32),
+		"BLOG_CALLBACK_HMAC_KEY":         strings.Repeat("h", 32),
+		"BLOG_BUILDER_MASTER_KEY":        base64.RawStdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))),
+		"BLOG_CURRENT_RELEASE_JSON_PATH": "/srv/blog/current/release.json",
 	}
 }
 
@@ -405,6 +519,12 @@ func validDirectConfig() config.Config {
 			AppID:            "blog-app",
 			AppSecret:        "raw-app-secret",
 			PublicReadSecret: "public-read-secret",
+		},
+		Release: config.ReleaseConfig{
+			BundleToken:            []byte(strings.Repeat("b", 32)),
+			CallbackHMACKey:        []byte(strings.Repeat("h", 32)),
+			BuilderMasterKey:       []byte(strings.Repeat("k", 32)),
+			CurrentReleaseJSONPath: "/srv/blog/current/release.json",
 		},
 	}
 }

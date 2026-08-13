@@ -192,6 +192,27 @@ Shiki 在构建阶段完成代码高亮，正文不在浏览器中再次解析 M
 
 这一规则覆盖管理员、文章、修订、标签、关联表、媒体、设置、Release 和发布任务等全部持久化表。
 
+### 8.0.1 SQL 脚本与人工执行
+
+Go 服务不包含自动迁移库、迁移命令或启动时建表逻辑。数据库变更只以仓库内 SQL 文件交付：
+
+```text
+service/sqls/
+├── develop/
+│   └── develop.sql
+└── releases/
+    ├── v0.1.sql
+    └── v<后续版本>.sql
+```
+
+- `develop/develop.sql` 是当前开发周期唯一可追加的 SQL 文件。
+- `releases/v<版本>.sql` 是发布时从 `develop.sql` 冻结得到的只读历史文件；冻结后不得修改。
+- 冻结完成后重新创建只含说明注释的 `develop/develop.sql` 占位文件，供下一开发周期追加。
+- Release SQL 是只向前执行的人工操作脚本，不提供自动 Down、回滚或数据库连接逻辑。
+- 服务构建、启动和健康检查都不执行 SQL；脚本最终由管理员人工审核并执行。
+- 自动测试只静态校验脚本目录、版本命名和关键 DDL 约束，不连接真实 MySQL。
+- 后续在本仓库实现 `server-release` 技能，参考 `/Users/qiuxs/codes/qiuxs/account-book-cc-workspace/.claude/skills/server-release`，负责发布时校验并冻结 `develop.sql`，但不得连接或修改数据库。
+
 ### 8.1 管理员
 
 `admins` 保存单个管理员：

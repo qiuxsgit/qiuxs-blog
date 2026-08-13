@@ -10,7 +10,7 @@
 
 **详细计划：** `docs/superpowers/plans/2026-08-13-service-foundation-auth.md`
 
-交付可独立运行的 Go 服务：配置加载、OpenAPI 生成、MySQL 迁移、共享 Redis 主键生成器、Redis Session、Argon2id 密码、登录限流、管理员初始化命令、登录/退出/当前用户接口和健康检查。
+交付可独立运行的 Go 服务：配置加载、OpenAPI 生成、人工执行的首版 MySQL SQL 脚本、共享 Redis 主键生成器、Redis Session、Argon2id 密码、登录限流、管理员初始化命令、登录/退出/当前用户接口和健康检查。
 
 **验收出口：** 管理员表不使用 MySQL 自增，命令行通过 Redis 生成有符号 `BIGINT` 主键并创建唯一管理员；随后可通过 HTTP 登录并取得 Redis Session；服务重启后 Session 仍有效；错误密码受限流保护；所有测试通过。
 
@@ -53,4 +53,5 @@
 - OpenAPI、Release Bundle Schema 和 Markdown 固定样例属于跨应用契约，修改时必须同时更新契约测试。
 - 所有 MySQL 表主键为 `BIGINT NOT NULL`，Go 与契约层使用 `int64`；禁止 `UNSIGNED` 和 `AUTO_INCREMENT`。新增实体统一通过共享 Redis `idgen` 取号，禁止 Repository 自建生成器或回退其它 ID 策略。
 - Redis ID 只负责身份，不表达时序；列表必须按显式时间字段排序。主键自愈只处理 `PRIMARY` 冲突，不能吞掉业务唯一键冲突。
+- 数据库变更只写入 `service/sqls/develop/develop.sql`；发布时由本仓库 `server-release` 技能冻结为 `service/sqls/releases/v<版本>.sql`，再重建 develop 占位文件。服务不自动迁移，SQL 由管理员人工执行。
 - 任何阶段发现需要改变已确认架构时停止实现，先修改设计规格并重新获得确认。

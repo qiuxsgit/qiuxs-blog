@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a production-shaped Go service that boots from validated configuration, owns MySQL migrations, generates signed primary keys through Redis, initializes the single administrator, stores sessions and login limits in Redis, and exposes tested login/logout/current-admin and health endpoints.
+**Goal:** Build a production-shaped Go service that boots from validated configuration, ships manually executed MySQL SQL, generates signed primary keys through Redis, initializes the single administrator, stores sessions and login limits in Redis, and exposes tested login/logout/current-admin and health endpoints.
 
-**Architecture:** `service/` is one Go module split into focused platform, ID-generation, auth, migration, HTTP, and application-composition packages. OpenAPI defines the browser-facing contract and generates Gin route/model code; domain services depend on small interfaces, while MySQL and Redis adapters stay at the boundary. One shared Redis-backed ID generator is injected into repositories before any persistent entity can be created. This phase intentionally stops after authentication so article, media, and release work can build on an independently testable service.
+**Architecture:** `service/` is one Go module split into focused platform, ID-generation, auth, HTTP, and application-composition packages, with manually executed SQL under `service/sqls/`. OpenAPI defines the browser-facing contract and generates Gin route/model code; domain services depend on small interfaces, while MySQL and Redis adapters stay at the boundary. One shared Redis-backed ID generator is injected into repositories before any persistent entity can be created. This phase intentionally stops after authentication so article, media, and release work can build on an independently testable service.
 
-**Tech Stack:** Go `1.25.7`, Gin `v1.12.0`, `database/sql` + MySQL driver `v1.10.0`, go-redis `v9.22.0`, golang-migrate `v4.19.1`, oapi-codegen `v2.8.0`, Argon2id from x/crypto `v0.55.0`, Testify `v1.11.1`, sqlmock `v1.5.2`, miniredis `v2.38.0`.
+**Tech Stack:** Go `1.25.7`, Gin `v1.12.0`, `database/sql` + MySQL driver `v1.10.0`, go-redis `v9.22.0`, oapi-codegen `v2.8.0`, Argon2id from x/crypto `v0.55.0`, Testify `v1.11.1`, sqlmock `v1.5.2`, miniredis `v2.38.0`.
 
 ## Global Constraints
 
@@ -23,6 +23,7 @@
 - Unsafe Admin requests require the exact configured Origin. Do not enable CORS for Admin APIs.
 - Follow TDD: write the focused test, observe its expected failure, implement the minimum behavior, and rerun the test.
 - Automated tests in this phase must not start Docker containers or connect to deployed MySQL/Redis. Use sqlmock, miniredis, fakes, and `httptest` only.
+- The Service never applies database migrations. SQL lives in `service/sqls/develop/develop.sql`, is frozen to `service/sqls/releases/v<version>.sql` by the later `server-release` skill, and is executed manually by the operator.
 - Never log passwords, password hashes, session tokens, Redis Session values, or secret environment values.
 
 ---
@@ -35,7 +36,6 @@ service/go.mod                               Go module and exact toolchain
 service/Makefile                             Generate, test and build entry points
 service/oapi-codegen.yaml                    Gin/model generation configuration
 service/cmd/blog-service/main.go             Service process entry point
-service/cmd/blog-migrate/main.go             Explicit migration command
 service/cmd/blog-admin/main.go               First-admin initialization command
 service/internal/app/app.go                  Dependency composition and router assembly
 service/internal/auth/model.go               Auth values and errors
@@ -55,8 +55,9 @@ service/internal/httpapi/problem.go           Stable problem responses
 service/internal/httpapi/request_id.go        Request-ID middleware
 service/internal/idgen/generator.go           Redis ID allocation and bounded conflict healing
 service/internal/idgen/redis_counter.go       Atomic Redis INCR/Raise adapter
-service/internal/migrate/migrate.go           Embedded golang-migrate runner
-service/internal/migrate/migrations/*.sql     Canonical migrations
+service/sqls/develop/develop.sql              Current development-cycle DDL
+service/sqls/releases/.gitkeep                Versioned release SQL directory placeholder
+service/sqls/sql_contract_test.go             SQL layout and DDL contract tests
 service/internal/platform/mysql.go            MySQL client
 service/internal/platform/redis.go            Redis client
 service/tests/flow/auth_test.go               In-process HTTP auth flow
@@ -669,24 +670,63 @@ git commit -m "feat(service): generate signed primary keys with redis"
 
 ---
 
-### Task 5: Own the Initial MySQL Migration
+### Task 5: Add the Manually Executed Development SQL
 
 **Files:**
-- Create: `service/internal/migrate/migrations/000001_create_admins.up.sql`
-- Create: `service/internal/migrate/migrations/000001_create_admins.down.sql`
-- Create: `service/internal/migrate/migrate.go`
-- Create: `service/internal/migrate/migrate_test.go`
-- Create: `service/cmd/blog-migrate/main.go`
+- Create: `service/sqls/develop/develop.sql`
+- Create: `service/sqls/releases/.gitkeep`
+- Create: `service/sqls/sql_contract_test.go`
+- Create: `service/sqls/README.md`
 
 **Interfaces:**
-- Consumes: `*sql.DB` from `platform.OpenMySQL` and `config.Load`.
-- Produces: `migrate.Up(context.Context, *sql.DB) error`, `migrate.Status(context.Context, *sql.DB, io.Writer) error`, and `blog-migrate up|status` without creating any auto-increment metadata table.
+- Consumes: the global signed-primary-key and single-administrator rules.
+- Produces: the current development-cycle DDL at `service/sqls/develop/develop.sql`, an empty release archive directory, and a stable SQL layout later consumed by the repository `server-release` skill.
 
-- [ ] **Step 1: Write the migration and failing embedded-file test**
+- [ ] **Step 1: Write the failing SQL contract test before the SQL file exists**
 
-Create `service/internal/migrate/migrations/000001_create_admins.up.sql`:
+Create `service/sqls/sql_contract_test.go` with package `sqls_test`. Resolve paths relative to the test file with `runtime.Caller`, then assert observable repository artifacts:
+
+```go
+func TestDevelopSQLDefinesSignedSingleAdministratorTable(t *testing.T) {
+	sqlText, err := os.ReadFile(filepath.Join(sqlsDir(t), "develop", "develop.sql"))
+	require.NoError(t, err)
+	normalized := strings.ToUpper(string(sqlText))
+	require.Contains(t, normalized, "CREATE TABLE ADMINS")
+	require.Contains(t, normalized, "ID BIGINT NOT NULL")
+	require.Contains(t, normalized, "PRIMARY KEY (ID)")
+	require.Contains(t, normalized, "UNIQUE KEY UK_ADMINS_SINGLETON (SINGLETON_KEY)")
+	require.Contains(t, normalized, "UNIQUE KEY UK_ADMINS_USERNAME (USERNAME)")
+	require.NotContains(t, normalized, "AUTO_INCREMENT")
+	require.NotContains(t, normalized, "UNSIGNED")
+}
+
+func TestReleaseArchiveStartsWithoutVersionedSQL(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join(sqlsDir(t), "releases", "v*.sql"))
+	require.NoError(t, err)
+	require.Empty(t, files)
+}
+```
+
+The helper calls `t.Helper()` and returns the absolute `service/sqls` directory. It must not assume the test command's working directory.
+
+- [ ] **Step 2: Run the test and observe the missing-file failure**
+
+```bash
+cd service
+go test ./sqls -v
+```
+
+Expected: FAIL specifically because `develop/develop.sql` does not exist. Compilation errors are not an acceptable RED result.
+
+- [ ] **Step 3: Add the current development SQL and release placeholder**
+
+Create `service/sqls/develop/develop.sql`:
 
 ```sql
+-- qiuxs-blog development SQL.
+-- Reviewed and executed manually. Do not run from service startup.
+-- All table IDs are generated by Redis idgen before INSERT.
+
 CREATE TABLE admins (
     id BIGINT NOT NULL,
     singleton_key TINYINT NOT NULL DEFAULT 1,
@@ -704,73 +744,34 @@ CREATE TABLE admins (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 ```
 
-Create `service/internal/migrate/migrations/000001_create_admins.down.sql`:
+Create the empty tracked directory marker `service/sqls/releases/.gitkeep`. Do not create `v0.1.sql` yet: it is created only by the first real server release, after all Phase 1 DDL has accumulated in develop.sql.
 
-```sql
-DROP TABLE admins;
-```
+- [ ] **Step 4: Document the manual SQL lifecycle**
 
-Create `migrate_test.go` and require `migrate.Filenames()` to return the two names in lexical order before `Filenames` exists. Read the embedded Up SQL in the test and assert the primary key is exactly `id BIGINT NOT NULL`, with no `AUTO_INCREMENT` and no `BIGINT UNSIGNED`.
+Create `service/sqls/README.md` with these exact rules:
 
-- [ ] **Step 2: Run and observe the undefined-function failure**
+- Append all unreleased DDL only to `develop/develop.sql`.
+- Never edit a file under `releases/` after it has been committed.
+- A future repository `server-release` skill validates a `vMAJOR.MINOR[.PATCH]` version, refuses to overwrite an existing release, copies the non-placeholder develop SQL to `releases/<version>.sql`, and resets develop.sql to its four-line header.
+- The release skill is later adapted from `/Users/qiuxs/codes/qiuxs/account-book-cc-workspace/.claude/skills/server-release`.
+- The release skill never connects to MySQL. The operator reviews and executes each release SQL manually.
+- Do not add a migration library, migration CLI, Down script, automatic rollback, or startup DDL execution.
 
-```bash
-cd service
-go test ./internal/migrate -v
-```
-
-Expected: FAIL because the embedded migration API is undefined.
-
-- [ ] **Step 3: Embed and run golang-migrate migrations**
-
-Use `github.com/golang-migrate/migrate/v4/source/iofs` and its MySQL driver. This driver creates `schema_migrations(version BIGINT NOT NULL PRIMARY KEY, dirty BOOLEAN NOT NULL)`, so migration bookkeeping also avoids unsigned and auto-increment IDs.
-
-Implement the canonical embedded filesystem; do not create a second migration directory:
-
-```go
-//go:embed migrations/*.up.sql migrations/*.down.sql
-var files embed.FS
-
-func Up(ctx context.Context, db *sql.DB) error {
-	runner, err := newRunner(ctx, db)
-	if err != nil {
-		return err
-	}
-	defer runner.Close()
-	if err := runner.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return fmt.Errorf("apply migrations: %w", err)
-	}
-	return nil
-}
-```
-
-`newRunner` creates an iofs source, acquires a dedicated `*sql.Conn`, and passes it to `mysql.WithConnection`; closing the runner must release that connection without closing the caller's pool. Set the migration table name explicitly to `schema_migrations`. Each migration file contains one top-level SQL statement, so the normal application DSN does not enable `multiStatements`.
-
-`Status` uses `runner.Version()` and prints exactly `version=<n> dirty=<true|false>\n`; an empty database reports version 0 and dirty false. A dirty migration exits as failure and must be repaired explicitly—never force a version during service boot.
-
-- [ ] **Step 4: Add the explicit migration command**
-
-`cmd/blog-migrate/main.go` loads config, opens MySQL, applies a 60-second context, and supports exactly `up` and `status`. Missing/unknown commands print `usage: blog-migrate <up|status>` and exit 2. Database or migration failures exit 1.
-
-- [ ] **Step 5: Run tests and compile**
+- [ ] **Step 5: Run focused and full tests**
 
 ```bash
 cd service
-go get github.com/golang-migrate/migrate/v4@v4.19.1
-go get github.com/golang-migrate/migrate/v4/database/mysql@v4.19.1
-go get github.com/golang-migrate/migrate/v4/source/iofs@v4.19.1
-go test ./internal/migrate -v
+go test ./sqls -v
 go test ./...
-go build ./cmd/blog-migrate
 ```
 
-Expected: PASS and the command compiles.
+Expected: PASS. Confirm `go.mod` and `go.sum` contain no migration-library dependency.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add service/go.mod service/go.sum service/internal/migrate service/cmd/blog-migrate
-git commit -m "feat(service): add managed database migrations"
+git add service/sqls
+git commit -m "feat(service): add manual development sql"
 ```
 
 ---
@@ -1307,7 +1308,7 @@ Order:
 8. Call generated `RegisterHandlers` with that zero-prefix group. OpenAPI already contains the complete `/api/admin/v1/...` paths, so using an `/api/admin/v1`-prefixed group would incorrectly duplicate the prefix.
 9. `GetCurrentAdmin` requires the context Admin and returns 401 when anonymous. Every protected endpoint added in later phases performs the same guard. Login remains unauthenticated, and Logout deletes a Session when present but remains 204 when absent.
 
-Do not run migrations during service boot. Production runs `blog-migrate up` before starting a new binary.
+Do not read or execute SQL during service boot. The operator manually reviews and executes the applicable files under `service/sqls/releases/` before starting a binary that depends on them.
 
 - [ ] **Step 4: Implement graceful process startup**
 
@@ -1335,7 +1336,7 @@ Use sqlmock for repository queries, miniredis for ID generation, Sessions, and r
 7. Subsequent `/me` → 401.
 8. `/health/ready` → 200 while both injected checkers pass.
 
-Migration DDL constraints remain covered by the focused migration test: `admins.id` must be signed `BIGINT NOT NULL`, and the SQL must contain neither `UNSIGNED` nor `AUTO_INCREMENT`. A deployment smoke test against production-like infrastructure is deferred to Phase 6, not run by this phase's automated suite.
+DDL constraints remain covered by the focused SQL contract test: `admins.id` must be signed `BIGINT NOT NULL`, and the SQL must contain neither `UNSIGNED` nor `AUTO_INCREMENT`. A deployment smoke test against production-like infrastructure is deferred to Phase 6, not run by this phase's automated suite.
 
 - [ ] **Step 6: Run generation, unit, race, flow, and build checks**
 
@@ -1356,7 +1357,7 @@ Expected: all tests PASS, generated file clean, and a statically linked Linux am
 
 - [ ] **Step 7: Document operator commands**
 
-`service/README.md` lists every environment variable, including ID offset/step/heal defaults and validation; explains that all entity IDs come from Redis and never encode time; and documents migration order, first-admin command, test/build commands, start command, and health routes. Root `README.md` links the design spec, roadmap, and Service README without claiming later phases are available.
+`service/README.md` lists every environment variable, including ID offset/step/heal defaults and validation; explains that all entity IDs come from Redis and never encode time; and documents the manual release-SQL execution order, first-admin command, test/build commands, start command, and health routes. Root `README.md` links the design spec, roadmap, and Service README without claiming later phases are available.
 
 - [ ] **Step 8: Commit**
 
@@ -1384,7 +1385,7 @@ test "$(cd service && go env GOVERSION)" = "go1.25.7"
 
 Manual smoke test:
 
-1. Run `blog-migrate up` against empty MySQL.
+1. Review and manually execute the applicable frozen file under `service/sqls/releases/` against empty MySQL.
 2. Run `blog-admin init --username qiuxs` and enter the password twice.
 3. Start `blog-service` with MySQL, Redis, and Admin origin configured.
 4. Confirm `/health/live` and `/health/ready` return 200.

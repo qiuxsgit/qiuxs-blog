@@ -15,6 +15,7 @@ const problemContentType = "application/problem+json"
 var (
 	ErrInvalidRequest  = errors.New("invalid request")
 	ErrOriginForbidden = errors.New("origin forbidden")
+	ErrNotFound        = errors.New("not found")
 )
 
 // WriteProblem renders a stable, non-sensitive RFC 9457-style response.
@@ -47,6 +48,8 @@ func problemMapping(err error) (int, string, string) {
 		return http.StatusUnauthorized, "unauthenticated", "Unauthenticated"
 	case errors.Is(err, ErrOriginForbidden):
 		return http.StatusForbidden, "origin_forbidden", "Origin forbidden"
+	case errors.Is(err, ErrNotFound):
+		return http.StatusNotFound, "not_found", "Not found"
 	case errors.Is(err, auth.ErrRateLimited):
 		return http.StatusTooManyRequests, "login_rate_limited", "Login rate limited"
 	case errors.Is(err, auth.ErrDependencyUnavailable):

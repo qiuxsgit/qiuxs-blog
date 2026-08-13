@@ -371,8 +371,9 @@ func TestServiceLoginTreatsMalformedStoredHashAsSanitizedInternalFailure(t *test
 func TestServiceLoginLogsSanitizedCompensationFailure(t *testing.T) {
 	var logs bytes.Buffer
 	previousLogger := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
 
 	now := time.Now()
 	hasher, hash := testServiceHasher(t)
@@ -383,7 +384,7 @@ func TestServiceLoginLogsSanitizedCompensationFailure(t *testing.T) {
 	store := &serviceSessionStoreFake{deleteErr: errors.New("redis password secret")}
 	limiter := &serviceLimiterFake{decision: LimitDecision{Allowed: true}}
 	sessions := NewSessionManager(store, time.Hour, strings.NewReader(string(bytesFromZeroTo31())), func() time.Time { return now })
-	service := NewService(repo, hasher, sessions, limiter, func() time.Time { return now })
+	service := NewServiceWithLogger(repo, hasher, sessions, limiter, func() time.Time { return now }, logger)
 
 	_, err := service.Login(context.Background(), "admin.user", "correct-password", "192.0.2.10")
 

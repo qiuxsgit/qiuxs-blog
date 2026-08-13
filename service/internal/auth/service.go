@@ -35,18 +35,26 @@ type Service struct {
 	sessions SessionManager
 	limiter  LoginLimiter
 	now      func() time.Time
+	logger   *slog.Logger
 	initErr  error
 }
 
 func NewService(repo Repository, hasher PasswordHasher, sessions SessionManager, limiter LoginLimiter, now func() time.Time) Service {
+	return NewServiceWithLogger(repo, hasher, sessions, limiter, now, slog.Default())
+}
+
+// NewServiceWithLogger constructs the authentication service with an explicit
+// logger for sanitized background compensation failures.
+func NewServiceWithLogger(repo Repository, hasher PasswordHasher, sessions SessionManager, limiter LoginLimiter, now func() time.Time, logger *slog.Logger) Service {
 	service := Service{
 		repo:     repo,
 		hasher:   hasher,
 		sessions: sessions,
 		limiter:  limiter,
 		now:      now,
+		logger:   logger,
 	}
-	if isNilDependency(repo) || isNilDependency(limiter) || now == nil {
+	if isNilDependency(repo) || isNilDependency(limiter) || now == nil || logger == nil {
 		service.initErr = ErrDependencyUnavailable
 	}
 	return service
@@ -147,7 +155,7 @@ func (s Service) compensateSession(ctx context.Context, token string) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionCompensationTimeout)
 	defer cancel()
 	if err := s.sessions.Delete(cleanupCtx, token); err != nil {
-		slog.ErrorContext(cleanupCtx, "login session compensation failed")
+		s.logger.ErrorContext(cleanupCtx, "login session compensation failed")
 	}
 }
 

@@ -15,19 +15,501 @@ import (
 )
 
 const (
-	selectEditingDraftSQL  = `SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE article_id = ? AND status = 'editing'`
-	selectDraftTagsSQL     = `SELECT tag_id, tag_name, tag_slug, position FROM article_revision_tags WHERE revision_id = ? ORDER BY position ASC`
-	selectDraftMediaSQL    = `SELECT arm.media_id, m.public_key, arm.purpose, arm.position FROM article_revision_media arm JOIN media m ON m.id = arm.media_id WHERE arm.revision_id = ? ORDER BY arm.position ASC`
-	updateEditingDraftSQL  = `UPDATE article_revisions SET title = ?, summary = ?, cover_media_id = ?, content_md = ?, content_hash = ?, lock_version = lock_version + 1, updated_at = ? WHERE article_id = ? AND status = 'editing' AND lock_version = ?`
-	selectSavedIdentitySQL = `SELECT id, lock_version, revision_no, created_at FROM article_revisions WHERE article_id = ? AND status = 'editing'`
-	deleteDraftTagsSQL     = `DELETE FROM article_revision_tags WHERE revision_id = ?`
-	insertDraftTagSQL      = `INSERT INTO article_revision_tags (id, revision_id, tag_id, tag_name, tag_slug, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
-	deleteDraftMediaSQL    = `DELETE FROM article_revision_media WHERE revision_id = ?`
-	insertDraftMediaSQL    = `INSERT INTO article_revision_media (id, revision_id, media_id, purpose, position, created_at) VALUES (?, ?, ?, ?, ?, ?)`
-	touchActiveArticleSQL  = `UPDATE articles SET updated_at = ? WHERE id = ? AND state = 'active'`
-	selectArticleStateSQL  = `SELECT state FROM articles WHERE id = ? FOR UPDATE`
-	testContentHash        = `5b732fcfb7289a73704164ad25aaae5be4b188172d1a47932428a8d1cdc7d2dc`
+	selectEditingDraftSQL     = `SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE article_id = ? AND status = 'editing'`
+	selectDraftTagsSQL        = `SELECT tag_id, tag_name, tag_slug, position FROM article_revision_tags WHERE revision_id = ? ORDER BY position ASC`
+	selectDraftMediaSQL       = `SELECT arm.media_id, m.public_key, arm.purpose, arm.position FROM article_revision_media arm JOIN media m ON m.id = arm.media_id WHERE arm.revision_id = ? ORDER BY arm.position ASC`
+	updateEditingDraftSQL     = `UPDATE article_revisions SET title = ?, summary = ?, cover_media_id = ?, content_md = ?, content_hash = ?, lock_version = lock_version + 1, updated_at = ? WHERE article_id = ? AND status = 'editing' AND lock_version = ?`
+	selectSavedIdentitySQL    = `SELECT id, lock_version, revision_no, created_at FROM article_revisions WHERE article_id = ? AND status = 'editing'`
+	deleteDraftTagsSQL        = `DELETE FROM article_revision_tags WHERE revision_id = ?`
+	insertDraftTagSQL         = `INSERT INTO article_revision_tags (id, revision_id, tag_id, tag_name, tag_slug, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+	deleteDraftMediaSQL       = `DELETE FROM article_revision_media WHERE revision_id = ?`
+	insertDraftMediaSQL       = `INSERT INTO article_revision_media (id, revision_id, media_id, purpose, position, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+	touchActiveArticleSQL     = `UPDATE articles SET updated_at = ? WHERE id = ? AND state = 'active'`
+	selectArticleStateSQL     = `SELECT state FROM articles WHERE id = ? FOR UPDATE`
+	selectCurrentForUpdateSQL = `SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'editing' FOR UPDATE`
+	freezeManualVersionSQL    = `UPDATE article_revisions SET status = 'frozen', reason = 'manual_version', updated_at = ? WHERE id = ? AND status = 'editing' AND lock_version = ?`
+	insertEditingVersionSQL   = `INSERT INTO article_revisions (id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at) VALUES (?, ?, ?, 'editing', 'draft', ?, ?, ?, ?, ?, 1, ?, ?)`
+	replaceDraftPointerSQL    = `UPDATE articles SET draft_revision_id = ?, updated_at = ? WHERE id = ? AND draft_revision_id = ? AND state = 'active'`
+	selectFrozenVersionSQL    = `SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'frozen'`
+	listFrozenVersionsSQL     = `SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE article_id = ? AND status = 'frozen' ORDER BY revision_no DESC`
+	testContentHash           = `5b732fcfb7289a73704164ad25aaae5be4b188172d1a47932428a8d1cdc7d2dc`
 )
+
+func TestMySQLRepositoryCreateVersionFreezesAndCopiesCurrentDraftAtomically(t *testing.T) {
+	repository, mock, counter := newRevisionRepositoryTest(t, 2, 3)
+	createdAt := time.Date(2026, 8, 13, 1, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(time.Hour)
+	at := time.Date(2026, 8, 14, 12, 0, 0, 123000, time.FixedZone("CST", 8*60*60))
+	mock.ExpectBegin()
+	expectCurrentDraftForUpdate(mock, 3, createdAt, updatedAt)
+	expectStoredVersionAssociations(mock, 21)
+	mock.ExpectExec(freezeManualVersionSQL).WithArgs(at.UTC(), int64(21), int64(3)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(insertEditingVersionSQL).WithArgs(
+		int64(2), int64(11), int64(3), "Title", "Summary", int64(91), "body", testContentHash, at.UTC(), at.UTC(),
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCopiedVersionAssociations(mock, 2, at.UTC(), 2, 5, 2, 5)
+	mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(2), at.UTC(), int64(11), int64(21)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	version, draft, err := repository.CreateVersion(context.Background(), 11, 21, 3, at)
+
+	require.NoError(t, err)
+	require.Equal(t, Version{Draft: Draft{
+		ID: 21, ArticleID: 11, RevisionNo: 2, LockVersion: 3, Status: StatusFrozen, Reason: ReasonManualVersion,
+		Title: "Title", Summary: "Summary", CoverMediaID: revisionInt64Pointer(91), ContentMD: "body", ContentHash: testContentHash,
+		Tags: versionTagSnapshots(), Media: versionMediaReferences(), CreatedAt: createdAt, UpdatedAt: at.UTC(),
+	}}, version)
+	require.Equal(t, Draft{
+		ID: 2, ArticleID: 11, RevisionNo: 3, LockVersion: 1, Status: StatusEditing, Reason: ReasonDraft,
+		Title: "Title", Summary: "Summary", CoverMediaID: revisionInt64Pointer(91), ContentMD: "body", ContentHash: testContentHash,
+		Tags: versionTagSnapshots(), Media: versionMediaReferences(), CreatedAt: at.UTC(), UpdatedAt: at.UTC(),
+	}, draft)
+	require.Equal(t, []string{
+		"idseq:article_revisions", "idseq:article_revision_tags", "idseq:article_revision_tags",
+		"idseq:article_revision_media", "idseq:article_revision_media",
+	}, counter.keys)
+	draft.Tags[0].Name = "mutated draft"
+	draft.Media[0].PublicKey = "mutated-media"
+	*draft.CoverMediaID = 999
+	require.Equal(t, "Historic Go", version.Tags[0].Name)
+	require.Equal(t, firstMediaKey, version.Media[0].PublicKey)
+	require.Equal(t, int64(91), *version.CoverMediaID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMySQLRepositoryCreateVersionRejectsStaleLockBeforeAssociationReadsOrInserts(t *testing.T) {
+	repository, mock, counter := newRevisionRepositoryTest(t, 1, 1)
+	at := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	expectCurrentDraftForUpdate(mock, 4, at.Add(-2*time.Hour), at.Add(-time.Hour))
+	mock.ExpectRollback()
+
+	_, _, err := repository.CreateVersion(context.Background(), 11, 21, 3, at)
+
+	require.ErrorIs(t, err, ErrConflict)
+	require.Empty(t, counter.keys)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMySQLRepositoryCreateVersionRejectsReplacementDraftWithSameLockBeforeAssociationReadsOrInserts(t *testing.T) {
+	repository, mock, counter := newRevisionRepositoryTest(t, 1, 1)
+	at := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	_, _, err := repository.CreateVersion(context.Background(), 11, 21, 1, at)
+
+	require.ErrorIs(t, err, ErrConflict)
+	require.Empty(t, counter.keys)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMySQLRepositoryCreateVersionRollsBackConditionalFailures(t *testing.T) {
+	at := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	createdAt := at.Add(-2 * time.Hour)
+	updatedAt := at.Add(-time.Hour)
+	for _, test := range []struct {
+		name      string
+		setup     func(sqlmock.Sqlmock)
+		wantError error
+	}{
+		{name: "missing current", wantError: ErrConflict, setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnError(sql.ErrNoRows)
+			mock.ExpectRollback()
+		}},
+		{name: "freeze lost race", wantError: ErrConflict, setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			expectCurrentDraftForUpdate(mock, 3, createdAt, updatedAt)
+			expectStoredVersionAssociations(mock, 21)
+			mock.ExpectExec(freezeManualVersionSQL).WithArgs(at, int64(21), int64(3)).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectRollback()
+		}},
+		{name: "inactive article pointer", wantError: ErrArticleInactive, setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			expectCurrentDraftForUpdate(mock, 3, createdAt, updatedAt)
+			expectStoredVersionAssociations(mock, 21)
+			mock.ExpectExec(freezeManualVersionSQL).WithArgs(at, int64(21), int64(3)).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(insertEditingVersionSQL).WithArgs(int64(1), int64(11), int64(3), "Title", "Summary", int64(91), "body", testContentHash, at, at).WillReturnResult(sqlmock.NewResult(0, 1))
+			expectCopiedVersionAssociations(mock, 1, at, 1, 2, 1, 2)
+			mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(1), at, int64(11), int64(21)).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectRollback()
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+			test.setup(mock)
+
+			_, _, err := repository.CreateVersion(context.Background(), 11, 21, 3, at)
+
+			require.ErrorIs(t, err, test.wantError)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestMySQLRepositoryCreateVersionRollsBackAndSanitizesEveryDependencyStage(t *testing.T) {
+	at := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	createdAt := at.Add(-2 * time.Hour)
+	updatedAt := at.Add(-time.Hour)
+	tests := []struct {
+		name   string
+		failAt map[string]map[int]error
+		setup  func(sqlmock.Sqlmock)
+	}{
+		{name: "begin", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin().WillReturnError(errors.New("begin-secret"))
+		}},
+		{name: "current query", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnError(errors.New("current-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "tag query", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			expectCurrentDraftForUpdate(mock, 3, createdAt, updatedAt)
+			mock.ExpectQuery(selectDraftTagsSQL).WithArgs(int64(21)).WillReturnError(errors.New("tag-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "media query", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			expectCurrentDraftForUpdate(mock, 3, createdAt, updatedAt)
+			mock.ExpectQuery(selectDraftTagsSQL).WithArgs(int64(21)).WillReturnRows(sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}))
+			mock.ExpectQuery(selectDraftMediaSQL).WithArgs(int64(21)).WillReturnError(errors.New("media-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "freeze exec", setup: func(mock sqlmock.Sqlmock) {
+			expectCreateVersionThroughAssociations(mock, at, createdAt, updatedAt)
+			mock.ExpectExec(freezeManualVersionSQL).WithArgs(at, int64(21), int64(3)).WillReturnError(errors.New("freeze-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "freeze rows", setup: func(mock sqlmock.Sqlmock) {
+			expectCreateVersionThroughAssociations(mock, at, createdAt, updatedAt)
+			mock.ExpectExec(freezeManualVersionSQL).WithArgs(at, int64(21), int64(3)).WillReturnResult(sqlmock.NewErrorResult(errors.New("freeze-rows-secret")))
+			mock.ExpectRollback()
+		}},
+		{name: "revision allocation", failAt: map[string]map[int]error{"idseq:article_revisions": {1: errors.New("redis-revision-secret")}}, setup: func(mock sqlmock.Sqlmock) {
+			expectCreateVersionThroughFreeze(mock, at, createdAt, updatedAt)
+			mock.ExpectRollback()
+		}},
+		{name: "revision insert", setup: func(mock sqlmock.Sqlmock) {
+			expectCreateVersionThroughFreeze(mock, at, createdAt, updatedAt)
+			mock.ExpectExec(insertEditingVersionSQL).WithArgs(int64(1), int64(11), int64(3), "Title", "Summary", int64(91), "body", testContentHash, at, at).WillReturnError(errors.New("revision-insert-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "tag allocation", failAt: map[string]map[int]error{"idseq:article_revision_tags": {1: errors.New("redis-tag-secret")}}, setup: func(mock sqlmock.Sqlmock) {
+			expectCreateVersionThroughRevisionInsert(mock, at, createdAt, updatedAt)
+			mock.ExpectRollback()
+		}},
+		{name: "tag insert", setup: func(mock sqlmock.Sqlmock) {
+			expectCreateVersionThroughRevisionInsert(mock, at, createdAt, updatedAt)
+			mock.ExpectExec(insertDraftTagSQL).WithArgs(int64(1), int64(1), int64(7), "Historic Go", "t_historic_go", 0, at).WillReturnError(errors.New("tag-insert-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "media allocation", failAt: map[string]map[int]error{"idseq:article_revision_media": {1: errors.New("redis-media-secret")}}, setup: func(mock sqlmock.Sqlmock) {
+			expectCreateVersionThroughRevisionInsert(mock, at, createdAt, updatedAt)
+			expectCopiedVersionTags(mock, 1, at, 1, 2)
+			mock.ExpectRollback()
+		}},
+		{name: "media insert", setup: func(mock sqlmock.Sqlmock) {
+			expectCreateVersionThroughRevisionInsert(mock, at, createdAt, updatedAt)
+			expectCopiedVersionTags(mock, 1, at, 1, 2)
+			mock.ExpectExec(insertDraftMediaSQL).WithArgs(int64(1), int64(1), int64(91), "cover", 0, at).WillReturnError(errors.New("media-insert-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "pointer exec", setup: func(mock sqlmock.Sqlmock) {
+			expectCreateVersionThroughCopies(mock, at, createdAt, updatedAt)
+			mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(1), at, int64(11), int64(21)).WillReturnError(errors.New("pointer-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "pointer rows", setup: func(mock sqlmock.Sqlmock) {
+			expectCreateVersionThroughCopies(mock, at, createdAt, updatedAt)
+			mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(1), at, int64(11), int64(21)).WillReturnResult(sqlmock.NewErrorResult(errors.New("pointer-rows-secret")))
+			mock.ExpectRollback()
+		}},
+		{name: "commit", setup: func(mock sqlmock.Sqlmock) {
+			expectCreateVersionThroughCopies(mock, at, createdAt, updatedAt)
+			mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(1), at, int64(11), int64(21)).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit().WillReturnError(errors.New("commit-secret"))
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository, mock, counter := newRevisionRepositoryTest(t, 1, 1)
+			counter.failAt = test.failAt
+			test.setup(mock)
+
+			_, _, err := repository.CreateVersion(context.Background(), 11, 21, 3, at)
+
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "secret")
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestMySQLRepositoryRestoreVersionCopiesHistoricSnapshotAndPreservesCurrentWork(t *testing.T) {
+	repository, mock, counter := newRevisionRepositoryTest(t, 2, 3)
+	targetCreatedAt := time.Date(2026, 8, 10, 1, 0, 0, 0, time.UTC)
+	targetUpdatedAt := targetCreatedAt.Add(time.Hour)
+	currentCreatedAt := time.Date(2026, 8, 13, 1, 0, 0, 0, time.UTC)
+	currentUpdatedAt := currentCreatedAt.Add(time.Hour)
+	at := time.Date(2026, 8, 14, 13, 0, 0, 123000, time.FixedZone("CST", 8*60*60))
+	mock.ExpectBegin()
+	expectFrozenTarget(mock, 15, targetCreatedAt, targetUpdatedAt)
+	expectRestoreCurrentForUpdate(mock, 30, 3, 4, currentCreatedAt, currentUpdatedAt)
+	expectStoredVersionAssociations(mock, 15)
+	mock.ExpectExec(freezeManualVersionSQL).WithArgs(at.UTC(), int64(30), int64(4)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(insertEditingVersionSQL).WithArgs(
+		int64(2), int64(11), int64(4), "Historic Title", "Historic Summary", int64(91), "historic body", testContentHash, at.UTC(), at.UTC(),
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCopiedVersionAssociations(mock, 2, at.UTC(), 2, 5, 2, 5)
+	mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(2), at.UTC(), int64(11), int64(30)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	draft, err := repository.RestoreVersion(context.Background(), 11, 15, 30, 4, at)
+
+	require.NoError(t, err)
+	require.Equal(t, Draft{
+		ID: 2, ArticleID: 11, RevisionNo: 4, LockVersion: 1, Status: StatusEditing, Reason: ReasonDraft,
+		Title: "Historic Title", Summary: "Historic Summary", CoverMediaID: revisionInt64Pointer(91),
+		ContentMD: "historic body", ContentHash: testContentHash,
+		Tags: versionTagSnapshots(), Media: versionMediaReferences(), CreatedAt: at.UTC(), UpdatedAt: at.UTC(),
+	}, draft)
+	require.Equal(t, []string{
+		"idseq:article_revisions", "idseq:article_revision_tags", "idseq:article_revision_tags",
+		"idseq:article_revision_media", "idseq:article_revision_media",
+	}, counter.keys)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMySQLRepositoryRestoreVersionRejectsInvalidTargetAndStaleCurrentBeforeInserts(t *testing.T) {
+	at := time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC)
+	t.Run("target not frozen or wrong article", func(t *testing.T) {
+		repository, mock, counter := newRevisionRepositoryTest(t, 1, 1)
+		mock.ExpectBegin()
+		mock.ExpectQuery(selectFrozenVersionSQL).WithArgs(int64(15), int64(11)).WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+
+		_, err := repository.RestoreVersion(context.Background(), 11, 15, 30, 4, at)
+
+		require.ErrorIs(t, err, ErrNotFrozen)
+		require.Empty(t, counter.keys)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("stale current lock", func(t *testing.T) {
+		repository, mock, counter := newRevisionRepositoryTest(t, 1, 1)
+		mock.ExpectBegin()
+		expectFrozenTarget(mock, 15, at.Add(-4*time.Hour), at.Add(-3*time.Hour))
+		expectRestoreCurrentForUpdate(mock, 30, 3, 5, at.Add(-2*time.Hour), at.Add(-time.Hour))
+		mock.ExpectRollback()
+
+		_, err := repository.RestoreVersion(context.Background(), 11, 15, 30, 4, at)
+
+		require.ErrorIs(t, err, ErrConflict)
+		require.Empty(t, counter.keys)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("replacement draft with same lock", func(t *testing.T) {
+		repository, mock, counter := newRevisionRepositoryTest(t, 1, 1)
+		mock.ExpectBegin()
+		expectFrozenTarget(mock, 15, at.Add(-4*time.Hour), at.Add(-3*time.Hour))
+		mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(30), int64(11)).WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+
+		_, err := repository.RestoreVersion(context.Background(), 11, 15, 30, 1, at)
+
+		require.ErrorIs(t, err, ErrConflict)
+		require.Empty(t, counter.keys)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestMySQLRepositoryRestoreVersionRollsBackAndSanitizesEveryDistinctStage(t *testing.T) {
+	at := time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC)
+	targetCreatedAt := at.Add(-4 * time.Hour)
+	targetUpdatedAt := at.Add(-3 * time.Hour)
+	currentCreatedAt := at.Add(-2 * time.Hour)
+	currentUpdatedAt := at.Add(-time.Hour)
+	tests := []struct {
+		name      string
+		setup     func(sqlmock.Sqlmock)
+		wantError error
+	}{
+		{name: "begin", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin().WillReturnError(errors.New("restore-begin-secret"))
+		}},
+		{name: "target query", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectQuery(selectFrozenVersionSQL).WithArgs(int64(15), int64(11)).WillReturnError(errors.New("target-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "current query", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			expectFrozenTarget(mock, 15, targetCreatedAt, targetUpdatedAt)
+			mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(30), int64(11)).WillReturnError(errors.New("restore-current-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "target associations", setup: func(mock sqlmock.Sqlmock) {
+			expectRestoreThroughCurrent(mock, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt)
+			mock.ExpectQuery(selectDraftTagsSQL).WithArgs(int64(15)).WillReturnError(errors.New("historic-tag-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "freeze lost race", wantError: ErrConflict, setup: func(mock sqlmock.Sqlmock) {
+			expectRestoreThroughAssociations(mock, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt)
+			mock.ExpectExec(freezeManualVersionSQL).WithArgs(at, int64(30), int64(4)).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectRollback()
+		}},
+		{name: "freeze query", setup: func(mock sqlmock.Sqlmock) {
+			expectRestoreThroughAssociations(mock, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt)
+			mock.ExpectExec(freezeManualVersionSQL).WithArgs(at, int64(30), int64(4)).WillReturnError(errors.New("restore-freeze-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "new revision insert", setup: func(mock sqlmock.Sqlmock) {
+			expectRestoreThroughFreeze(mock, at, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt)
+			mock.ExpectExec(insertEditingVersionSQL).WithArgs(int64(1), int64(11), int64(4), "Historic Title", "Historic Summary", int64(91), "historic body", testContentHash, at, at).WillReturnError(errors.New("restore-insert-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "inactive pointer", wantError: ErrArticleInactive, setup: func(mock sqlmock.Sqlmock) {
+			expectRestoreThroughCopies(mock, at, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt)
+			mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(1), at, int64(11), int64(30)).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectRollback()
+		}},
+		{name: "commit", setup: func(mock sqlmock.Sqlmock) {
+			expectRestoreThroughCopies(mock, at, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt)
+			mock.ExpectExec(replaceDraftPointerSQL).WithArgs(int64(1), at, int64(11), int64(30)).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit().WillReturnError(errors.New("restore-commit-secret"))
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+			test.setup(mock)
+
+			_, err := repository.RestoreVersion(context.Background(), 11, 15, 30, 4, at)
+
+			if test.wantError != nil {
+				require.ErrorIs(t, err, test.wantError)
+			} else {
+				require.Error(t, err)
+				require.NotContains(t, err.Error(), "secret")
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestMySQLRepositoryListVersionsReturnsDescendingImmutableSnapshots(t *testing.T) {
+	repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+	versionThreeAt := time.Date(2026, 8, 13, 3, 0, 0, 0, time.UTC)
+	versionOneAt := time.Date(2026, 8, 11, 1, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery(listFrozenVersionsSQL).WithArgs(int64(11)).WillReturnRows(draftScalarRows().
+		AddRow(int64(30), int64(11), int64(3), "frozen", "publish_snapshot", "Published", "Latest", nil, "published body", testContentHash, int64(4), versionThreeAt, versionThreeAt).
+		AddRow(int64(15), int64(11), int64(1), "frozen", "manual_version", "Historic", "Original", int64(91), "historic body", testContentHash, int64(2), versionOneAt, versionOneAt),
+	)
+	mock.ExpectQuery(selectDraftTagsSQL).WithArgs(int64(30)).WillReturnRows(
+		sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}).AddRow(int64(7), "Renamed Later", "t_renamed_later", 0),
+	)
+	mock.ExpectQuery(selectDraftMediaSQL).WithArgs(int64(30)).WillReturnRows(sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}))
+	mock.ExpectQuery(selectDraftTagsSQL).WithArgs(int64(15)).WillReturnRows(
+		sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}).AddRow(int64(7), "Historic Go", "t_historic_go", 0),
+	)
+	mock.ExpectQuery(selectDraftMediaSQL).WithArgs(int64(15)).WillReturnRows(
+		sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}).AddRow(int64(91), firstMediaKey, "cover", 0),
+	)
+	mock.ExpectCommit()
+
+	versions, err := repository.ListVersions(context.Background(), 11)
+
+	require.NoError(t, err)
+	require.Equal(t, []int64{3, 1}, []int64{versions[0].RevisionNo, versions[1].RevisionNo})
+	require.Equal(t, "Renamed Later", versions[0].Tags[0].Name)
+	require.Equal(t, "Historic Go", versions[1].Tags[0].Name)
+	require.Equal(t, "t_historic_go", versions[1].Tags[0].Slug)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMySQLRepositoryListVersionsReturnsNonNilEmptyHistory(t *testing.T) {
+	repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+	mock.ExpectBegin()
+	mock.ExpectQuery(listFrozenVersionsSQL).WithArgs(int64(11)).WillReturnRows(draftScalarRows())
+	mock.ExpectCommit()
+
+	versions, err := repository.ListVersions(context.Background(), 11)
+
+	require.NoError(t, err)
+	require.NotNil(t, versions)
+	require.Empty(t, versions)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMySQLRepositoryListVersionsRollsBackAndSanitizesReadFailures(t *testing.T) {
+	at := time.Date(2026, 8, 14, 1, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		setup func(sqlmock.Sqlmock)
+	}{
+		{name: "begin", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin().WillReturnError(errors.New("history-begin-secret"))
+		}},
+		{name: "list query", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectQuery(listFrozenVersionsSQL).WithArgs(int64(11)).WillReturnError(errors.New("history-query-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "scalar scan", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectQuery(listFrozenVersionsSQL).WithArgs(int64(11)).WillReturnRows(draftScalarRows().AddRow(
+				"revision-id-secret", int64(11), int64(1), "frozen", "manual_version", "Title", "", nil, "body", testContentHash, int64(1), at, at,
+			))
+			mock.ExpectRollback()
+		}},
+		{name: "rows", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectQuery(listFrozenVersionsSQL).WithArgs(int64(11)).WillReturnRows(draftScalarRows().
+				AddRow(int64(15), int64(11), int64(1), "frozen", "manual_version", "Title", "", nil, "body", testContentHash, int64(1), at, at).
+				RowError(0, errors.New("history-rows-secret")),
+			)
+			mock.ExpectRollback()
+		}},
+		{name: "tag query", setup: func(mock sqlmock.Sqlmock) {
+			expectOneFrozenHistoryScalar(mock, at)
+			mock.ExpectQuery(selectDraftTagsSQL).WithArgs(int64(15)).WillReturnError(errors.New("history-tag-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "media query", setup: func(mock sqlmock.Sqlmock) {
+			expectOneFrozenHistoryScalar(mock, at)
+			mock.ExpectQuery(selectDraftTagsSQL).WithArgs(int64(15)).WillReturnRows(sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}))
+			mock.ExpectQuery(selectDraftMediaSQL).WithArgs(int64(15)).WillReturnError(errors.New("history-media-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "commit", setup: func(mock sqlmock.Sqlmock) {
+			expectOneFrozenHistoryScalar(mock, at)
+			mock.ExpectQuery(selectDraftTagsSQL).WithArgs(int64(15)).WillReturnRows(sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}))
+			mock.ExpectQuery(selectDraftMediaSQL).WithArgs(int64(15)).WillReturnRows(sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}))
+			mock.ExpectCommit().WillReturnError(errors.New("history-commit-secret"))
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+			test.setup(mock)
+
+			_, err := repository.ListVersions(context.Background(), 11)
+
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "secret")
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
 
 func TestMySQLRepositoryGetDraftLoadsEditingScalarAndOrderedAssociations(t *testing.T) {
 	repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
@@ -468,6 +950,12 @@ func TestMySQLRepositoryRejectsInvalidAndNilConfigurationSafely(t *testing.T) {
 		require.NotPanics(t, func() {
 			_, getErr := repository.GetDraft(context.Background(), 11)
 			require.Error(t, getErr)
+			_, _, versionErr := repository.CreateVersion(context.Background(), 11, 21, 1, time.Now())
+			require.Error(t, versionErr)
+			_, listErr := repository.ListVersions(context.Background(), 11)
+			require.Error(t, listErr)
+			_, restoreErr := repository.RestoreVersion(context.Background(), 11, 21, 30, 1, time.Now())
+			require.Error(t, restoreErr)
 		})
 	}
 
@@ -477,6 +965,18 @@ func TestMySQLRepositoryRejectsInvalidAndNilConfigurationSafely(t *testing.T) {
 	_, err = repository.GetDraft(context.Background(), 0)
 	require.ErrorIs(t, err, ErrInvalidContent)
 	_, err = repository.SaveDraft(context.Background(), 11, 0, preparedRepositoryContent(), time.Now())
+	require.ErrorIs(t, err, ErrInvalidContent)
+	_, _, err = repository.CreateVersion(context.Background(), 11, 21, 0, time.Now())
+	require.ErrorIs(t, err, ErrInvalidContent)
+	_, _, err = repository.CreateVersion(context.Background(), 11, 0, 1, time.Now())
+	require.ErrorIs(t, err, ErrInvalidContent)
+	_, err = repository.ListVersions(context.Background(), 0)
+	require.ErrorIs(t, err, ErrInvalidContent)
+	_, err = repository.RestoreVersion(context.Background(), 11, 0, 30, 1, time.Now())
+	require.ErrorIs(t, err, ErrInvalidContent)
+	_, err = repository.RestoreVersion(context.Background(), 11, 21, 30, 0, time.Now())
+	require.ErrorIs(t, err, ErrInvalidContent)
+	_, err = repository.RestoreVersion(context.Background(), 11, 21, 0, 1, time.Now())
 	require.ErrorIs(t, err, ErrInvalidContent)
 	invalid := preparedRepositoryContent()
 	invalid.ContentHash = "not-a-hash-secret"
@@ -638,6 +1138,127 @@ func expectStoredDraftScalar(mock sqlmock.Sqlmock) {
 
 func expectNoStoredTags(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(selectDraftTagsSQL).WithArgs(int64(21)).WillReturnRows(sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}))
+}
+
+func expectCurrentDraftForUpdate(mock sqlmock.Sqlmock, lockVersion int64, createdAt, updatedAt time.Time) {
+	mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnRows(draftScalarRows().AddRow(
+		int64(21), int64(11), int64(2), "editing", "draft", "Title", "Summary", int64(91), "body", testContentHash,
+		lockVersion, createdAt, updatedAt,
+	))
+}
+
+func expectFrozenTarget(mock sqlmock.Sqlmock, revisionID int64, createdAt, updatedAt time.Time) {
+	mock.ExpectQuery(selectFrozenVersionSQL).WithArgs(revisionID, int64(11)).WillReturnRows(draftScalarRows().AddRow(
+		revisionID, int64(11), int64(1), "frozen", "manual_version", "Historic Title", "Historic Summary", int64(91),
+		"historic body", testContentHash, int64(2), createdAt, updatedAt,
+	))
+}
+
+func expectRestoreCurrentForUpdate(mock sqlmock.Sqlmock, revisionID, revisionNo, lockVersion int64, createdAt, updatedAt time.Time) {
+	mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(revisionID, int64(11)).WillReturnRows(draftScalarRows().AddRow(
+		revisionID, int64(11), revisionNo, "editing", "draft", "Unsaved Current", "Current Summary", nil,
+		"current body", testContentHash, lockVersion, createdAt, updatedAt,
+	))
+}
+
+func expectStoredVersionAssociations(mock sqlmock.Sqlmock, revisionID int64) {
+	mock.ExpectQuery(selectDraftTagsSQL).WithArgs(revisionID).WillReturnRows(
+		sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}).
+			AddRow(int64(7), "Historic Go", "t_historic_go", 0).
+			AddRow(int64(3), "Historic Web", "t_historic_web", 1),
+	)
+	mock.ExpectQuery(selectDraftMediaSQL).WithArgs(revisionID).WillReturnRows(
+		sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}).
+			AddRow(int64(91), firstMediaKey, "cover", 0).
+			AddRow(int64(92), secondMediaKey, "content", 1),
+	)
+}
+
+func expectCopiedVersionAssociations(mock sqlmock.Sqlmock, revisionID int64, at time.Time, firstTagID, secondTagID, firstMediaID, secondMediaID int64) {
+	expectCopiedVersionTags(mock, revisionID, at, firstTagID, secondTagID)
+	expectCopiedVersionMedia(mock, revisionID, at, firstMediaID, secondMediaID)
+}
+
+func expectCopiedVersionTags(mock sqlmock.Sqlmock, revisionID int64, at time.Time, firstTagID, secondTagID int64) {
+	mock.ExpectExec(insertDraftTagSQL).
+		WithArgs(firstTagID, revisionID, int64(7), "Historic Go", "t_historic_go", 0, at).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(insertDraftTagSQL).
+		WithArgs(secondTagID, revisionID, int64(3), "Historic Web", "t_historic_web", 1, at).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+func expectCopiedVersionMedia(mock sqlmock.Sqlmock, revisionID int64, at time.Time, firstMediaID, secondMediaID int64) {
+	mock.ExpectExec(insertDraftMediaSQL).
+		WithArgs(firstMediaID, revisionID, int64(91), "cover", 0, at).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(insertDraftMediaSQL).
+		WithArgs(secondMediaID, revisionID, int64(92), "content", 1, at).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+func expectCreateVersionThroughAssociations(mock sqlmock.Sqlmock, _ time.Time, createdAt, updatedAt time.Time) {
+	mock.ExpectBegin()
+	expectCurrentDraftForUpdate(mock, 3, createdAt, updatedAt)
+	expectStoredVersionAssociations(mock, 21)
+}
+
+func expectCreateVersionThroughFreeze(mock sqlmock.Sqlmock, at, createdAt, updatedAt time.Time) {
+	expectCreateVersionThroughAssociations(mock, at, createdAt, updatedAt)
+	mock.ExpectExec(freezeManualVersionSQL).WithArgs(at, int64(21), int64(3)).WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+func expectCreateVersionThroughRevisionInsert(mock sqlmock.Sqlmock, at, createdAt, updatedAt time.Time) {
+	expectCreateVersionThroughFreeze(mock, at, createdAt, updatedAt)
+	mock.ExpectExec(insertEditingVersionSQL).WithArgs(int64(1), int64(11), int64(3), "Title", "Summary", int64(91), "body", testContentHash, at, at).WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+func expectCreateVersionThroughCopies(mock sqlmock.Sqlmock, at, createdAt, updatedAt time.Time) {
+	expectCreateVersionThroughRevisionInsert(mock, at, createdAt, updatedAt)
+	expectCopiedVersionAssociations(mock, 1, at, 1, 2, 1, 2)
+}
+
+func expectRestoreThroughCurrent(mock sqlmock.Sqlmock, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt time.Time) {
+	mock.ExpectBegin()
+	expectFrozenTarget(mock, 15, targetCreatedAt, targetUpdatedAt)
+	expectRestoreCurrentForUpdate(mock, 30, 3, 4, currentCreatedAt, currentUpdatedAt)
+}
+
+func expectRestoreThroughAssociations(mock sqlmock.Sqlmock, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt time.Time) {
+	expectRestoreThroughCurrent(mock, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt)
+	expectStoredVersionAssociations(mock, 15)
+}
+
+func expectRestoreThroughFreeze(mock sqlmock.Sqlmock, at, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt time.Time) {
+	expectRestoreThroughAssociations(mock, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt)
+	mock.ExpectExec(freezeManualVersionSQL).WithArgs(at, int64(30), int64(4)).WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+func expectRestoreThroughCopies(mock sqlmock.Sqlmock, at, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt time.Time) {
+	expectRestoreThroughFreeze(mock, at, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt)
+	mock.ExpectExec(insertEditingVersionSQL).WithArgs(int64(1), int64(11), int64(4), "Historic Title", "Historic Summary", int64(91), "historic body", testContentHash, at, at).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCopiedVersionAssociations(mock, 1, at, 1, 2, 1, 2)
+}
+
+func expectOneFrozenHistoryScalar(mock sqlmock.Sqlmock, at time.Time) {
+	mock.ExpectBegin()
+	mock.ExpectQuery(listFrozenVersionsSQL).WithArgs(int64(11)).WillReturnRows(draftScalarRows().AddRow(
+		int64(15), int64(11), int64(1), "frozen", "manual_version", "Title", "", nil, "body", testContentHash, int64(1), at, at,
+	))
+}
+
+func versionTagSnapshots() []tag.Snapshot {
+	return []tag.Snapshot{
+		{TagID: 7, Name: "Historic Go", Slug: "t_historic_go", Position: 0},
+		{TagID: 3, Name: "Historic Web", Slug: "t_historic_web", Position: 1},
+	}
+}
+
+func versionMediaReferences() []media.Reference {
+	return []media.Reference{
+		{MediaID: 91, PublicKey: firstMediaKey, Purpose: "cover", Position: 0},
+		{MediaID: 92, PublicKey: secondMediaKey, Purpose: "content", Position: 1},
+	}
 }
 
 func revisionInt64Pointer(value int64) *int64 { return &value }

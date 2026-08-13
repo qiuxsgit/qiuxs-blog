@@ -213,6 +213,112 @@ func TestServiceValidateFreezableUsesStoredDraftContent(t *testing.T) {
 	require.ErrorIs(t, service.ValidateFreezable(Draft{Title: "  ", ContentMD: "body"}), ErrInvalidContent)
 }
 
+func TestServiceCreateVersionValidatesCurrentDraftAndActiveMediaBeforeMutation(t *testing.T) {
+	at := time.Date(2026, 8, 14, 10, 0, 0, 123000, time.FixedZone("CST", 8*60*60))
+	coverID := int64(91)
+	current := Draft{
+		ID: 21, ArticleID: 11, RevisionNo: 2, LockVersion: 3, Status: StatusEditing, Reason: ReasonDraft,
+		Title: "Version title", CoverMediaID: &coverID, ContentMD: "![body](/img/proxy/" + firstMediaKey + ")",
+	}
+	wantVersion := Version{Draft: Draft{ID: 21, ArticleID: 11, RevisionNo: 2, LockVersion: 3, Status: StatusFrozen, Reason: ReasonManualVersion}}
+	wantDraft := Draft{ID: 24, ArticleID: 11, RevisionNo: 3, LockVersion: 1, Status: StatusEditing, Reason: ReasonDraft}
+	order := make([]string, 0)
+	repository := &revisionRepositoryFake{draft: current, versionResult: wantVersion, nextDraftResult: wantDraft, order: &order}
+	mediaResolver := &mediaResolverFake{cover: media.Media{ID: coverID, State: "active"}, order: &order}
+	service := newRevisionService(t, repository, &tagResolverFake{}, mediaResolver, func() time.Time { return at })
+
+	version, draft, err := service.CreateVersion(context.Background(), 11, 3)
+
+	require.NoError(t, err)
+	require.Equal(t, wantVersion, version)
+	require.Equal(t, wantDraft, draft)
+	require.Equal(t, []string{"get", "media", "create-version"}, order)
+	require.Equal(t, []mediaResolveCall{{coverID: &coverID, publicKeys: []string{firstMediaKey}}}, mediaResolver.calls)
+	require.Equal(t, []revisionVersionCall{{articleID: 11, currentRevisionID: 21, lockVersion: 3, at: at.UTC()}}, repository.versionCalls)
+}
+
+func TestServiceCreateVersionRejectsUnfreezableOrStaleDraftBeforeMutation(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		draft     Draft
+		lock      int64
+		mediaErr  error
+		wantError error
+	}{
+		{name: "blank title", draft: Draft{ID: 21, ArticleID: 11, LockVersion: 3, ContentMD: "body"}, lock: 3, wantError: ErrInvalidContent},
+		{name: "blob image", draft: Draft{ID: 21, ArticleID: 11, LockVersion: 3, Title: "Title", ContentMD: "![x](blob:https://admin/x)"}, lock: 3, wantError: ErrInvalidContent},
+		{name: "raw HTML", draft: Draft{ID: 21, ArticleID: 11, LockVersion: 3, Title: "Title", ContentMD: "<b>unsafe</b>"}, lock: 3, wantError: ErrInvalidContent},
+		{name: "stale lock", draft: Draft{ID: 21, ArticleID: 11, LockVersion: 4, Title: "Title", ContentMD: "body"}, lock: 3, wantError: ErrConflict},
+		{name: "inactive cover", draft: Draft{ID: 21, ArticleID: 11, LockVersion: 3, Title: "Title", CoverMediaID: revisionInt64Pointer(91), ContentMD: "body"}, lock: 3, mediaErr: media.ErrNotFound, wantError: ErrInvalidContent},
+		{name: "unresolved body media", draft: Draft{ID: 21, ArticleID: 11, LockVersion: 3, Title: "Title", ContentMD: "![x](/img/proxy/" + firstMediaKey + ")"}, lock: 3, mediaErr: media.ErrInvalidMetadata, wantError: ErrInvalidContent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &revisionRepositoryFake{draft: test.draft}
+			mediaResolver := &mediaResolverFake{err: test.mediaErr}
+			service := newRevisionService(t, repository, &tagResolverFake{}, mediaResolver, time.Now)
+
+			_, _, err := service.CreateVersion(context.Background(), 11, test.lock)
+
+			require.ErrorIs(t, err, test.wantError)
+			require.Empty(t, repository.versionCalls)
+			if test.name != "inactive cover" && test.name != "unresolved body media" {
+				require.Empty(t, mediaResolver.calls)
+			}
+		})
+	}
+}
+
+func TestServiceVersionHistoryAndRestoreDelegateWithoutCurrentResolvers(t *testing.T) {
+	at := time.Date(2026, 8, 14, 11, 0, 0, 0, time.UTC)
+	wantVersions := []Version{{Draft: Draft{ID: 21, ArticleID: 11, RevisionNo: 2, Status: StatusFrozen, Reason: ReasonManualVersion}}}
+	wantRestored := Draft{ID: 27, ArticleID: 11, RevisionNo: 4, LockVersion: 1, Status: StatusEditing, Reason: ReasonDraft}
+	repository := &revisionRepositoryFake{draft: Draft{ID: 30, ArticleID: 11, LockVersion: 3}, versionsResult: wantVersions, restoreResult: wantRestored}
+	tags := &tagResolverFake{}
+	mediaResolver := &mediaResolverFake{}
+	service := newRevisionService(t, repository, tags, mediaResolver, func() time.Time { return at })
+
+	versions, err := service.ListVersions(context.Background(), 11)
+	require.NoError(t, err)
+	require.Equal(t, wantVersions, versions)
+	restored, err := service.RestoreVersion(context.Background(), 11, 21, 3)
+	require.NoError(t, err)
+	require.Equal(t, wantRestored, restored)
+	require.Equal(t, []int64{11}, repository.listVersionCalls)
+	require.Equal(t, []revisionRestoreCall{{articleID: 11, revisionID: 21, currentRevisionID: 30, lockVersion: 3, at: at}}, repository.restoreCalls)
+	require.Empty(t, tags.calls)
+	require.Empty(t, mediaResolver.calls)
+}
+
+func TestServiceVersionMethodsValidateInputAndPreserveRepositoryDomains(t *testing.T) {
+	for _, domain := range []error{ErrConflict, ErrArticleInactive, ErrNotFrozen, ErrNotFound} {
+		t.Run(domain.Error(), func(t *testing.T) {
+			repository := &revisionRepositoryFake{
+				draft:      Draft{ID: 30, ArticleID: 11, LockVersion: 3, Title: "Title"},
+				versionErr: domain, listVersionsErr: domain, restoreErr: domain,
+			}
+			service := newRevisionService(t, repository, &tagResolverFake{}, &mediaResolverFake{}, time.Now)
+
+			_, _, err := service.CreateVersion(context.Background(), 11, 3)
+			require.ErrorIs(t, err, domain)
+			_, err = service.ListVersions(context.Background(), 11)
+			require.ErrorIs(t, err, domain)
+			_, err = service.RestoreVersion(context.Background(), 11, 21, 3)
+			require.ErrorIs(t, err, domain)
+		})
+	}
+
+	repository := &revisionRepositoryFake{}
+	service := newRevisionService(t, repository, &tagResolverFake{}, &mediaResolverFake{}, time.Now)
+	_, _, err := service.CreateVersion(context.Background(), 0, 1)
+	require.ErrorIs(t, err, ErrInvalidContent)
+	_, err = service.ListVersions(context.Background(), 0)
+	require.ErrorIs(t, err, ErrInvalidContent)
+	_, err = service.RestoreVersion(context.Background(), 11, 0, 1)
+	require.ErrorIs(t, err, ErrInvalidContent)
+	_, err = service.RestoreVersion(context.Background(), 11, 21, 0)
+	require.ErrorIs(t, err, ErrInvalidContent)
+}
+
 func TestNewServiceRejectsNilDependenciesAndMethodsAreNilSafe(t *testing.T) {
 	repository := &revisionRepositoryFake{}
 	tags := &tagResolverFake{}
@@ -246,6 +352,12 @@ func TestNewServiceRejectsNilDependenciesAndMethodsAreNilSafe(t *testing.T) {
 	require.NotPanics(t, func() {
 		_, err := nilService.GetDraft(context.Background(), 11)
 		require.Error(t, err)
+		_, _, err = nilService.CreateVersion(context.Background(), 11, 1)
+		require.Error(t, err)
+		_, err = nilService.ListVersions(context.Background(), 11)
+		require.Error(t, err)
+		_, err = nilService.RestoreVersion(context.Background(), 11, 21, 1)
+		require.Error(t, err)
 	})
 	valid := newRevisionService(t, repository, tags, mediaResolver, time.Now)
 	_, err := valid.GetDraft(nil, 11)
@@ -259,19 +371,65 @@ type revisionSaveCall struct {
 	at          time.Time
 }
 
+type revisionVersionCall struct {
+	articleID         int64
+	currentRevisionID int64
+	lockVersion       int64
+	at                time.Time
+}
+
+type revisionRestoreCall struct {
+	articleID         int64
+	revisionID        int64
+	currentRevisionID int64
+	lockVersion       int64
+	at                time.Time
+}
+
 type revisionRepositoryFake struct {
-	draft      Draft
-	getErr     error
-	getCalls   []int64
-	saveResult Draft
-	saveErr    error
-	saveCalls  []revisionSaveCall
-	order      *[]string
+	draft            Draft
+	getErr           error
+	getCalls         []int64
+	saveResult       Draft
+	saveErr          error
+	saveCalls        []revisionSaveCall
+	versionResult    Version
+	nextDraftResult  Draft
+	versionErr       error
+	versionCalls     []revisionVersionCall
+	versionsResult   []Version
+	listVersionsErr  error
+	listVersionCalls []int64
+	restoreResult    Draft
+	restoreErr       error
+	restoreCalls     []revisionRestoreCall
+	order            *[]string
 }
 
 func (r *revisionRepositoryFake) GetDraft(_ context.Context, articleID int64) (Draft, error) {
+	if r.order != nil {
+		*r.order = append(*r.order, "get")
+	}
 	r.getCalls = append(r.getCalls, articleID)
 	return r.draft, r.getErr
+}
+
+func (r *revisionRepositoryFake) CreateVersion(_ context.Context, articleID, currentRevisionID, lockVersion int64, at time.Time) (Version, Draft, error) {
+	if r.order != nil {
+		*r.order = append(*r.order, "create-version")
+	}
+	r.versionCalls = append(r.versionCalls, revisionVersionCall{articleID: articleID, currentRevisionID: currentRevisionID, lockVersion: lockVersion, at: at})
+	return r.versionResult, r.nextDraftResult, r.versionErr
+}
+
+func (r *revisionRepositoryFake) ListVersions(_ context.Context, articleID int64) ([]Version, error) {
+	r.listVersionCalls = append(r.listVersionCalls, articleID)
+	return append([]Version(nil), r.versionsResult...), r.listVersionsErr
+}
+
+func (r *revisionRepositoryFake) RestoreVersion(_ context.Context, articleID, revisionID, currentRevisionID, lockVersion int64, at time.Time) (Draft, error) {
+	r.restoreCalls = append(r.restoreCalls, revisionRestoreCall{articleID: articleID, revisionID: revisionID, currentRevisionID: currentRevisionID, lockVersion: lockVersion, at: at})
+	return r.restoreResult, r.restoreErr
 }
 
 func (r *revisionRepositoryFake) SaveDraft(_ context.Context, articleID, lockVersion int64, content PreparedContent, at time.Time) (Draft, error) {

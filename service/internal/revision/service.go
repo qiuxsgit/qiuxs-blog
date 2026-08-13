@@ -15,6 +15,9 @@ type Service interface {
 	GetDraft(context.Context, int64) (Draft, error)
 	SaveDraft(context.Context, int64, int64, Content) (Draft, error)
 	Preview(context.Context, int64) (Draft, error)
+	CreateVersion(context.Context, int64, int64) (Version, Draft, error)
+	ListVersions(context.Context, int64) ([]Version, error)
+	RestoreVersion(context.Context, int64, int64, int64) (Draft, error)
 	ValidateFreezable(Draft) error
 }
 
@@ -92,6 +95,72 @@ func (s *service) SaveDraft(ctx context.Context, articleID, lockVersion int64, c
 
 func (s *service) Preview(ctx context.Context, articleID int64) (Draft, error) {
 	return s.GetDraft(ctx, articleID)
+}
+
+func (s *service) CreateVersion(ctx context.Context, articleID, lockVersion int64) (Version, Draft, error) {
+	if err := s.validate(ctx, articleID); err != nil || lockVersion <= 0 {
+		return Version{}, Draft{}, ErrInvalidContent
+	}
+	current, err := s.repository.GetDraft(ctx, articleID)
+	if err != nil {
+		return Version{}, Draft{}, revisionSafeWrap("get draft for manual version", err)
+	}
+	if current.ID <= 0 || current.ArticleID != articleID {
+		return Version{}, Draft{}, revisionSafeWrap("get draft for manual version", errors.New("stored article mismatch"))
+	}
+	if current.LockVersion != lockVersion {
+		return Version{}, Draft{}, ErrConflict
+	}
+	if err := s.ValidateFreezable(current); err != nil {
+		return Version{}, Draft{}, err
+	}
+	publicKeys, err := ValidateDraft(Content{Title: current.Title, Summary: current.Summary, ContentMD: current.ContentMD})
+	if err != nil {
+		return Version{}, Draft{}, err
+	}
+	if _, _, err := s.media.ResolveReferences(ctx, current.CoverMediaID, publicKeys); err != nil {
+		if errors.Is(err, media.ErrNotFound) || errors.Is(err, media.ErrInvalidMetadata) {
+			return Version{}, Draft{}, revisionDomainError("validate version media", ErrInvalidContent, err)
+		}
+		return Version{}, Draft{}, revisionSafeWrap("validate version media", err)
+	}
+	version, draft, err := s.repository.CreateVersion(ctx, articleID, current.ID, lockVersion, s.now().UTC())
+	if err != nil {
+		return Version{}, Draft{}, revisionSafeWrap("create manual version", err)
+	}
+	return version, draft, nil
+}
+
+func (s *service) ListVersions(ctx context.Context, articleID int64) ([]Version, error) {
+	if err := s.validate(ctx, articleID); err != nil {
+		return nil, ErrInvalidContent
+	}
+	versions, err := s.repository.ListVersions(ctx, articleID)
+	if err != nil {
+		return nil, revisionSafeWrap("list article versions", err)
+	}
+	return versions, nil
+}
+
+func (s *service) RestoreVersion(ctx context.Context, articleID, revisionID, lockVersion int64) (Draft, error) {
+	if err := s.validate(ctx, articleID); err != nil || revisionID <= 0 || lockVersion <= 0 {
+		return Draft{}, ErrInvalidContent
+	}
+	current, err := s.repository.GetDraft(ctx, articleID)
+	if err != nil {
+		return Draft{}, revisionSafeWrap("get draft for version restore", err)
+	}
+	if current.ID <= 0 || current.ArticleID != articleID {
+		return Draft{}, revisionSafeWrap("get draft for version restore", errors.New("stored article mismatch"))
+	}
+	if current.LockVersion != lockVersion {
+		return Draft{}, ErrConflict
+	}
+	draft, err := s.repository.RestoreVersion(ctx, articleID, revisionID, current.ID, lockVersion, s.now().UTC())
+	if err != nil {
+		return Draft{}, revisionSafeWrap("restore article version", err)
+	}
+	return draft, nil
 }
 
 func (s *service) ValidateFreezable(draft Draft) error {

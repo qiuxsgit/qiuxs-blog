@@ -79,6 +79,53 @@ func TestRedisRaiseRejectsNonPositiveFloor(t *testing.T) {
 	}
 }
 
+func TestRedisCounterIncrementRejectsInvalidConfigurationWithoutPanic(t *testing.T) {
+	tests := []struct {
+		name    string
+		counter *RedisCounter
+	}{
+		{name: "nil receiver", counter: nil},
+		{name: "zero counter", counter: &RedisCounter{}},
+		{name: "nil constructor client", counter: NewRedisCounter(nil)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.counter.Increment(context.Background(), "idseq:redis-password-secret")
+
+			assert.Zero(t, got)
+			assert.EqualError(t, err, "redis counter is not configured")
+			assert.NotContains(t, err.Error(), "secret")
+		})
+	}
+}
+
+func TestRedisCounterRaiseRejectsInvalidConfigurationAfterFloorValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		counter *RedisCounter
+	}{
+		{name: "nil receiver", counter: nil},
+		{name: "zero counter", counter: &RedisCounter{}},
+		{name: "nil constructor client", counter: NewRedisCounter(nil)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.counter.Raise(context.Background(), "idseq:redis-password-secret", 1)
+
+			assert.Zero(t, got)
+			assert.EqualError(t, err, "redis counter is not configured")
+			assert.NotContains(t, err.Error(), "secret")
+
+			got, err = test.counter.Raise(context.Background(), "idseq:redis-password-secret", 0)
+			assert.Zero(t, got)
+			assert.EqualError(t, err, "counter floor must be positive")
+			assert.NotContains(t, err.Error(), "secret")
+		})
+	}
+}
+
 func TestRedisRaiseConcurrentCallsKeepHighestFloor(t *testing.T) {
 	_, client := openTestRedis(t)
 	counter := NewRedisCounter(client)

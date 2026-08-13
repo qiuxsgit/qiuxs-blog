@@ -2,6 +2,7 @@ package idgen
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -24,6 +25,8 @@ end
 return current
 `)
 
+var errRedisCounterNotConfigured = errors.New("redis counter is not configured")
+
 type RedisCounter struct {
 	client *redis.Client
 }
@@ -33,12 +36,20 @@ func NewRedisCounter(client *redis.Client) *RedisCounter {
 }
 
 func (c *RedisCounter) Increment(ctx context.Context, key string) (int64, error) {
+	if err := c.configurationError(); err != nil {
+		return 0, err
+	}
 	return c.client.Incr(ctx, key).Result()
 }
 
 func (c *RedisCounter) Raise(ctx context.Context, key string, floor int64) (int64, error) {
+	// Preserve domain validation before dependency validation so an invalid
+	// floor has the same result regardless of Redis wiring.
 	if floor <= 0 {
 		return 0, fmt.Errorf("counter floor must be positive")
+	}
+	if err := c.configurationError(); err != nil {
+		return 0, err
 	}
 
 	value, err := raiseCounterScript.Run(
@@ -56,4 +67,11 @@ func (c *RedisCounter) Raise(ctx context.Context, key string, floor int64) (int6
 		return 0, fmt.Errorf("parse redis counter %q: %w", key, err)
 	}
 	return raised, nil
+}
+
+func (c *RedisCounter) configurationError() error {
+	if c == nil || c.client == nil {
+		return errRedisCounterNotConfigured
+	}
+	return nil
 }

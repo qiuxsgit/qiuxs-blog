@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,23 @@ func TestReleaseRepositoryContractUsesImmutableCommandsAndSnapshots(t *testing.T
 	require.ErrorIs(t, ErrNotFound, ErrNotFound)
 	require.ErrorIs(t, ErrConflict, ErrConflict)
 	require.ErrorIs(t, ErrReconciliationRequired, ErrReconciliationRequired)
+}
+
+func TestSnapshotSourceContractCarriesExplicitModeTargetAndImmutableBase(t *testing.T) {
+	var _ SnapshotSource = (*snapshotSourceContractFake)(nil)
+	request := SnapshotRequest{
+		Mode:             PublishArticle,
+		ArticleID:        41,
+		CurrentReleaseID: 7,
+		Base: PreparedSnapshot{
+			Site:     SiteSnapshot{Name: "current"},
+			Articles: []ArticleSnapshot{{ArticleID: 41, RevisionID: 71}},
+			Checksum: "sha256:" + strings.Repeat("a", 64),
+		},
+	}
+	require.Equal(t, PublishArticle, request.Mode)
+	require.Equal(t, int64(41), request.ArticleID)
+	require.Equal(t, int64(7), request.CurrentReleaseID)
 }
 
 func TestReleaseAggregateExposesOrderedJobHistoryWithoutAliasing(t *testing.T) {
@@ -140,6 +158,12 @@ func mapKeys(value map[string]any) []string {
 }
 
 type repositoryContractFake struct{}
+
+type snapshotSourceContractFake struct{}
+
+func (*snapshotSourceContractFake) PrepareSnapshot(context.Context, SnapshotRequest) (PreparedSnapshot, error) {
+	return PreparedSnapshot{}, errors.New("not implemented")
+}
 
 func (*repositoryContractFake) CreateLocked(context.Context, CreateCommand) (Release, PublishJob, error) {
 	return Release{}, PublishJob{}, errors.New("not implemented")

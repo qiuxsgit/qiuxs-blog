@@ -3,10 +3,7 @@ package release
 import "context"
 
 type SnapshotSource interface {
-	LoadCurrentSite(context.Context) (SiteSnapshot, error)
-	LoadPublishedArticles(context.Context, int64) ([]ArticleSnapshot, error)
-	FreezeForPublish(context.Context, int64) (ArticleSnapshot, error)
-	RemoveFromPublish(context.Context, int64) error
+	PrepareSnapshot(context.Context, SnapshotRequest) (PreparedSnapshot, error)
 }
 
 type Repository interface {

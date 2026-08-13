@@ -215,6 +215,19 @@ type CreateCommand struct {
 	RequestedBy int64
 }
 
+type SnapshotRequest struct {
+	Mode             PublishMode
+	ArticleID        int64
+	CurrentReleaseID int64
+	Base             PreparedSnapshot
+}
+
+type PreparedSnapshot struct {
+	Site     SiteSnapshot
+	Articles []ArticleSnapshot
+	Checksum string
+}
+
 type CallbackEvent struct {
 	ReleaseID    int64
 	BuildNumber  int64
@@ -238,4 +251,6 @@ var (
 	ErrConflict               = errors.New("invalid publish transition")
 	ErrReconciliationRequired = errors.New("release reconciliation required")
 	ErrInvalidAggregate       = errors.New("release aggregate is invalid")
+	ErrInvalidSnapshot        = errors.New("release snapshot is invalid")
+	ErrDependencyUnavailable  = errors.New("release dependency unavailable")
 )

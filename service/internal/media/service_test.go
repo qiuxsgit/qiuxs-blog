@@ -151,6 +151,30 @@ func TestServiceRegisterReturnsExistingGFSFileWithoutMetadataOrInsert(t *testing
 	require.Empty(t, repository.creates)
 }
 
+func TestServiceRegisterRejectsMismatchedExistingGFSFileWithoutMetadataOrInsert(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		existing Media
+	}{
+		{name: "stored GFS file ID", existing: Media{ID: 31, PublicKey: "m_existingaaaaaaaaaaaaaa", GFSFileID: 92, OriginalName: "photo.png", State: "active"}},
+		{name: "stored original name", existing: Media{ID: 31, PublicKey: "m_existingaaaaaaaaaaaaaa", GFSFileID: 91, OriginalName: "other.png", State: "active"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newMediaRepositoryFake()
+			repository.byGFSFileID[91] = test.existing
+			metadata := &metadataReaderFake{err: errors.New("metadata-secret-must-not-run")}
+			service := newMediaService(t, repository, metadata, bytes.Repeat([]byte{0}, 128))
+
+			_, err := service.Register(context.Background(), 91, "photo.png")
+
+			require.ErrorIs(t, err, ErrInvalidMetadata)
+			require.Equal(t, ErrInvalidMetadata.Error(), err.Error())
+			require.Empty(t, metadata.calls)
+			require.Empty(t, repository.creates)
+		})
+	}
+}
+
 func TestServiceRegisterRetriesOnlyPublicKeyConflictFiveTimes(t *testing.T) {
 	valid := Metadata{FileID: 91, FileName: "photo.png", ContentType: "image/png", FileSize: 2048, Width: 640, Height: 480}
 	t.Run("success after one conflict", func(t *testing.T) {
@@ -189,7 +213,10 @@ func TestServiceRegisterRetriesOnlyPublicKeyConflictFiveTimes(t *testing.T) {
 }
 
 func TestServiceRegisterRecoversConcurrentGFSFileConflict(t *testing.T) {
-	existing := Media{ID: 31, PublicKey: "m_existingaaaaaaaaaaaaaa", GFSFileID: 91, OriginalName: "photo.png", State: "active"}
+	existing := Media{
+		ID: 31, PublicKey: "m_existingaaaaaaaaaaaaaa", GFSFileID: 91, OriginalName: "photo.png",
+		MIMEType: "image/png", FileSize: 2048, Width: 640, Height: 480, State: "active",
+	}
 	repository := newMediaRepositoryFake()
 	repository.findGFSResults = []mediaResult{{err: ErrNotFound}, {item: existing}}
 	repository.createErrors = []error{ErrGFSFileIDConflict}
@@ -201,6 +228,43 @@ func TestServiceRegisterRecoversConcurrentGFSFileConflict(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, existing, got)
 	require.Len(t, repository.creates, 1)
+}
+
+func TestServiceRegisterRejectsMismatchedConcurrentGFSFileWinnerWithoutRetry(t *testing.T) {
+	metadata := Metadata{FileID: 91, FileName: "photo.png", ContentType: "image/png", FileSize: 2048, Width: 640, Height: 480}
+	matchingWinner := Media{
+		ID: 31, PublicKey: "m_existingaaaaaaaaaaaaaa", GFSFileID: 91, OriginalName: "photo.png",
+		MIMEType: "image/png", FileSize: 2048, Width: 640, Height: 480, State: "active",
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*Media)
+	}{
+		{name: "GFS file ID", mutate: func(item *Media) { item.GFSFileID = 92 }},
+		{name: "original name", mutate: func(item *Media) { item.OriginalName = "other.png" }},
+		{name: "MIME type", mutate: func(item *Media) { item.MIMEType = "image/jpeg" }},
+		{name: "file size", mutate: func(item *Media) { item.FileSize++ }},
+		{name: "width", mutate: func(item *Media) { item.Width++ }},
+		{name: "height", mutate: func(item *Media) { item.Height++ }},
+		{name: "inactive state", mutate: func(item *Media) { item.State = "inactive" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			winner := matchingWinner
+			test.mutate(&winner)
+			repository := newMediaRepositoryFake()
+			repository.findGFSResults = []mediaResult{{err: ErrNotFound}, {item: winner}}
+			repository.createErrors = []error{ErrGFSFileIDConflict, errors.New("second-insert-secret-must-not-run")}
+			reader := &metadataReaderFake{result: metadata}
+			service := newMediaService(t, repository, reader, bytes.Repeat([]byte{0}, 128))
+
+			_, err := service.Register(context.Background(), 91, "photo.png")
+
+			require.ErrorIs(t, err, ErrInvalidMetadata)
+			require.Equal(t, ErrInvalidMetadata.Error(), err.Error())
+			require.Equal(t, []int64{91}, reader.calls)
+			require.Len(t, repository.creates, 1)
+		})
+	}
 }
 
 func TestServiceResolveReferencesRequiresActiveMediaAndPreservesFirstUseOrder(t *testing.T) {

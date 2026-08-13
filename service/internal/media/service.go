@@ -84,6 +84,9 @@ func (s *service) Register(ctx context.Context, gfsFileID int64, originalName st
 	}
 	existing, err := s.repository.FindByGFSFileID(ctx, gfsFileID)
 	if err == nil {
+		if !matchesRegistrationReplay(existing, gfsFileID, originalName) {
+			return Media{}, ErrInvalidMetadata
+		}
 		return existing, nil
 	}
 	if !errors.Is(err, ErrNotFound) {
@@ -118,12 +121,29 @@ func (s *service) Register(ctx context.Context, gfsFileID int64, originalName st
 			if findErr != nil {
 				return Media{}, mediaDependencyError("find concurrently registered media", findErr)
 			}
+			if !matchesVerifiedMetadata(concurrent, metadata) {
+				return Media{}, ErrInvalidMetadata
+			}
 			return concurrent, nil
 		default:
 			return Media{}, mediaDependencyError("create media", createErr)
 		}
 	}
 	return Media{}, mediaDomainError("create media after public key retries", ErrPublicKeyConflict, nil)
+}
+
+func matchesRegistrationReplay(existing Media, gfsFileID int64, originalName string) bool {
+	return existing.GFSFileID == gfsFileID && existing.OriginalName == originalName
+}
+
+func matchesVerifiedMetadata(existing Media, metadata Metadata) bool {
+	return existing.GFSFileID == metadata.FileID &&
+		existing.OriginalName == metadata.FileName &&
+		existing.MIMEType == metadata.ContentType &&
+		existing.FileSize == metadata.FileSize &&
+		existing.Width == metadata.Width &&
+		existing.Height == metadata.Height &&
+		existing.State == "active"
 }
 
 func (s *service) ResolveReferences(ctx context.Context, coverID *int64, publicKeys []string) (*Media, []Reference, error) {

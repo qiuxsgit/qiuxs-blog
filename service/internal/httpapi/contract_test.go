@@ -384,8 +384,12 @@ func TestReleaseAdminReadsExposeOrderedJobHistoryAndPagination(t *testing.T) {
 	require.ElementsMatch(t, []string{"release", "job"}, retryResult.Required)
 	require.Equal(t, "#/components/schemas/ReleaseView", retryResult.Properties["release"].Ref)
 	require.Equal(t, "#/components/schemas/PublishJobView", retryResult.Properties["job"].Ref)
+	require.Contains(t, retryResult.Description, "release.latestJob and release.jobs[0] equal job")
 
 	list := doc.Paths.Find("/api/admin/v1/releases").Get
+	listDescription := list.Responses.Status(200).Value.Description
+	require.NotNil(t, listDescription)
+	require.Equal(t, "Immutable release aggregates ordered by created_at DESC, id DESC.", *listDescription)
 	require.Len(t, list.Parameters, 2)
 	parameters := map[string]*openapi3.Parameter{}
 	for _, parameter := range list.Parameters {

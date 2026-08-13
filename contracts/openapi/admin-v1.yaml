@@ -433,7 +433,7 @@ paths:
           schema: {type: integer, minimum: 0, default: 0}
       responses:
         '200':
-          description: Immutable releases in descending creation order
+          description: Immutable release aggregates ordered by created_at DESC, id DESC.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ReleaseList'}
@@ -963,6 +963,7 @@ components:
         job: {$ref: '#/components/schemas/PublishJobView'}
     RetryReleaseResult:
       type: object
+      description: The release is the updated aggregate; release.latestJob and release.jobs[0] equal job.
       additionalProperties: false
       required: [release, job]
       properties:

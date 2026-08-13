@@ -68,25 +68,67 @@ func TestReleaseRepositoryContractUsesImmutableCommandsAndSnapshots(t *testing.T
 
 func TestReleaseAggregateExposesOrderedJobHistoryWithoutAliasing(t *testing.T) {
 	createdAt := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	buildNumber := int64(41)
+	finishedAt := createdAt.Add(time.Minute)
 	aggregate := Aggregate{
 		Release: Release{ID: 7},
 		Jobs: []PublishJob{
-			{ID: 12, ReleaseID: 7, Status: JobBuilding, CreatedAt: createdAt},
+			{ID: 12, ReleaseID: 7, Status: JobBuilding, BuildNumber: &buildNumber, CreatedAt: createdAt, FinishedAt: &finishedAt},
 			{ID: 11, ReleaseID: 7, Status: JobFailed, CreatedAt: createdAt.Add(-time.Minute)},
 		},
 	}
 
+	require.NoError(t, aggregate.Validate())
 	latest, err := aggregate.LatestJob()
 	require.NoError(t, err)
 	require.Equal(t, int64(12), latest.ID)
 	latest.Status = JobSuccess
+	*latest.BuildNumber = 42
+	latestFinishedAt := finishedAt.Add(time.Minute)
+	originalFinishedAt := finishedAt.Add(2 * time.Minute)
+	*latest.FinishedAt = latestFinishedAt
 	require.Equal(t, JobBuilding, aggregate.Jobs[0].Status)
+	require.Equal(t, int64(41), *aggregate.Jobs[0].BuildNumber)
+	require.Equal(t, finishedAt, *aggregate.Jobs[0].FinishedAt)
+	*aggregate.Jobs[0].BuildNumber = 43
+	*aggregate.Jobs[0].FinishedAt = originalFinishedAt
+	require.Equal(t, int64(42), *latest.BuildNumber)
+	require.Equal(t, latestFinishedAt, *latest.FinishedAt)
 	require.Equal(t, []int64{12, 11}, []int64{aggregate.Jobs[0].ID, aggregate.Jobs[1].ID})
 
 	empty := Aggregate{Release: Release{ID: 8}, Jobs: []PublishJob{}}
 	require.NotNil(t, empty.Jobs)
 	_, err = empty.LatestJob()
 	require.ErrorIs(t, err, ErrInvalidAggregate)
+}
+
+func TestReleaseAggregatePinsRetryIdentityAndDeterministicHistoryOrder(t *testing.T) {
+	createdAt := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	newJob := PublishJob{ID: 13, ReleaseID: 7, Status: JobPending, CreatedAt: createdAt}
+	aggregate := Aggregate{
+		Release: Release{ID: 7},
+		Jobs: []PublishJob{
+			newJob,
+			{ID: 12, ReleaseID: 7, Status: JobFailed, CreatedAt: createdAt},
+			{ID: 11, ReleaseID: 7, Status: JobFailed, CreatedAt: createdAt.Add(-time.Minute)},
+		},
+	}
+	require.NoError(t, aggregate.ValidateRetry(newJob))
+
+	mismatched := newJob
+	mismatched.ID = 14
+	require.ErrorIs(t, aggregate.ValidateRetry(mismatched), ErrInvalidAggregate)
+
+	for name, jobs := range map[string][]PublishJob{
+		"newer timestamp after older": {aggregate.Jobs[1], aggregate.Jobs[0]},
+		"higher id after lower tie":   {aggregate.Jobs[1], aggregate.Jobs[0], aggregate.Jobs[2]},
+		"foreign release job":         {{ID: 13, ReleaseID: 8, CreatedAt: createdAt}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := Aggregate{Release: Release{ID: 7}, Jobs: jobs}
+			require.ErrorIs(t, invalid.Validate(), ErrInvalidAggregate)
+		})
+	}
 }
 
 func mapKeys(value map[string]any) []string {
@@ -115,8 +157,8 @@ func (*repositoryContractFake) LoadBundle(context.Context, int64) (Bundle, error
 	return Bundle{}, errors.New("not implemented")
 }
 
-func (*repositoryContractFake) CreateRetryLocked(context.Context, int64) (PublishJob, error) {
-	return PublishJob{}, errors.New("not implemented")
+func (*repositoryContractFake) CreateRetryLocked(context.Context, int64) (Aggregate, PublishJob, error) {
+	return Aggregate{}, PublishJob{}, errors.New("not implemented")
 }
 
 func (*repositoryContractFake) ApplyCallbackLocked(context.Context, CallbackEvent) (PublishJob, bool, error) {

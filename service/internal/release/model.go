@@ -96,10 +96,74 @@ type Aggregate struct {
 // An empty history is a corrupt repository result because release creation and
 // its initial job are atomic.
 func (a Aggregate) LatestJob() (PublishJob, error) {
-	if len(a.Jobs) == 0 {
+	if err := a.Validate(); err != nil {
 		return PublishJob{}, ErrInvalidAggregate
 	}
-	return a.Jobs[0], nil
+	return clonePublishJob(a.Jobs[0]), nil
+}
+
+// Validate enforces the repository boundary: all jobs belong to the release
+// and are ordered by created_at descending, then id descending.
+func (a Aggregate) Validate() error {
+	if a.Release.ID <= 0 || len(a.Jobs) == 0 {
+		return ErrInvalidAggregate
+	}
+	for index, job := range a.Jobs {
+		if job.ID <= 0 || job.ReleaseID != a.Release.ID {
+			return ErrInvalidAggregate
+		}
+		if index == 0 {
+			continue
+		}
+		previous := a.Jobs[index-1]
+		if previous.CreatedAt.Before(job.CreatedAt) ||
+			(previous.CreatedAt.Equal(job.CreatedAt) && previous.ID <= job.ID) {
+			return ErrInvalidAggregate
+		}
+	}
+	return nil
+}
+
+// ValidateRetry additionally proves that a retry transaction returned the new
+// job as both the latest job and the first item of the complete history.
+func (a Aggregate) ValidateRetry(created PublishJob) error {
+	if err := a.Validate(); err != nil || !publishJobsEqual(a.Jobs[0], created) {
+		return ErrInvalidAggregate
+	}
+	return nil
+}
+
+func clonePublishJob(job PublishJob) PublishJob {
+	clone := job
+	if job.BuildNumber != nil {
+		value := *job.BuildNumber
+		clone.BuildNumber = &value
+	}
+	if job.FinishedAt != nil {
+		value := *job.FinishedAt
+		clone.FinishedAt = &value
+	}
+	return clone
+}
+
+func publishJobsEqual(left, right PublishJob) bool {
+	return left.ID == right.ID &&
+		left.ReleaseID == right.ReleaseID &&
+		left.BuilderID == right.BuilderID &&
+		left.Status == right.Status &&
+		left.Stage == right.Stage &&
+		optionalInt64Equal(left.BuildNumber, right.BuildNumber) &&
+		left.ErrorSummary == right.ErrorSummary &&
+		left.CreatedAt.Equal(right.CreatedAt) &&
+		optionalTimeEqual(left.FinishedAt, right.FinishedAt)
+}
+
+func optionalInt64Equal(left, right *int64) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func optionalTimeEqual(left, right *time.Time) bool {
+	return left == nil && right == nil || left != nil && right != nil && left.Equal(*right)
 }
 
 type ListQuery struct {

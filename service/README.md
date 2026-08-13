@@ -11,7 +11,7 @@ All runtime configuration is supplied through environment variables.
 
 | Variable | Required/default | Validation and purpose |
 | --- | --- | --- |
-| `BLOG_ENV` | `development` | Environment name. `production` requires an HTTPS admin origin and enables Secure session cookies. |
+| `BLOG_ENV` | `development` | Must be `development` or `production`. Production requires an HTTPS admin origin and enables Secure session cookies. |
 | `BLOG_HTTP_ADDR` | `:8080` | Address passed to the HTTP server. |
 | `BLOG_MYSQL_DSN` | required | MySQL DSN. Include options required by the deployment, such as `parseTime=true&loc=UTC`. |
 | `BLOG_REDIS_ADDR` | required | Redis address in `host:port` form. |

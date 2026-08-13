@@ -54,6 +54,93 @@ func TestLoadUsesDevelopmentDefaults(t *testing.T) {
 	require.Equal(t, 24*time.Hour, got.Session.TTL)
 }
 
+func TestValidateAcceptsCanonicalDevelopmentAndProductionConfig(t *testing.T) {
+	development := validDirectConfig()
+	require.NoError(t, config.Validate(development))
+
+	development.Session.CookieSecure = true
+	require.NoError(t, config.Validate(development))
+
+	production := validDirectConfig()
+	production.Environment = "production"
+	production.HTTP.AdminOrigin = "https://blog-admin.qiuxs.com"
+	production.Session.CookieSecure = true
+	require.NoError(t, config.Validate(production))
+}
+
+func TestValidateRejectsInvalidDirectConfigWithoutRevealingValues(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*config.Config)
+		wantField  string
+		secretText string
+	}{
+		{name: "empty environment", mutate: func(cfg *config.Config) { cfg.Environment = "" }, wantField: "BLOG_ENV"},
+		{name: "unknown environment", mutate: func(cfg *config.Config) { cfg.Environment = "secret-staging" }, wantField: "BLOG_ENV", secretText: "secret-staging"},
+		{name: "blank HTTP address", mutate: func(cfg *config.Config) { cfg.HTTP.Addr = " \t" }, wantField: "BLOG_HTTP_ADDR"},
+		{name: "missing admin origin", mutate: func(cfg *config.Config) { cfg.HTTP.AdminOrigin = "" }, wantField: "BLOG_ADMIN_ORIGIN"},
+		{name: "malformed admin origin", mutate: func(cfg *config.Config) { cfg.HTTP.AdminOrigin = "://origin-secret" }, wantField: "BLOG_ADMIN_ORIGIN", secretText: "origin-secret"},
+		{name: "admin origin userinfo", mutate: func(cfg *config.Config) { cfg.HTTP.AdminOrigin = "https://admin-secret@localhost:3000" }, wantField: "BLOG_ADMIN_ORIGIN", secretText: "admin-secret"},
+		{name: "noncanonical root slash", mutate: func(cfg *config.Config) { cfg.HTTP.AdminOrigin = "http://localhost:3000/" }, wantField: "BLOG_ADMIN_ORIGIN"},
+		{name: "production HTTP origin", mutate: func(cfg *config.Config) {
+			cfg.Environment = "production"
+			cfg.Session.CookieSecure = true
+		}, wantField: "BLOG_ADMIN_ORIGIN"},
+		{name: "production insecure cookie", mutate: func(cfg *config.Config) {
+			cfg.Environment = "production"
+			cfg.HTTP.AdminOrigin = "https://blog-admin.qiuxs.com"
+			cfg.Session.CookieSecure = false
+		}, wantField: "BLOG_ENV"},
+		{name: "blank MySQL DSN", mutate: func(cfg *config.Config) { cfg.MySQL.DSN = " \t" }, wantField: "BLOG_MYSQL_DSN"},
+		{name: "blank Redis address", mutate: func(cfg *config.Config) { cfg.Redis.Addr = " \t" }, wantField: "BLOG_REDIS_ADDR"},
+		{name: "negative Redis database", mutate: func(cfg *config.Config) { cfg.Redis.DB = -1 }, wantField: "BLOG_REDIS_DB"},
+		{name: "zero ID offset", mutate: func(cfg *config.Config) { cfg.IDGen.Offset = 0 }, wantField: "IDGEN_OFFSET"},
+		{name: "zero ID step", mutate: func(cfg *config.Config) { cfg.IDGen.Step = 0 }, wantField: "IDGEN_STEP"},
+		{name: "offset above step", mutate: func(cfg *config.Config) { cfg.IDGen.Offset = 2 }, wantField: "IDGEN_OFFSET"},
+		{name: "invalid cookie name", mutate: func(cfg *config.Config) { cfg.Session.CookieName = "cookie secret" }, wantField: "BLOG_SESSION_COOKIE_NAME", secretText: "cookie secret"},
+		{name: "session TTL below minimum", mutate: func(cfg *config.Config) { cfg.Session.TTL = 15*time.Minute - time.Nanosecond }, wantField: "BLOG_SESSION_TTL"},
+		{name: "session TTL above maximum", mutate: func(cfg *config.Config) { cfg.Session.TTL = 168*time.Hour + time.Nanosecond }, wantField: "BLOG_SESSION_TTL"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := validDirectConfig()
+			test.mutate(&cfg)
+
+			err := config.Validate(cfg)
+
+			require.ErrorContains(t, err, test.wantField)
+			if test.secretText != "" {
+				require.NotContains(t, err.Error(), test.secretText)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsUnknownEnvironmentAndWhitespaceHTTPAddress(t *testing.T) {
+	tests := []struct {
+		name      string
+		key       string
+		value     string
+		wantField string
+	}{
+		{name: "environment", key: "BLOG_ENV", value: "test", wantField: "BLOG_ENV"},
+		{name: "HTTP address", key: "BLOG_HTTP_ADDR", value: " \t", wantField: "BLOG_HTTP_ADDR"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := validEnv()
+			env[test.key] = test.value
+
+			_, err := config.Load(func(key string) string { return env[key] })
+
+			require.ErrorContains(t, err, test.wantField)
+			require.NotContains(t, err.Error(), test.value)
+		})
+	}
+}
+
 func TestLoadRejectsMissingMySQLDSN(t *testing.T) {
 	env := validEnv()
 	delete(env, "BLOG_MYSQL_DSN")
@@ -202,5 +289,25 @@ func validEnv() map[string]string {
 		"BLOG_ADMIN_ORIGIN":        "https://blog-admin.qiuxs.com",
 		"BLOG_SESSION_COOKIE_NAME": "qx_blog_session",
 		"BLOG_SESSION_TTL":         "24h",
+	}
+}
+
+func validDirectConfig() config.Config {
+	return config.Config{
+		Environment: "development",
+		HTTP: config.HTTPConfig{
+			Addr:        ":8080",
+			AdminOrigin: "http://localhost:3000",
+		},
+		MySQL: config.MySQLConfig{DSN: "blog:password@tcp(mysql:3306)/blog"},
+		Redis: config.RedisConfig{
+			Addr: "redis:6379",
+			DB:   0,
+		},
+		IDGen: config.IDGenConfig{Offset: 1, Step: 1},
+		Session: config.SessionConfig{
+			CookieName: "qx_blog_session",
+			TTL:        24 * time.Hour,
+		},
 	}
 }

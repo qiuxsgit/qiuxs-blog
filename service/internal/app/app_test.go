@@ -77,6 +77,47 @@ func TestBuildRejectsInvalidDependenciesAndAuthConfig(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsInvalidDirectConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{name: "environment", mutate: func(cfg *config.Config) { cfg.Environment = "test" }},
+		{name: "HTTP address", mutate: func(cfg *config.Config) { cfg.HTTP.Addr = " " }},
+		{name: "admin origin", mutate: func(cfg *config.Config) { cfg.HTTP.AdminOrigin = "https://user-secret@admin.example.com" }},
+		{name: "noncanonical admin origin", mutate: func(cfg *config.Config) { cfg.HTTP.AdminOrigin += "/" }},
+		{name: "production HTTP origin", mutate: func(cfg *config.Config) {
+			cfg.Environment = "production"
+			cfg.Session.CookieSecure = true
+		}},
+		{name: "production insecure cookie", mutate: func(cfg *config.Config) {
+			cfg.Environment = "production"
+			cfg.HTTP.AdminOrigin = "https://admin.example.com"
+			cfg.Session.CookieSecure = false
+		}},
+		{name: "MySQL DSN", mutate: func(cfg *config.Config) { cfg.MySQL.DSN = " " }},
+		{name: "Redis address", mutate: func(cfg *config.Config) { cfg.Redis.Addr = " " }},
+		{name: "Redis database", mutate: func(cfg *config.Config) { cfg.Redis.DB = -1 }},
+		{name: "ID generator", mutate: func(cfg *config.Config) { cfg.IDGen.Offset = 0 }},
+		{name: "cookie name", mutate: func(cfg *config.Config) { cfg.Session.CookieName = "bad cookie" }},
+		{name: "short session TTL", mutate: func(cfg *config.Config) { cfg.Session.TTL = 15*time.Minute - time.Nanosecond }},
+		{name: "long session TTL", mutate: func(cfg *config.Config) { cfg.Session.TTL = 168*time.Hour + time.Nanosecond }},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testConfig()
+			test.mutate(&cfg)
+
+			router, err := Build(cfg, testDependencies(t, io.Discard))
+
+			require.Error(t, err)
+			require.Nil(t, router)
+			require.NotContains(t, err.Error(), "secret")
+		})
+	}
+}
+
 func TestBuildRecoversWithSanitizedProblemAndStructuredAccessLog(t *testing.T) {
 	var logs bytes.Buffer
 	deps := testDependencies(t, &logs)
@@ -166,11 +207,13 @@ func testDependencies(t *testing.T, logOutput io.Writer) Dependencies {
 
 func testConfig() config.Config {
 	return config.Config{
-		Environment: "test",
+		Environment: "development",
 		HTTP: config.HTTPConfig{
 			Addr:        ":8080",
-			AdminOrigin: "https://admin.example.com",
+			AdminOrigin: "http://admin.example.com",
 		},
+		MySQL: config.MySQLConfig{DSN: "blog:password@tcp(mysql:3306)/blog"},
+		Redis: config.RedisConfig{Addr: "redis:6379"},
 		IDGen: config.IDGenConfig{Offset: 1, Step: 1},
 		Session: config.SessionConfig{
 			CookieName:   "admin_session",

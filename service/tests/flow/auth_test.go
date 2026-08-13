@@ -41,7 +41,7 @@ func TestFirstAdminThroughLogoutFlow(t *testing.T) {
 	redisClient := redis.NewClient(&redis.Options{Addr: miniRedis.Addr()})
 	t.Cleanup(func() { require.NoError(t, redisClient.Close()) })
 
-	cfg := flowConfig()
+	cfg := flowConfig(miniRedis.Addr())
 	now := time.Date(2026, 8, 13, 12, 34, 56, 0, time.UTC)
 	ids, err := idgen.New(idgen.NewRedisCounter(redisClient), db, cfg.IDGen.Offset, cfg.IDGen.Step, cfg.IDGen.Heal)
 	require.NoError(t, err)
@@ -159,13 +159,15 @@ func (capture captureString) Match(value driver.Value) bool {
 	return true
 }
 
-func flowConfig() config.Config {
+func flowConfig(redisAddr string) config.Config {
 	return config.Config{
 		Environment: "production",
 		HTTP: config.HTTPConfig{
 			Addr:        ":8080",
 			AdminOrigin: adminOrigin,
 		},
+		MySQL: config.MySQLConfig{DSN: "sqlmock"},
+		Redis: config.RedisConfig{Addr: redisAddr},
 		IDGen: config.IDGenConfig{Offset: 1, Step: 1, Heal: false},
 		Session: config.SessionConfig{
 			CookieName:   "qx_blog_session",

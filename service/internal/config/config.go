@@ -51,14 +51,8 @@ func Load(getenv func(string) string) (Config, error) {
 	environment := valueOrDefault(getenv("BLOG_ENV"), defaultEnvironment)
 	httpAddr := valueOrDefault(getenv("BLOG_HTTP_ADDR"), defaultHTTPAddr)
 	mysqlDSN := getenv("BLOG_MYSQL_DSN")
-	if strings.TrimSpace(mysqlDSN) == "" {
-		return Config{}, fmt.Errorf("BLOG_MYSQL_DSN is required")
-	}
 
 	redisAddr := getenv("BLOG_REDIS_ADDR")
-	if strings.TrimSpace(redisAddr) == "" {
-		return Config{}, fmt.Errorf("BLOG_REDIS_ADDR is required")
-	}
 	redisDB, err := parseRedisDB(getenv("BLOG_REDIS_DB"))
 	if err != nil {
 		return Config{}, err
@@ -72,10 +66,6 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if offset < 1 || step < 1 || offset > step {
-		return Config{}, fmt.Errorf("IDGEN_OFFSET and IDGEN_STEP must satisfy 1 <= offset <= step")
-	}
-
 	heal, err := parseHeal(getenv("IDGEN_HEAL"))
 	if err != nil {
 		return Config{}, err
@@ -87,15 +77,12 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	cookieName := valueOrDefault(getenv("BLOG_SESSION_COOKIE_NAME"), defaultSessionCookieName)
-	if err := ValidateSessionCookieName(cookieName); err != nil {
-		return Config{}, err
-	}
 	ttl, err := parseSessionTTL(getenv("BLOG_SESSION_TTL"))
 	if err != nil {
 		return Config{}, err
 	}
 
-	return Config{
+	cfg := Config{
 		Environment: environment,
 		HTTP: HTTPConfig{
 			Addr:        httpAddr,
@@ -117,7 +104,53 @@ func Load(getenv func(string) string) (Config, error) {
 			CookieSecure: environment == "production",
 			TTL:          ttl,
 		},
-	}, nil
+	}
+	if err := Validate(cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// Validate checks a fully parsed Config without normalizing it. In particular,
+// HTTP.AdminOrigin must already equal the canonical origin Load emits: lower-
+// case scheme and no trailing slash, path, query, fragment, or userinfo.
+// Returned errors name environment variables but never include their values.
+func Validate(cfg Config) error {
+	if cfg.Environment != "development" && cfg.Environment != "production" {
+		return fmt.Errorf("BLOG_ENV must be development or production")
+	}
+	if strings.TrimSpace(cfg.HTTP.Addr) == "" {
+		return fmt.Errorf("BLOG_HTTP_ADDR is required")
+	}
+	canonicalOrigin, err := parseAdminOrigin(cfg.HTTP.AdminOrigin, cfg.Environment)
+	if err != nil {
+		return err
+	}
+	if canonicalOrigin != cfg.HTTP.AdminOrigin {
+		return fmt.Errorf("BLOG_ADMIN_ORIGIN must be canonical without a trailing slash")
+	}
+	if strings.TrimSpace(cfg.MySQL.DSN) == "" {
+		return fmt.Errorf("BLOG_MYSQL_DSN is required")
+	}
+	if strings.TrimSpace(cfg.Redis.Addr) == "" {
+		return fmt.Errorf("BLOG_REDIS_ADDR is required")
+	}
+	if cfg.Redis.DB < 0 {
+		return fmt.Errorf("BLOG_REDIS_DB must be a non-negative integer")
+	}
+	if cfg.IDGen.Offset < 1 || cfg.IDGen.Step < 1 || cfg.IDGen.Offset > cfg.IDGen.Step {
+		return fmt.Errorf("IDGEN_OFFSET and IDGEN_STEP must satisfy 1 <= offset <= step")
+	}
+	if cfg.Environment == "production" && !cfg.Session.CookieSecure {
+		return fmt.Errorf("BLOG_ENV production requires a secure session cookie")
+	}
+	if err := ValidateSessionCookieName(cfg.Session.CookieName); err != nil {
+		return err
+	}
+	if cfg.Session.TTL < minimumSessionTTL || cfg.Session.TTL > maximumSessionTTL {
+		return fmt.Errorf("BLOG_SESSION_TTL must be between 15m and 168h")
+	}
+	return nil
 }
 
 // ValidateSessionCookieName requires an ASCII RFC token suitable for an HTTP

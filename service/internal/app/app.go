@@ -70,6 +70,9 @@ func Build(cfg config.Config, deps Dependencies) (*gin.Engine, error) {
 }
 
 func validate(cfg config.Config, deps Dependencies) error {
+	if err := config.Validate(cfg); err != nil {
+		return err
+	}
 	switch {
 	case !databaseConfigured(deps.DB):
 		return errors.New("database dependency is required")
@@ -81,11 +84,6 @@ func validate(cfg config.Config, deps Dependencies) error {
 		return errors.New("random dependency is required")
 	case deps.Now == nil:
 		return errors.New("clock dependency is required")
-	case cfg.Session.TTL <= 0:
-		return errors.New("session TTL must be positive")
-	}
-	if err := config.ValidateSessionCookieName(cfg.Session.CookieName); err != nil {
-		return err
 	}
 	return nil
 }

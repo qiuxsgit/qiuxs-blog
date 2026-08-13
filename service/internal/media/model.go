@@ -21,6 +21,7 @@ type Reference struct {
 
 var (
 	ErrNotFound          = errors.New("media not found")
+	ErrHotlinkForbidden  = errors.New("hotlink forbidden")
 	ErrInvalidMetadata   = errors.New("invalid media metadata")
 	ErrPublicKeyConflict = errors.New("media public key conflict")
 	ErrGFSFileIDConflict = errors.New("GFS file ID conflict")

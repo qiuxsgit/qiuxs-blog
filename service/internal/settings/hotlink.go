@@ -15,6 +15,7 @@ type HotlinkService interface {
 	Put(context.Context, bool, []HotlinkEntry) (HotlinkPolicy, error)
 	Current(context.Context) (HotlinkPolicy, error)
 	AllowsReferer(HotlinkPolicy, string) bool
+	AllowsCurrentReferer(context.Context, string) (bool, error)
 }
 
 type hotlinkService struct {
@@ -212,6 +213,17 @@ func (s *hotlinkService) AllowsReferer(policy HotlinkPolicy, referer string) boo
 		}
 	}
 	return false
+}
+
+func (s *hotlinkService) AllowsCurrentReferer(ctx context.Context, referer string) (bool, error) {
+	if err := s.validate(ctx); err != nil {
+		return false, err
+	}
+	policy, err := s.Current(ctx)
+	if err != nil {
+		return false, err
+	}
+	return s.AllowsReferer(policy, referer), nil
 }
 
 func (s *hotlinkService) load(ctx context.Context) (HotlinkPolicy, error) {

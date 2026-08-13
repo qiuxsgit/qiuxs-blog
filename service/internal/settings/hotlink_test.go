@@ -143,6 +143,70 @@ func TestHotlinkAllowsOnlyEmptyFlagOrEnabledExactHTTPRefererHost(t *testing.T) {
 	}
 }
 
+func TestHotlinkAllowsCurrentRefererUsesExactDecisionAndCurrentCache(t *testing.T) {
+	repository := &hotlinkRepositoryFake{getResult: HotlinkPolicy{
+		AllowEmptyReferer: false,
+		Entries: []HotlinkEntry{
+			{Hostname: "qiuxs.com", Enabled: true},
+			{Hostname: "disabled.example", Enabled: false},
+		},
+	}}
+	service := newHotlinkService(t, repository, time.Now)
+
+	for _, test := range []struct {
+		referer string
+		want    bool
+	}{
+		{referer: "", want: false},
+		{referer: "https://qiuxs.com/image.png", want: true},
+		{referer: "https://sub.qiuxs.com/image.png", want: false},
+		{referer: "https://disabled.example/image.png", want: false},
+		{referer: "ftp://qiuxs.com/image.png", want: false},
+		{referer: "malformed-secret", want: false},
+	} {
+		allowed, err := service.AllowsCurrentReferer(context.Background(), test.referer)
+		require.NoError(t, err)
+		require.Equal(t, test.want, allowed, test.referer)
+	}
+	require.Equal(t, 1, repository.getCallCount(), "current policy must be cached across decisions")
+}
+
+func TestHotlinkAllowsCurrentRefererSanitizesDependencyFailureAndDoesNotCacheIt(t *testing.T) {
+	repository := &hotlinkRepositoryFake{getErr: errors.New("policy-secret")}
+	service := newHotlinkService(t, repository, time.Now)
+
+	for range 2 {
+		allowed, err := service.AllowsCurrentReferer(context.Background(), "https://referer-secret.example/image.png")
+		require.False(t, allowed)
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "policy-secret")
+		require.NotContains(t, err.Error(), "referer-secret")
+	}
+	require.Equal(t, 2, repository.getCallCount(), "dependency errors must not be cached")
+}
+
+func TestHotlinkAllowsCurrentRefererReloadsAfterSuccessfulPut(t *testing.T) {
+	oldPolicy := HotlinkPolicy{Entries: []HotlinkEntry{{Hostname: "old.example", Enabled: true}}}
+	newPolicy := HotlinkPolicy{Entries: []HotlinkEntry{{ID: 2, Hostname: "new.example", Enabled: true}}}
+	repository := &hotlinkRepositoryFake{getResult: oldPolicy}
+	service := newHotlinkService(t, repository, time.Now)
+
+	allowed, err := service.AllowsCurrentReferer(context.Background(), "https://old.example/image.png")
+	require.NoError(t, err)
+	require.True(t, allowed)
+	repository.setReplace(newPolicy, nil)
+	_, err = service.Put(context.Background(), false, []HotlinkEntry{{Hostname: "new.example", Enabled: true}})
+	require.NoError(t, err)
+
+	allowed, err = service.AllowsCurrentReferer(context.Background(), "https://old.example/image.png")
+	require.NoError(t, err)
+	require.False(t, allowed)
+	allowed, err = service.AllowsCurrentReferer(context.Background(), "https://new.example/image.png")
+	require.NoError(t, err)
+	require.True(t, allowed)
+	require.Equal(t, 2, repository.getCallCount())
+}
+
 func TestHotlinkCurrentLoadsOnceReturnsImmutableCopiesAndDoesNotCacheErrors(t *testing.T) {
 	policy := HotlinkPolicy{AllowEmptyReferer: true, Entries: []HotlinkEntry{{ID: 2, Hostname: "qiuxs.com", Enabled: true}}}
 	repository := &hotlinkRepositoryFake{getResult: policy}

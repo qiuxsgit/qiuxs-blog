@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/auth"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/media"
 )
 
 const problemContentType = "application/problem+json"
@@ -48,7 +49,11 @@ func problemMapping(err error) (int, string, string) {
 		return http.StatusUnauthorized, "unauthenticated", "Unauthenticated"
 	case errors.Is(err, ErrOriginForbidden):
 		return http.StatusForbidden, "origin_forbidden", "Origin forbidden"
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, media.ErrDependencyUnavailable):
+		return http.StatusServiceUnavailable, "dependency_unavailable", "Dependency unavailable"
+	case errors.Is(err, media.ErrHotlinkForbidden):
+		return http.StatusForbidden, "hotlink_forbidden", "Hotlink forbidden"
+	case errors.Is(err, ErrNotFound), errors.Is(err, media.ErrNotFound):
 		return http.StatusNotFound, "not_found", "Not found"
 	case errors.Is(err, auth.ErrRateLimited):
 		return http.StatusTooManyRequests, "login_rate_limited", "Login rate limited"

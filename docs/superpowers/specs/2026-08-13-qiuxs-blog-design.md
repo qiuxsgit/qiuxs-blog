@@ -67,7 +67,7 @@ qiuxs-blog/
 
 `site` 构建镜像同时提供 pnpm、OpenSSH 和 rsync，避免 Jenkins 宿主机为静态站安装额外工具。三个应用独立构建和部署；内容发布只触发 `site` 流水线。
 
-Go 服务使用 Gin，MySQL 保存持久数据，Redis 只保存 Session、限流状态和短期幂等数据。OpenAPI 是 Admin API 的接口真源，React 客户端由契约生成。
+Go 服务使用 Gin，MySQL 保存持久数据；Redis 保存主键序列、Session、限流状态和短期幂等数据。OpenAPI 是 Admin API 的接口真源，React 客户端由契约生成。
 
 ## 4. 运行架构与域名
 
@@ -174,6 +174,23 @@ MySQL 中的 Markdown 原文是唯一内容真源，Milkdown 只是编辑界面�
 Shiki 在构建阶段完成代码高亮，正文不在浏览器中再次解析 Markdown。
 
 ## 8. 内容模型
+
+### 8.0 全局主键规则
+
+所有 MySQL 表统一使用应用层生成的有符号主键：
+
+- DDL 使用 `id BIGINT NOT NULL`，禁止 `UNSIGNED` 和 `AUTO_INCREMENT`。
+- Go 领域模型、Repository、Session 和 OpenAPI ID 字段统一使用 `int64`。
+- `0` 和负数为未来特殊值保留；首版不赋予具体业务含义，也不由生成器发放。
+- 共享的 Redis ID 生成器在 INSERT 前执行 `INCR("idseq:<真实表名>")`，真实表名必须是代码常量，不能来自外部输入。
+- ID 公式为 `id = offset + (raw - 1) * step`。默认 `IDGEN_OFFSET=1`、`IDGEN_STEP=1`；必须满足 `1 <= offset <= step`。
+- 所有 Repository 注入同一个共享生成器，通过“取号后插入”的统一边界创建实体，不能在 Repository 内自行构造生成器。
+- `IDGEN_HEAL` 默认关闭。开启后仅 MySQL `PRIMARY` 主键冲突触发：查询该表 `MAX(id)`，按当前 offset/step 车道抬升 Redis 计数器并进行最多 5 次有界重试。
+- MySQL 1062 必须根据错误中的索引名区分 `PRIMARY` 与业务唯一键；业务唯一键冲突不能触发主键自愈。
+- Redis 取号失败时本次新增操作失败，不回退到 MySQL 自增或本地随机 ID。
+- ID 不承诺连续，也不作为时间顺序。列表、历史版本和发布记录按 `created_at` 等显式时间字段排序，必要时用 `id` 作为同时间戳下的稳定次级排序键。
+
+这一规则覆盖管理员、文章、修订、标签、关联表、媒体、设置、Release 和发布任务等全部持久化表。
 
 ### 8.1 管理员
 
@@ -367,6 +384,7 @@ Go 服务内部按领域拆分：
 ```text
 service/internal/
 ├── auth/          管理员、密码和 Redis Session
+├── idgen/         Redis 主键序列、分段车道和冲突自愈
 ├── article/       文章身份与生命周期
 ├── revision/      草稿、版本、恢复和乐观锁
 ├── tag/           标签管理
@@ -545,6 +563,7 @@ Astro 生成：
 故障策略以保持公开站可用为第一目标：
 
 - MySQL 或 Redis 故障：Admin 暂时不可用，现有静态博客继续工作。
+- Redis 主键序列故障：拒绝新增持久化实体，不回退到其它 ID 策略；现有静态博客继续工作。
 - GFS 或 OSS 故障：文字内容可读，图片返回明确错误。
 - Jenkins 不可用：发布失败，草稿和线上 Release 不变。
 - Astro、检查、rsync 或切换失败：不修改 `current`。
@@ -571,7 +590,7 @@ result
 
 ### 18.1 自动化测试
 
-- `service`：领域单元测试，MySQL 与 Redis 集成测试，认证、乐观锁、Release、回调幂等和防重放测试。
+- `service`：领域单元测试，MySQL 与 Redis 集成测试，Redis 主键生成/分段/冲突自愈、认证、乐观锁、Release、回调幂等和防重放测试。
 - `admin`：Vitest + React Testing Library，覆盖登录、整篇 Markdown 粘贴、自动保存、冲突、上传和发布状态。
 - `site`：Markdown 固定样例、危险 HTML 拒绝、路由、RSS、Sitemap、OG、备案组件和 Bundle Schema 测试。
 - Playwright：覆盖登录、编辑、预览、上传图片和创建发布任务的关键流程。

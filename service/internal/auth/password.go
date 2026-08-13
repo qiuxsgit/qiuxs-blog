@@ -16,9 +16,9 @@ const (
 	minPasswordLength = 1
 	maxPasswordLength = 256
 
-	maxMemoryKiB     = 256 * 1024
-	maxIterations    = 10
-	maxParallelism   = 16
+	maxMemoryKiB     = 64 * 1024
+	maxIterations    = 3
+	maxParallelism   = 2
 	minSaltLength    = 16
 	maxSaltLength    = 64
 	minKeyLength     = 16
@@ -127,11 +127,11 @@ func parsePasswordHash(encodedHash string) (passwordHashParams, []byte, []byte, 
 		return passwordHashParams{}, nil, nil, errInvalidHash
 	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
-	if err != nil || len(salt) < minSaltLength || len(salt) > maxSaltLength {
+	if err != nil || base64.RawStdEncoding.EncodeToString(salt) != parts[4] || len(salt) < minSaltLength || len(salt) > maxSaltLength {
 		return passwordHashParams{}, nil, nil, errInvalidHash
 	}
 	key, err := base64.RawStdEncoding.DecodeString(parts[5])
-	if err != nil || len(key) < minKeyLength || len(key) > maxKeyLength {
+	if err != nil || base64.RawStdEncoding.EncodeToString(key) != parts[5] || len(key) < minKeyLength || len(key) > maxKeyLength {
 		return passwordHashParams{}, nil, nil, errInvalidHash
 	}
 
@@ -164,8 +164,9 @@ func parseUint32(value, prefix string, maximum uint32) (uint32, bool) {
 	if !strings.HasPrefix(value, prefix) || len(value) == len(prefix) {
 		return 0, false
 	}
-	parsed, err := strconv.ParseUint(strings.TrimPrefix(value, prefix), 10, 32)
-	if err != nil || parsed == 0 || parsed > uint64(maximum) {
+	digits := strings.TrimPrefix(value, prefix)
+	parsed, err := strconv.ParseUint(digits, 10, 32)
+	if err != nil || parsed == 0 || parsed > uint64(maximum) || strconv.FormatUint(parsed, 10) != digits {
 		return 0, false
 	}
 	return uint32(parsed), true
@@ -175,8 +176,9 @@ func parseUint8(value, prefix string, maximum uint8) (uint8, bool) {
 	if !strings.HasPrefix(value, prefix) || len(value) == len(prefix) {
 		return 0, false
 	}
-	parsed, err := strconv.ParseUint(strings.TrimPrefix(value, prefix), 10, 8)
-	if err != nil || parsed == 0 || parsed > uint64(maximum) {
+	digits := strings.TrimPrefix(value, prefix)
+	parsed, err := strconv.ParseUint(digits, 10, 8)
+	if err != nil || parsed == 0 || parsed > uint64(maximum) || strconv.FormatUint(parsed, 10) != digits {
 		return 0, false
 	}
 	return uint8(parsed), true

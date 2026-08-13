@@ -114,3 +114,68 @@ func TestPasswordHasherVerifyRejectsMalformedEncoding(t *testing.T) {
 		})
 	}
 }
+
+func TestPasswordHasherVerifyRejectsNonCanonicalEncoding(t *testing.T) {
+	hasher := testPasswordHasher()
+	hash, err := hasher.Hash("valid password")
+	require.NoError(t, err)
+
+	parts := strings.Split(hash, "$")
+	for name, encodedHash := range map[string]string{
+		"leading-zero parameter": strings.Replace(hash, "m=64,", "m=064,", 1),
+		"signed parameter":       strings.Replace(hash, "m=64,", "m=+64,", 1),
+		"salt whitespace":        replacePasswordHashField(hash, 4, parts[4][:4]+"\n"+parts[4][4:]),
+		"salt trailing bits":     replacePasswordHashField(hash, 4, nonCanonicalRawBase64(parts[4])),
+		"key trailing bits":      replacePasswordHashField(hash, 5, nonCanonicalRawBase64(parts[5])),
+	} {
+		t.Run(name, func(t *testing.T) {
+			verified, verifyErr := hasher.Verify("valid password", encodedHash)
+
+			assert.False(t, verified)
+			assert.Error(t, verifyErr)
+		})
+	}
+}
+
+func TestPasswordHasherVerifyRejectsParametersAboveProductionCeilings(t *testing.T) {
+	hasher := testPasswordHasher()
+	hash, err := hasher.Hash("valid password")
+	require.NoError(t, err)
+
+	for _, encodedHash := range []string{
+		strings.Replace(hash, "m=64,", "m=65537,", 1),
+		strings.Replace(hash, "t=1,", "t=4,", 1),
+		strings.Replace(hash, "p=1$", "p=3$", 1),
+	} {
+		t.Run("parameter exceeds production ceiling", func(t *testing.T) {
+			verified, verifyErr := hasher.Verify("valid password", encodedHash)
+
+			assert.False(t, verified)
+			assert.Error(t, verifyErr)
+		})
+	}
+}
+
+func TestPasswordHasherHashFailsClosedForShortEntropy(t *testing.T) {
+	hasher := testPasswordHasher()
+	hasher.rand = bytes.NewReader([]byte{1})
+
+	hash, err := hasher.Hash("valid password")
+
+	assert.Empty(t, hash)
+	require.EqualError(t, err, "read password salt")
+	assert.NotContains(t, err.Error(), "valid password")
+}
+
+func replacePasswordHashField(hash string, index int, value string) string {
+	parts := strings.Split(hash, "$")
+	parts[index] = value
+	return strings.Join(parts, "$")
+}
+
+func nonCanonicalRawBase64(value string) string {
+	last := value[len(value)-1]
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	lastIndex := strings.IndexByte(alphabet, last)
+	return value[:len(value)-1] + string(alphabet[lastIndex^1])
+}

@@ -41,13 +41,330 @@ paths:
               schema: {$ref: '#/components/schemas/AdminView'}
         '401': {$ref: '#/components/responses/ProblemResponse'}
         '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/articles:
+    get:
+      operationId: listArticles
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema: {type: string, enum: [active, trashed], default: active}
+      responses:
+        '200': {$ref: '#/components/responses/ArticleListResponse'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+    post:
+      operationId: createArticle
+      responses:
+        '201': {$ref: '#/components/responses/ArticleDetailResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/articles/{articleId}:
+    parameters:
+      - {$ref: '#/components/parameters/ArticleId'}
+    get:
+      operationId: getArticle
+      responses:
+        '200': {$ref: '#/components/responses/ArticleDetailResponse'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/articles/{articleId}/draft:
+    parameters:
+      - {$ref: '#/components/parameters/ArticleId'}
+    put:
+      operationId: saveArticleDraft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SaveDraftRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/DraftViewResponse'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '422': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/articles/{articleId}/preview:
+    parameters:
+      - {$ref: '#/components/parameters/ArticleId'}
+    get:
+      operationId: getArticlePreview
+      responses:
+        '200':
+          description: Current draft preview
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PreviewView'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/articles/{articleId}/versions:
+    parameters:
+      - {$ref: '#/components/parameters/ArticleId'}
+    get:
+      operationId: listArticleVersions
+      responses:
+        '200':
+          description: Frozen article revisions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RevisionList'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+    post:
+      operationId: createArticleVersion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LockVersionRequest'}
+      responses:
+        '201':
+          description: Frozen version and replacement editing draft
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VersionResult'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '422': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/articles/{articleId}/versions/{revisionId}/restore:
+    parameters:
+      - {$ref: '#/components/parameters/ArticleId'}
+      - {$ref: '#/components/parameters/RevisionId'}
+    post:
+      operationId: restoreArticleVersion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LockVersionRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/DraftViewResponse'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '422': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/articles/{articleId}/trash:
+    parameters:
+      - {$ref: '#/components/parameters/ArticleId'}
+    post:
+      operationId: trashArticle
+      responses:
+        '204': {description: Article moved to trash}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/articles/{articleId}/untrash:
+    parameters:
+      - {$ref: '#/components/parameters/ArticleId'}
+    post:
+      operationId: untrashArticle
+      responses:
+        '204': {description: Article restored from trash}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/tags:
+    get:
+      operationId: listTags
+      responses:
+        '200':
+          description: Tags in stable display order
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TagList'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+    post:
+      operationId: createTag
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateTagRequest'}
+      responses:
+        '201':
+          description: Created tag
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TagView'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/tags/{tagId}:
+    parameters:
+      - {$ref: '#/components/parameters/TagId'}
+    patch:
+      operationId: renameTag
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RenameTagRequest'}
+      responses:
+        '200':
+          description: Renamed tag
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TagView'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '404': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/media/upload-policy:
+    post:
+      operationId: createMediaUploadPolicy
+      responses:
+        '200':
+          description: Short-lived direct GFS upload policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MediaUploadPolicy'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/media:
+    post:
+      operationId: registerMedia
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RegisterMediaRequest'}
+      responses:
+        '201':
+          description: Verified registered media
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MediaView'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '422': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/settings/site:
+    get:
+      operationId: getSiteSettings
+      responses:
+        '200': {$ref: '#/components/responses/SiteSettingsResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+    put:
+      operationId: putSiteSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PutSiteSettingsRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/SiteSettingsResponse'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
+        '422': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+  /api/admin/v1/settings/hotlink:
+    get:
+      operationId: getHotlinkSettings
+      responses:
+        '200':
+          description: Current hotlink policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HotlinkSettingsView'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
+    put:
+      operationId: putHotlinkSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PutHotlinkSettingsRequest'}
+      responses:
+        '200':
+          description: Replaced hotlink policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HotlinkSettingsView'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
+        '401': {$ref: '#/components/responses/ProblemResponse'}
+        '403': {$ref: '#/components/responses/ProblemResponse'}
+        '422': {$ref: '#/components/responses/ProblemResponse'}
+        '503': {$ref: '#/components/responses/ProblemResponse'}
 components:
+  parameters:
+    ArticleId:
+      name: articleId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    RevisionId:
+      name: revisionId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    TagId:
+      name: tagId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
   responses:
     ProblemResponse:
       description: Request failed
       content:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
+    ArticleListResponse:
+      description: Articles in descending update order
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ArticleList'}
+    ArticleDetailResponse:
+      description: Article and current editing draft
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ArticleDetail'}
+    DraftViewResponse:
+      description: Current editing draft
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/DraftView'}
+    SiteSettingsResponse:
+      description: Publishable site settings
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/SiteSettingsView'}
   schemas:
     LoginRequest:
       type: object
@@ -67,6 +384,295 @@ components:
       properties:
         id: {type: integer, format: int64, minimum: 1}
         username: {type: string}
+    ArticleSummary:
+      type: object
+      additionalProperties: false
+      required: [id, slug, draftRevisionId, publishedRevisionId, state, draftTitle, draftUpdatedAt, createdAt, updatedAt]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        slug: {type: string}
+        draftRevisionId: {type: integer, format: int64, minimum: 1}
+        publishedRevisionId: {type: integer, format: int64, minimum: 1, nullable: true}
+        state: {type: string, enum: [active, trashed]}
+        draftTitle: {type: string}
+        draftUpdatedAt: {type: string, format: date-time}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ArticleList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ArticleSummary'}
+    ArticleDetail:
+      type: object
+      additionalProperties: false
+      required: [id, slug, draftRevisionId, publishedRevisionId, state, createdAt, updatedAt, draft]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        slug: {type: string}
+        draftRevisionId: {type: integer, format: int64, minimum: 1}
+        publishedRevisionId: {type: integer, format: int64, minimum: 1, nullable: true}
+        state: {type: string, enum: [active, trashed]}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        draft: {$ref: '#/components/schemas/DraftView'}
+    DraftView:
+      type: object
+      additionalProperties: false
+      required: [id, articleId, revisionNo, lockVersion, status, reason, title, summary, coverMediaId, contentMd, contentHash, tags, media, createdAt, updatedAt]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        articleId: {type: integer, format: int64, minimum: 1}
+        revisionNo: {type: integer, format: int64, minimum: 1}
+        lockVersion: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [editing]}
+        reason: {type: string, enum: [draft]}
+        title: {type: string}
+        summary: {type: string}
+        coverMediaId: {type: integer, format: int64, minimum: 1, nullable: true}
+        contentMd: {type: string}
+        contentHash: {type: string}
+        tags:
+          type: array
+          maxItems: 32
+          items: {$ref: '#/components/schemas/TagSnapshot'}
+        media:
+          type: array
+          maxItems: 257
+          items: {$ref: '#/components/schemas/MediaReference'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    PreviewView:
+      type: object
+      additionalProperties: false
+      required: [draft]
+      properties:
+        draft: {$ref: '#/components/schemas/DraftView'}
+    RevisionView:
+      type: object
+      additionalProperties: false
+      required: [id, articleId, revisionNo, lockVersion, status, reason, title, summary, coverMediaId, contentMd, contentHash, tags, media, createdAt, updatedAt]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        articleId: {type: integer, format: int64, minimum: 1}
+        revisionNo: {type: integer, format: int64, minimum: 1}
+        lockVersion: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [frozen]}
+        reason: {type: string, enum: [manual_version, publish_snapshot]}
+        title: {type: string}
+        summary: {type: string}
+        coverMediaId: {type: integer, format: int64, minimum: 1, nullable: true}
+        contentMd: {type: string}
+        contentHash: {type: string}
+        tags:
+          type: array
+          maxItems: 32
+          items: {$ref: '#/components/schemas/TagSnapshot'}
+        media:
+          type: array
+          maxItems: 257
+          items: {$ref: '#/components/schemas/MediaReference'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    RevisionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/RevisionView'}
+    VersionResult:
+      type: object
+      additionalProperties: false
+      required: [version, draft]
+      properties:
+        version: {$ref: '#/components/schemas/RevisionView'}
+        draft: {$ref: '#/components/schemas/DraftView'}
+    TagSnapshot:
+      type: object
+      additionalProperties: false
+      required: [tagId, name, slug, position]
+      properties:
+        tagId: {type: integer, format: int64, minimum: 1}
+        name: {type: string}
+        slug: {type: string}
+        position: {type: integer, minimum: 0}
+    MediaReference:
+      type: object
+      additionalProperties: false
+      required: [mediaId, publicKey, purpose, position]
+      properties:
+        mediaId: {type: integer, format: int64, minimum: 1}
+        publicKey: {type: string}
+        purpose: {type: string, enum: [cover, content]}
+        position: {type: integer, minimum: 0}
+    SaveDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [lockVersion, title, summary, coverMediaId, contentMd, tagIds]
+      properties:
+        lockVersion: {type: integer, format: int64, minimum: 1}
+        title: {type: string}
+        summary: {type: string}
+        coverMediaId: {type: integer, format: int64, minimum: 1, nullable: true}
+        contentMd: {type: string, maxLength: 2097152}
+        tagIds:
+          type: array
+          maxItems: 32
+          uniqueItems: true
+          items: {type: integer, format: int64, minimum: 1}
+    LockVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [lockVersion]
+      properties:
+        lockVersion: {type: integer, format: int64, minimum: 1}
+    TagView:
+      type: object
+      additionalProperties: false
+      required: [id, name, slug, createdAt, updatedAt]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string}
+        slug: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    TagList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/TagView'}
+    CreateTagRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 64}
+    RenameTagRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 64}
+    MediaUploadPolicy:
+      type: object
+      additionalProperties: false
+      required: [uploadUrl, appId, policy, signature, timestamp, expire, nonce, fileField]
+      properties:
+        uploadUrl: {type: string, format: uri}
+        appId: {type: string}
+        policy: {type: string}
+        signature: {type: string}
+        timestamp: {type: string}
+        expire: {type: string}
+        nonce: {type: string}
+        fileField: {type: string}
+    MediaView:
+      type: object
+      additionalProperties: false
+      required: [id, publicKey, gfsFileId, originalName, mimeType, fileSize, width, height, state, url, createdAt, updatedAt]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        publicKey: {type: string}
+        gfsFileId: {type: integer, format: int64, minimum: 1}
+        originalName: {type: string}
+        mimeType: {type: string, enum: [image/jpeg, image/png, image/webp, image/gif]}
+        fileSize: {type: integer, format: int64, minimum: 1}
+        width: {type: integer, minimum: 1}
+        height: {type: integer, minimum: 1}
+        state: {type: string, enum: [active]}
+        url: {type: string, pattern: '^/img/proxy/[a-z0-9_-]+$'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    RegisterMediaRequest:
+      type: object
+      additionalProperties: false
+      required: [gfsFileId, originalName]
+      properties:
+        gfsFileId: {type: integer, format: int64, minimum: 1}
+        originalName: {type: string, minLength: 1, maxLength: 255}
+    SocialLink:
+      type: object
+      additionalProperties: false
+      required: [label, url]
+      properties:
+        label: {type: string}
+        url: {type: string, format: uri}
+    SiteSettingsView:
+      type: object
+      additionalProperties: false
+      required: [id, lockVersion, siteName, authorName, authorBio, homeStatus, aboutMd, socialLinks, seoDefaultTitle, seoDefaultDescription, seoDefaultImageMediaId, filingName, filingNumber, filingUrl, updatedAt]
+      properties:
+        id: {type: integer, format: int64, minimum: 1, nullable: true}
+        lockVersion: {type: integer, format: int64, minimum: 0}
+        siteName: {type: string}
+        authorName: {type: string}
+        authorBio: {type: string}
+        homeStatus: {type: string}
+        aboutMd: {type: string}
+        socialLinks:
+          type: array
+          maxItems: 16
+          items: {$ref: '#/components/schemas/SocialLink'}
+        seoDefaultTitle: {type: string}
+        seoDefaultDescription: {type: string}
+        seoDefaultImageMediaId: {type: integer, format: int64, minimum: 1, nullable: true}
+        filingName: {type: string}
+        filingNumber: {type: string}
+        filingUrl: {type: string, format: uri, readOnly: true}
+        updatedAt: {type: string, format: date-time, nullable: true}
+    PutSiteSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [lockVersion, siteName, authorName, authorBio, homeStatus, aboutMd, socialLinks, seoDefaultTitle, seoDefaultDescription, seoDefaultImageMediaId, filingName, filingNumber]
+      properties:
+        lockVersion: {type: integer, format: int64, minimum: 0}
+        siteName: {type: string}
+        authorName: {type: string}
+        authorBio: {type: string}
+        homeStatus: {type: string}
+        aboutMd: {type: string, maxLength: 2097152}
+        socialLinks:
+          type: array
+          maxItems: 16
+          items: {$ref: '#/components/schemas/SocialLink'}
+        seoDefaultTitle: {type: string}
+        seoDefaultDescription: {type: string}
+        seoDefaultImageMediaId: {type: integer, format: int64, minimum: 1, nullable: true}
+        filingName: {type: string}
+        filingNumber: {type: string}
+    HotlinkEntry:
+      type: object
+      additionalProperties: false
+      required: [hostname, enabled]
+      properties:
+        hostname: {type: string}
+        enabled: {type: boolean}
+    HotlinkSettingsView:
+      type: object
+      additionalProperties: false
+      required: [allowEmptyReferer, entries]
+      properties:
+        allowEmptyReferer: {type: boolean}
+        entries:
+          type: array
+          items: {$ref: '#/components/schemas/HotlinkEntry'}
+    PutHotlinkSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [allowEmptyReferer, entries]
+      properties:
+        allowEmptyReferer: {type: boolean}
+        entries:
+          type: array
+          items: {$ref: '#/components/schemas/HotlinkEntry'}
     Problem:
       type: object
       additionalProperties: false

@@ -208,5 +208,3 @@ func cookieMaxAge(ttl time.Duration) int {
 	}
 	return seconds
 }
-
-var _ ServerInterface = (*AuthHandler)(nil)

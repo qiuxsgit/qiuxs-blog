@@ -8,13 +8,190 @@ import (
 	"compress/flate"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/gin-gonic/gin"
+	"github.com/oapi-codegen/runtime"
 )
+
+// Defines values for ArticleDetailState.
+const (
+	ArticleDetailStateActive  ArticleDetailState = "active"
+	ArticleDetailStateTrashed ArticleDetailState = "trashed"
+)
+
+// Valid indicates whether the value is a known member of the ArticleDetailState enum.
+func (e ArticleDetailState) Valid() bool {
+	switch e {
+	case ArticleDetailStateActive:
+		return true
+	case ArticleDetailStateTrashed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ArticleSummaryState.
+const (
+	ArticleSummaryStateActive  ArticleSummaryState = "active"
+	ArticleSummaryStateTrashed ArticleSummaryState = "trashed"
+)
+
+// Valid indicates whether the value is a known member of the ArticleSummaryState enum.
+func (e ArticleSummaryState) Valid() bool {
+	switch e {
+	case ArticleSummaryStateActive:
+		return true
+	case ArticleSummaryStateTrashed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DraftViewReason.
+const (
+	Draft DraftViewReason = "draft"
+)
+
+// Valid indicates whether the value is a known member of the DraftViewReason enum.
+func (e DraftViewReason) Valid() bool {
+	switch e {
+	case Draft:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for DraftViewStatus.
+const (
+	Editing DraftViewStatus = "editing"
+)
+
+// Valid indicates whether the value is a known member of the DraftViewStatus enum.
+func (e DraftViewStatus) Valid() bool {
+	switch e {
+	case Editing:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MediaReferencePurpose.
+const (
+	Content MediaReferencePurpose = "content"
+	Cover   MediaReferencePurpose = "cover"
+)
+
+// Valid indicates whether the value is a known member of the MediaReferencePurpose enum.
+func (e MediaReferencePurpose) Valid() bool {
+	switch e {
+	case Content:
+		return true
+	case Cover:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MediaViewMimeType.
+const (
+	Imagegif  MediaViewMimeType = "image/gif"
+	Imagejpeg MediaViewMimeType = "image/jpeg"
+	Imagepng  MediaViewMimeType = "image/png"
+	Imagewebp MediaViewMimeType = "image/webp"
+)
+
+// Valid indicates whether the value is a known member of the MediaViewMimeType enum.
+func (e MediaViewMimeType) Valid() bool {
+	switch e {
+	case Imagegif:
+		return true
+	case Imagejpeg:
+		return true
+	case Imagepng:
+		return true
+	case Imagewebp:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MediaViewState.
+const (
+	MediaViewStateActive MediaViewState = "active"
+)
+
+// Valid indicates whether the value is a known member of the MediaViewState enum.
+func (e MediaViewState) Valid() bool {
+	switch e {
+	case MediaViewStateActive:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RevisionViewReason.
+const (
+	ManualVersion   RevisionViewReason = "manual_version"
+	PublishSnapshot RevisionViewReason = "publish_snapshot"
+)
+
+// Valid indicates whether the value is a known member of the RevisionViewReason enum.
+func (e RevisionViewReason) Valid() bool {
+	switch e {
+	case ManualVersion:
+		return true
+	case PublishSnapshot:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RevisionViewStatus.
+const (
+	Frozen RevisionViewStatus = "frozen"
+)
+
+// Valid indicates whether the value is a known member of the RevisionViewStatus enum.
+func (e RevisionViewStatus) Valid() bool {
+	switch e {
+	case Frozen:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListArticlesParamsState.
+const (
+	ListArticlesParamsStateActive  ListArticlesParamsState = "active"
+	ListArticlesParamsStateTrashed ListArticlesParamsState = "trashed"
+)
+
+// Valid indicates whether the value is a known member of the ListArticlesParamsState enum.
+func (e ListArticlesParamsState) Valid() bool {
+	switch e {
+	case ListArticlesParamsStateActive:
+		return true
+	case ListArticlesParamsStateTrashed:
+		return true
+	default:
+		return false
+	}
+}
 
 // AdminView defines model for AdminView.
 type AdminView struct {
@@ -22,11 +199,144 @@ type AdminView struct {
 	Username string `json:"username"`
 }
 
+// ArticleDetail defines model for ArticleDetail.
+type ArticleDetail struct {
+	CreatedAt           time.Time          `json:"createdAt"`
+	Draft               DraftView          `json:"draft"`
+	DraftRevisionId     int64              `json:"draftRevisionId"`
+	Id                  int64              `json:"id"`
+	PublishedRevisionId *int64             `json:"publishedRevisionId"`
+	Slug                string             `json:"slug"`
+	State               ArticleDetailState `json:"state"`
+	UpdatedAt           time.Time          `json:"updatedAt"`
+}
+
+// ArticleDetailState defines model for ArticleDetail.State.
+type ArticleDetailState string
+
+// ArticleList defines model for ArticleList.
+type ArticleList struct {
+	Items []ArticleSummary `json:"items"`
+}
+
+// ArticleSummary defines model for ArticleSummary.
+type ArticleSummary struct {
+	CreatedAt           time.Time           `json:"createdAt"`
+	DraftRevisionId     int64               `json:"draftRevisionId"`
+	DraftTitle          string              `json:"draftTitle"`
+	DraftUpdatedAt      time.Time           `json:"draftUpdatedAt"`
+	Id                  int64               `json:"id"`
+	PublishedRevisionId *int64              `json:"publishedRevisionId"`
+	Slug                string              `json:"slug"`
+	State               ArticleSummaryState `json:"state"`
+	UpdatedAt           time.Time           `json:"updatedAt"`
+}
+
+// ArticleSummaryState defines model for ArticleSummary.State.
+type ArticleSummaryState string
+
+// CreateTagRequest defines model for CreateTagRequest.
+type CreateTagRequest struct {
+	Name string `json:"name"`
+}
+
+// DraftView defines model for DraftView.
+type DraftView struct {
+	ArticleId    int64            `json:"articleId"`
+	ContentHash  string           `json:"contentHash"`
+	ContentMd    string           `json:"contentMd"`
+	CoverMediaId *int64           `json:"coverMediaId"`
+	CreatedAt    time.Time        `json:"createdAt"`
+	Id           int64            `json:"id"`
+	LockVersion  int64            `json:"lockVersion"`
+	Media        []MediaReference `json:"media"`
+	Reason       DraftViewReason  `json:"reason"`
+	RevisionNo   int64            `json:"revisionNo"`
+	Status       DraftViewStatus  `json:"status"`
+	Summary      string           `json:"summary"`
+	Tags         []TagSnapshot    `json:"tags"`
+	Title        string           `json:"title"`
+	UpdatedAt    time.Time        `json:"updatedAt"`
+}
+
+// DraftViewReason defines model for DraftView.Reason.
+type DraftViewReason string
+
+// DraftViewStatus defines model for DraftView.Status.
+type DraftViewStatus string
+
+// HotlinkEntry defines model for HotlinkEntry.
+type HotlinkEntry struct {
+	Enabled  bool   `json:"enabled"`
+	Hostname string `json:"hostname"`
+}
+
+// HotlinkSettingsView defines model for HotlinkSettingsView.
+type HotlinkSettingsView struct {
+	AllowEmptyReferer bool           `json:"allowEmptyReferer"`
+	Entries           []HotlinkEntry `json:"entries"`
+}
+
+// LockVersionRequest defines model for LockVersionRequest.
+type LockVersionRequest struct {
+	LockVersion int64 `json:"lockVersion"`
+}
+
 // LoginRequest defines model for LoginRequest.
 type LoginRequest struct {
 	// Password UTF-8 encoded value must be at most 256 bytes.
 	Password string `json:"password"`
 	Username string `json:"username"`
+}
+
+// MediaReference defines model for MediaReference.
+type MediaReference struct {
+	MediaId   int64                 `json:"mediaId"`
+	Position  int                   `json:"position"`
+	PublicKey string                `json:"publicKey"`
+	Purpose   MediaReferencePurpose `json:"purpose"`
+}
+
+// MediaReferencePurpose defines model for MediaReference.Purpose.
+type MediaReferencePurpose string
+
+// MediaUploadPolicy defines model for MediaUploadPolicy.
+type MediaUploadPolicy struct {
+	AppId     string `json:"appId"`
+	Expire    string `json:"expire"`
+	FileField string `json:"fileField"`
+	Nonce     string `json:"nonce"`
+	Policy    string `json:"policy"`
+	Signature string `json:"signature"`
+	Timestamp string `json:"timestamp"`
+	UploadUrl string `json:"uploadUrl"`
+}
+
+// MediaView defines model for MediaView.
+type MediaView struct {
+	CreatedAt    time.Time         `json:"createdAt"`
+	FileSize     int64             `json:"fileSize"`
+	GfsFileId    int64             `json:"gfsFileId"`
+	Height       int               `json:"height"`
+	Id           int64             `json:"id"`
+	MimeType     MediaViewMimeType `json:"mimeType"`
+	OriginalName string            `json:"originalName"`
+	PublicKey    string            `json:"publicKey"`
+	State        MediaViewState    `json:"state"`
+	UpdatedAt    time.Time         `json:"updatedAt"`
+	Url          string            `json:"url"`
+	Width        int               `json:"width"`
+}
+
+// MediaViewMimeType defines model for MediaView.MimeType.
+type MediaViewMimeType string
+
+// MediaViewState defines model for MediaView.State.
+type MediaViewState string
+
+// PreviewView defines model for PreviewView.
+type PreviewView struct {
+	Draft DraftView `json:"draft"`
 }
 
 // Problem defines model for Problem.
@@ -38,23 +348,259 @@ type Problem struct {
 	Type      string `json:"type"`
 }
 
+// PutHotlinkSettingsRequest defines model for PutHotlinkSettingsRequest.
+type PutHotlinkSettingsRequest struct {
+	AllowEmptyReferer bool           `json:"allowEmptyReferer"`
+	Entries           []HotlinkEntry `json:"entries"`
+}
+
+// PutSiteSettingsRequest defines model for PutSiteSettingsRequest.
+type PutSiteSettingsRequest struct {
+	AboutMd                string       `json:"aboutMd"`
+	AuthorBio              string       `json:"authorBio"`
+	AuthorName             string       `json:"authorName"`
+	FilingName             string       `json:"filingName"`
+	FilingNumber           string       `json:"filingNumber"`
+	HomeStatus             string       `json:"homeStatus"`
+	LockVersion            int64        `json:"lockVersion"`
+	SeoDefaultDescription  string       `json:"seoDefaultDescription"`
+	SeoDefaultImageMediaId *int64       `json:"seoDefaultImageMediaId"`
+	SeoDefaultTitle        string       `json:"seoDefaultTitle"`
+	SiteName               string       `json:"siteName"`
+	SocialLinks            []SocialLink `json:"socialLinks"`
+}
+
+// RegisterMediaRequest defines model for RegisterMediaRequest.
+type RegisterMediaRequest struct {
+	GfsFileId    int64  `json:"gfsFileId"`
+	OriginalName string `json:"originalName"`
+}
+
+// RenameTagRequest defines model for RenameTagRequest.
+type RenameTagRequest struct {
+	Name string `json:"name"`
+}
+
+// RevisionList defines model for RevisionList.
+type RevisionList struct {
+	Items []RevisionView `json:"items"`
+}
+
+// RevisionView defines model for RevisionView.
+type RevisionView struct {
+	ArticleId    int64              `json:"articleId"`
+	ContentHash  string             `json:"contentHash"`
+	ContentMd    string             `json:"contentMd"`
+	CoverMediaId *int64             `json:"coverMediaId"`
+	CreatedAt    time.Time          `json:"createdAt"`
+	Id           int64              `json:"id"`
+	LockVersion  int64              `json:"lockVersion"`
+	Media        []MediaReference   `json:"media"`
+	Reason       RevisionViewReason `json:"reason"`
+	RevisionNo   int64              `json:"revisionNo"`
+	Status       RevisionViewStatus `json:"status"`
+	Summary      string             `json:"summary"`
+	Tags         []TagSnapshot      `json:"tags"`
+	Title        string             `json:"title"`
+	UpdatedAt    time.Time          `json:"updatedAt"`
+}
+
+// RevisionViewReason defines model for RevisionView.Reason.
+type RevisionViewReason string
+
+// RevisionViewStatus defines model for RevisionView.Status.
+type RevisionViewStatus string
+
+// SaveDraftRequest defines model for SaveDraftRequest.
+type SaveDraftRequest struct {
+	ContentMd    string  `json:"contentMd"`
+	CoverMediaId *int64  `json:"coverMediaId"`
+	LockVersion  int64   `json:"lockVersion"`
+	Summary      string  `json:"summary"`
+	TagIds       []int64 `json:"tagIds"`
+	Title        string  `json:"title"`
+}
+
+// SiteSettingsView defines model for SiteSettingsView.
+type SiteSettingsView struct {
+	AboutMd                string       `json:"aboutMd"`
+	AuthorBio              string       `json:"authorBio"`
+	AuthorName             string       `json:"authorName"`
+	FilingName             string       `json:"filingName"`
+	FilingNumber           string       `json:"filingNumber"`
+	FilingUrl              *string      `json:"filingUrl,omitempty"`
+	HomeStatus             string       `json:"homeStatus"`
+	Id                     *int64       `json:"id"`
+	LockVersion            int64        `json:"lockVersion"`
+	SeoDefaultDescription  string       `json:"seoDefaultDescription"`
+	SeoDefaultImageMediaId *int64       `json:"seoDefaultImageMediaId"`
+	SeoDefaultTitle        string       `json:"seoDefaultTitle"`
+	SiteName               string       `json:"siteName"`
+	SocialLinks            []SocialLink `json:"socialLinks"`
+	UpdatedAt              *time.Time   `json:"updatedAt"`
+}
+
+// SocialLink defines model for SocialLink.
+type SocialLink struct {
+	Label string `json:"label"`
+	Url   string `json:"url"`
+}
+
+// TagList defines model for TagList.
+type TagList struct {
+	Items []TagView `json:"items"`
+}
+
+// TagSnapshot defines model for TagSnapshot.
+type TagSnapshot struct {
+	Name     string `json:"name"`
+	Position int    `json:"position"`
+	Slug     string `json:"slug"`
+	TagId    int64  `json:"tagId"`
+}
+
+// TagView defines model for TagView.
+type TagView struct {
+	CreatedAt time.Time `json:"createdAt"`
+	Id        int64     `json:"id"`
+	Name      string    `json:"name"`
+	Slug      string    `json:"slug"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// VersionResult defines model for VersionResult.
+type VersionResult struct {
+	Draft   DraftView    `json:"draft"`
+	Version RevisionView `json:"version"`
+}
+
+// ArticleId defines model for ArticleId.
+type ArticleId = int64
+
+// RevisionId defines model for RevisionId.
+type RevisionId = int64
+
+// TagId defines model for TagId.
+type TagId = int64
+
+// ArticleDetailResponse defines model for ArticleDetailResponse.
+type ArticleDetailResponse = ArticleDetail
+
+// ArticleListResponse defines model for ArticleListResponse.
+type ArticleListResponse = ArticleList
+
+// DraftViewResponse defines model for DraftViewResponse.
+type DraftViewResponse = DraftView
+
 // ProblemResponse defines model for ProblemResponse.
 type ProblemResponse = Problem
+
+// SiteSettingsResponse defines model for SiteSettingsResponse.
+type SiteSettingsResponse = SiteSettingsView
+
+// ListArticlesParams defines parameters for ListArticles.
+type ListArticlesParams struct {
+	State *ListArticlesParamsState `form:"state,omitempty" json:"state,omitempty"`
+}
+
+// ListArticlesParamsState defines parameters for ListArticles.
+type ListArticlesParamsState string
+
+// SaveArticleDraftJSONRequestBody defines body for SaveArticleDraft for application/json ContentType.
+type SaveArticleDraftJSONRequestBody = SaveDraftRequest
+
+// CreateArticleVersionJSONRequestBody defines body for CreateArticleVersion for application/json ContentType.
+type CreateArticleVersionJSONRequestBody = LockVersionRequest
+
+// RestoreArticleVersionJSONRequestBody defines body for RestoreArticleVersion for application/json ContentType.
+type RestoreArticleVersionJSONRequestBody = LockVersionRequest
+
+// RegisterMediaJSONRequestBody defines body for RegisterMedia for application/json ContentType.
+type RegisterMediaJSONRequestBody = RegisterMediaRequest
 
 // LoginAdminJSONRequestBody defines body for LoginAdmin for application/json ContentType.
 type LoginAdminJSONRequestBody = LoginRequest
 
+// PutHotlinkSettingsJSONRequestBody defines body for PutHotlinkSettings for application/json ContentType.
+type PutHotlinkSettingsJSONRequestBody = PutHotlinkSettingsRequest
+
+// PutSiteSettingsJSONRequestBody defines body for PutSiteSettings for application/json ContentType.
+type PutSiteSettingsJSONRequestBody = PutSiteSettingsRequest
+
+// CreateTagJSONRequestBody defines body for CreateTag for application/json ContentType.
+type CreateTagJSONRequestBody = CreateTagRequest
+
+// RenameTagJSONRequestBody defines body for RenameTag for application/json ContentType.
+type RenameTagJSONRequestBody = RenameTagRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 
+	// (GET /api/admin/v1/articles)
+	ListArticles(c *gin.Context, params ListArticlesParams)
+
+	// (POST /api/admin/v1/articles)
+	CreateArticle(c *gin.Context)
+
+	// (GET /api/admin/v1/articles/{articleId})
+	GetArticle(c *gin.Context, articleId ArticleId)
+
+	// (PUT /api/admin/v1/articles/{articleId}/draft)
+	SaveArticleDraft(c *gin.Context, articleId ArticleId)
+
+	// (GET /api/admin/v1/articles/{articleId}/preview)
+	GetArticlePreview(c *gin.Context, articleId ArticleId)
+
+	// (POST /api/admin/v1/articles/{articleId}/trash)
+	TrashArticle(c *gin.Context, articleId ArticleId)
+
+	// (POST /api/admin/v1/articles/{articleId}/untrash)
+	UntrashArticle(c *gin.Context, articleId ArticleId)
+
+	// (GET /api/admin/v1/articles/{articleId}/versions)
+	ListArticleVersions(c *gin.Context, articleId ArticleId)
+
+	// (POST /api/admin/v1/articles/{articleId}/versions)
+	CreateArticleVersion(c *gin.Context, articleId ArticleId)
+
+	// (POST /api/admin/v1/articles/{articleId}/versions/{revisionId}/restore)
+	RestoreArticleVersion(c *gin.Context, articleId ArticleId, revisionId RevisionId)
+
 	// (GET /api/admin/v1/me)
 	GetCurrentAdmin(c *gin.Context)
+
+	// (POST /api/admin/v1/media)
+	RegisterMedia(c *gin.Context)
+
+	// (POST /api/admin/v1/media/upload-policy)
+	CreateMediaUploadPolicy(c *gin.Context)
 
 	// (DELETE /api/admin/v1/session)
 	LogoutAdmin(c *gin.Context)
 
 	// (POST /api/admin/v1/session)
 	LoginAdmin(c *gin.Context)
+
+	// (GET /api/admin/v1/settings/hotlink)
+	GetHotlinkSettings(c *gin.Context)
+
+	// (PUT /api/admin/v1/settings/hotlink)
+	PutHotlinkSettings(c *gin.Context)
+
+	// (GET /api/admin/v1/settings/site)
+	GetSiteSettings(c *gin.Context)
+
+	// (PUT /api/admin/v1/settings/site)
+	PutSiteSettings(c *gin.Context)
+
+	// (GET /api/admin/v1/tags)
+	ListTags(c *gin.Context)
+
+	// (POST /api/admin/v1/tags)
+	CreateTag(c *gin.Context)
+
+	// (PATCH /api/admin/v1/tags/{tagId})
+	RenameTag(c *gin.Context, tagId TagId)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -65,6 +611,255 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(c *gin.Context)
+
+// ListArticles operation middleware
+func (siw *ServerInterfaceWrapper) ListArticles(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListArticlesParams
+
+	// ------------- Optional query parameter "state" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "state", c.Request.URL.Query(), &params.State, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter state: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListArticles(c, params)
+}
+
+// CreateArticle operation middleware
+func (siw *ServerInterfaceWrapper) CreateArticle(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateArticle(c)
+}
+
+// GetArticle operation middleware
+func (siw *ServerInterfaceWrapper) GetArticle(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", c.Param("articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter articleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetArticle(c, articleId)
+}
+
+// SaveArticleDraft operation middleware
+func (siw *ServerInterfaceWrapper) SaveArticleDraft(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", c.Param("articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter articleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SaveArticleDraft(c, articleId)
+}
+
+// GetArticlePreview operation middleware
+func (siw *ServerInterfaceWrapper) GetArticlePreview(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", c.Param("articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter articleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetArticlePreview(c, articleId)
+}
+
+// TrashArticle operation middleware
+func (siw *ServerInterfaceWrapper) TrashArticle(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", c.Param("articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter articleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.TrashArticle(c, articleId)
+}
+
+// UntrashArticle operation middleware
+func (siw *ServerInterfaceWrapper) UntrashArticle(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", c.Param("articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter articleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UntrashArticle(c, articleId)
+}
+
+// ListArticleVersions operation middleware
+func (siw *ServerInterfaceWrapper) ListArticleVersions(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", c.Param("articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter articleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListArticleVersions(c, articleId)
+}
+
+// CreateArticleVersion operation middleware
+func (siw *ServerInterfaceWrapper) CreateArticleVersion(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", c.Param("articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter articleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateArticleVersion(c, articleId)
+}
+
+// RestoreArticleVersion operation middleware
+func (siw *ServerInterfaceWrapper) RestoreArticleVersion(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", c.Param("articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter articleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "revisionId" -------------
+	var revisionId RevisionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "revisionId", c.Param("revisionId"), &revisionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter revisionId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RestoreArticleVersion(c, articleId, revisionId)
+}
 
 // GetCurrentAdmin operation middleware
 func (siw *ServerInterfaceWrapper) GetCurrentAdmin(c *gin.Context) {
@@ -77,6 +872,32 @@ func (siw *ServerInterfaceWrapper) GetCurrentAdmin(c *gin.Context) {
 	}
 
 	siw.Handler.GetCurrentAdmin(c)
+}
+
+// RegisterMedia operation middleware
+func (siw *ServerInterfaceWrapper) RegisterMedia(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RegisterMedia(c)
+}
+
+// CreateMediaUploadPolicy operation middleware
+func (siw *ServerInterfaceWrapper) CreateMediaUploadPolicy(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateMediaUploadPolicy(c)
 }
 
 // LogoutAdmin operation middleware
@@ -103,6 +924,109 @@ func (siw *ServerInterfaceWrapper) LoginAdmin(c *gin.Context) {
 	}
 
 	siw.Handler.LoginAdmin(c)
+}
+
+// GetHotlinkSettings operation middleware
+func (siw *ServerInterfaceWrapper) GetHotlinkSettings(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetHotlinkSettings(c)
+}
+
+// PutHotlinkSettings operation middleware
+func (siw *ServerInterfaceWrapper) PutHotlinkSettings(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PutHotlinkSettings(c)
+}
+
+// GetSiteSettings operation middleware
+func (siw *ServerInterfaceWrapper) GetSiteSettings(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetSiteSettings(c)
+}
+
+// PutSiteSettings operation middleware
+func (siw *ServerInterfaceWrapper) PutSiteSettings(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PutSiteSettings(c)
+}
+
+// ListTags operation middleware
+func (siw *ServerInterfaceWrapper) ListTags(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListTags(c)
+}
+
+// CreateTag operation middleware
+func (siw *ServerInterfaceWrapper) CreateTag(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateTag(c)
+}
+
+// RenameTag operation middleware
+func (siw *ServerInterfaceWrapper) RenameTag(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "tagId" -------------
+	var tagId TagId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tagId", c.Param("tagId"), &tagId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter tagId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RenameTag(c, tagId)
 }
 
 // GinServerOptions provides options for the Gin server.
@@ -135,6 +1059,25 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/admin/v1/session", wrapper.LogoutAdmin)
 	router.POST(options.BaseURL+"/api/admin/v1/session", wrapper.LoginAdmin)
 	router.GET(options.BaseURL+"/api/admin/v1/me", wrapper.GetCurrentAdmin)
+	router.GET(options.BaseURL+"/api/admin/v1/articles", wrapper.ListArticles)
+	router.POST(options.BaseURL+"/api/admin/v1/articles", wrapper.CreateArticle)
+	router.GET(options.BaseURL+"/api/admin/v1/articles/:articleId", wrapper.GetArticle)
+	router.PUT(options.BaseURL+"/api/admin/v1/articles/:articleId/draft", wrapper.SaveArticleDraft)
+	router.GET(options.BaseURL+"/api/admin/v1/articles/:articleId/preview", wrapper.GetArticlePreview)
+	router.GET(options.BaseURL+"/api/admin/v1/articles/:articleId/versions", wrapper.ListArticleVersions)
+	router.POST(options.BaseURL+"/api/admin/v1/articles/:articleId/versions", wrapper.CreateArticleVersion)
+	router.POST(options.BaseURL+"/api/admin/v1/articles/:articleId/versions/:revisionId/restore", wrapper.RestoreArticleVersion)
+	router.POST(options.BaseURL+"/api/admin/v1/articles/:articleId/trash", wrapper.TrashArticle)
+	router.POST(options.BaseURL+"/api/admin/v1/articles/:articleId/untrash", wrapper.UntrashArticle)
+	router.GET(options.BaseURL+"/api/admin/v1/tags", wrapper.ListTags)
+	router.POST(options.BaseURL+"/api/admin/v1/tags", wrapper.CreateTag)
+	router.PATCH(options.BaseURL+"/api/admin/v1/tags/:tagId", wrapper.RenameTag)
+	router.POST(options.BaseURL+"/api/admin/v1/media/upload-policy", wrapper.CreateMediaUploadPolicy)
+	router.POST(options.BaseURL+"/api/admin/v1/media", wrapper.RegisterMedia)
+	router.GET(options.BaseURL+"/api/admin/v1/settings/site", wrapper.GetSiteSettings)
+	router.PUT(options.BaseURL+"/api/admin/v1/settings/site", wrapper.PutSiteSettings)
+	router.GET(options.BaseURL+"/api/admin/v1/settings/hotlink", wrapper.GetHotlinkSettings)
+	router.PUT(options.BaseURL+"/api/admin/v1/settings/hotlink", wrapper.PutHotlinkSettings)
 }
 
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
@@ -142,17 +1085,51 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
+	"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",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

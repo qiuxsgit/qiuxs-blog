@@ -117,8 +117,25 @@ func newHandlerTestSystem(t *testing.T) handlerTestSystem {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(RequestID(), LoadAdminSession(service, sessionConfig.CookieName))
-	RegisterHandlers(router, handler)
+	RegisterAuthHandlers(router, handler)
 	return handlerTestSystem{router: router, service: service, repo: repo, store: store, limiter: limiter, now: now, config: sessionConfig}
+}
+
+func TestRegisterAuthHandlersUsesExactGeneratedAuthRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	RegisterAuthHandlers(router, NewAuthHandler(auth.Service{}, config.SessionConfig{CookieName: "qx_blog_session", TTL: time.Hour}))
+
+	routes := router.Routes()
+	actual := make([]string, len(routes))
+	for index, route := range routes {
+		actual[index] = route.Method + " " + route.Path
+	}
+	require.ElementsMatch(t, []string{
+		http.MethodPost + " /api/admin/v1/session",
+		http.MethodDelete + " /api/admin/v1/session",
+		http.MethodGet + " /api/admin/v1/me",
+	}, actual)
 }
 
 func TestAuthHandlerLoginRejectsUnknownFieldsTrailingJSONAndWrongContentType(t *testing.T) {
@@ -252,7 +269,7 @@ func TestAuthHandlerRejectsInvalidCookieConfigurationBeforeCreatingSession(t *te
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.Use(RequestID(), LoadAdminSession(system.service, system.config.CookieName))
-	RegisterHandlers(router, NewAuthHandler(system.service, invalidConfig))
+	RegisterAuthHandlers(router, NewAuthHandler(system.service, invalidConfig))
 
 	recorder := performHandlerRequest(
 		router,
@@ -299,7 +316,7 @@ func TestAuthHandlerGetCurrentAdminReturnsContextAdminAndRequiresAuthentication(
 		c.Set(sessionStateKey, sessionState{admin: auth.Admin{ID: 42, Username: "context-name", PasswordHash: "must-not-leak", State: "active"}})
 		c.Next()
 	})
-	RegisterHandlers(system.router, NewAuthHandler(auth.Service{}, system.config))
+	RegisterAuthHandlers(system.router, NewAuthHandler(auth.Service{}, system.config))
 
 	recorder := performHandlerRequest(system.router, http.MethodGet, "/api/admin/v1/me", "", "", nil)
 

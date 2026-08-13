@@ -61,7 +61,7 @@ func Build(cfg config.Config, deps Dependencies) (*gin.Engine, error) {
 
 	adminRoutes := router.Group("")
 	adminRoutes.Use(httpapi.OriginGuard(cfg.HTTP.AdminOrigin), httpapi.LoadAdminSession(service, cfg.Session.CookieName))
-	httpapi.RegisterHandlers(adminRoutes, handler)
+	httpapi.RegisterAuthHandlers(adminRoutes, handler)
 
 	router.NoRoute(func(c *gin.Context) {
 		httpapi.WriteProblem(c, httpapi.ErrNotFound)

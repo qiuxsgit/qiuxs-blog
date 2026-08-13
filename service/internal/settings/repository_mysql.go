@@ -208,22 +208,80 @@ func encodeSocialLinks(links []SocialLink) (string, error) {
 
 func decodeSocialLinks(raw []byte) ([]SocialLink, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var links []SocialLink
-	if err := decoder.Decode(&links); err != nil {
-		return nil, err
-	}
-	if links == nil {
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('[') {
 		return nil, errors.New("social links must be a JSON array")
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+	links := make([]SocialLink, 0)
+	for decoder.More() {
+		if len(links) == maximumSocials {
+			return nil, errors.New("too many stored social links")
+		}
+		link, decodeErr := decodeSocialLink(decoder)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		links = append(links, link)
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim(']') {
+		return nil, errors.New("social links array is malformed")
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return nil, errors.New("social links contain trailing JSON")
 		}
 		return nil, err
 	}
 	return links, nil
+}
+
+func decodeSocialLink(decoder *json.Decoder) (SocialLink, error) {
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return SocialLink{}, errors.New("social link must be a JSON object")
+	}
+	var link SocialLink
+	seenLabel := false
+	seenURL := false
+	for decoder.More() {
+		fieldToken, tokenErr := decoder.Token()
+		if tokenErr != nil {
+			return SocialLink{}, tokenErr
+		}
+		field, ok := fieldToken.(string)
+		if !ok {
+			return SocialLink{}, errors.New("social link field name is invalid")
+		}
+		switch field {
+		case "label":
+			if seenLabel {
+				return SocialLink{}, errors.New("social link label field is duplicated")
+			}
+			seenLabel = true
+			if err := decoder.Decode(&link.Label); err != nil {
+				return SocialLink{}, err
+			}
+		case "url":
+			if seenURL {
+				return SocialLink{}, errors.New("social link URL field is duplicated")
+			}
+			seenURL = true
+			if err := decoder.Decode(&link.URL); err != nil {
+				return SocialLink{}, err
+			}
+		default:
+			return SocialLink{}, errors.New("social link contains an unknown field")
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') {
+		return SocialLink{}, errors.New("social link object is malformed")
+	}
+	if !seenLabel || !seenURL {
+		return SocialLink{}, errors.New("social link is missing a required field")
+	}
+	return link, nil
 }
 
 func nullableID(id *int64) any {

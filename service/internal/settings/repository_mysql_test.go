@@ -46,6 +46,10 @@ func TestSiteMySQLGetMapsMissingAndSanitizesInvalidStoredJSON(t *testing.T) {
 
 	for _, raw := range []string{
 		`[{"label":"GitHub","url":"https://github.com/qiuxsgit","secret":"database-value"}]`,
+		`[{"label":"GitHub","label":"Other","url":"https://github.com/qiuxsgit"}]`,
+		`[{"label":"GitHub","url":"https://github.com/qiuxsgit","url":"https://example.com"}]`,
+		`[{"url":"https://github.com/qiuxsgit"}]`,
+		`[{"label":"GitHub"}]`,
 		`[{"label":"GitHub","url":"https://github.com/qiuxsgit"}] {}`,
 		`null`,
 		`[{"label":"GitHub","url":"http://invalid-secret.example"}]`,
@@ -60,6 +64,18 @@ func TestSiteMySQLGetMapsMissingAndSanitizesInvalidStoredJSON(t *testing.T) {
 			require.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+func TestSiteMySQLGetRejectsStoredSocialJSONBeyondBound(t *testing.T) {
+	repository, mock, _ := newSettingsRepositoryTest(t, 1)
+	raw := `[{"label":"a","url":"https://example.com/a"},{"label":"b","url":"https://example.com/b"},{"label":"c","url":"https://example.com/c"},{"label":"d","url":"https://example.com/d"},{"label":"e","url":"https://example.com/e"},{"label":"f","url":"https://example.com/f"},{"label":"g","url":"https://example.com/g"},{"label":"h","url":"https://example.com/h"},{"label":"i","url":"https://example.com/i"},{"label":"j","url":"https://example.com/j"},{"label":"k","url":"https://example.com/k"},{"label":"l","url":"https://example.com/l"},{"label":"m","url":"https://example.com/m"},{"label":"n","url":"https://example.com/n"},{"label":"o","url":"https://example.com/o"},{"label":"p","url":"https://example.com/p"},{"label":"q","url":"https://example.com/q"}]`
+	mock.ExpectQuery(testSelectSiteSQL).WillReturnRows(siteRows(storedSite(), raw))
+
+	_, err := repository.GetSite(context.Background())
+
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "example.com")
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestSiteMySQLGetAllowsLegacyBlankFilingForRepairAndPublishGate(t *testing.T) {

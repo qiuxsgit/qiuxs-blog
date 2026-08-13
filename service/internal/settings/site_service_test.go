@@ -173,6 +173,78 @@ func TestSiteServiceValidatesEveryBoundaryBeforePersistence(t *testing.T) {
 	}
 }
 
+func TestSiteServiceRequiresExactCanonicalSocialHTTPSURLs(t *testing.T) {
+	valid := []string{
+		"https://example.com",
+		"https://example.com/",
+		"https://example.com/profile/sub/?tab=posts&sort=new#latest",
+		"https://example.com:8443/a~b?q=x%2Fy#part%20two",
+		"https://xn--bcher-kva.example/~user",
+		"https://192.0.2.1/profile",
+		"https://[2001:db8::1]:8443/a%2Fb",
+	}
+	for _, socialURL := range valid {
+		t.Run("accept "+socialURL, func(t *testing.T) {
+			repository := &siteRepositoryFake{}
+			service := newSiteService(t, repository, &activeMediaFake{}, time.Now)
+			site := DefaultSite()
+			site.SocialLinks = []SocialLink{{Label: "Profile", URL: socialURL}}
+
+			_, err := service.PutSite(context.Background(), site, 0)
+
+			require.NoError(t, err)
+			require.Len(t, repository.createCalls, 1)
+		})
+	}
+
+	invalid := []string{
+		"https://example.com?",
+		"https://example.com?#fragment",
+		"https://example.com#",
+		"https://example.com:",
+		"https://example.com:abc",
+		"https://example.com:65536",
+		"https://example.com:0444",
+		"https://example.com:443",
+		"https://example.com:0443",
+		"https://EXAMPLE.com/profile",
+		"https://bücher.example/profile",
+		"https://XN--BCHER-KVA.example/profile",
+		"https://example.com./profile",
+		"https://192.168.001.001/profile",
+		"https://[2001:0db8:0:0:0:0:0:1]/profile",
+		"https://example.com/a/./b",
+		"https://example.com/a/../b",
+		"https://example.com/a/%2e/b",
+		"https://example.com/a/%2E%2e/b",
+		"https://example.com/a//b",
+		"https://example.com/a%2F..%2Fb",
+		"https://example.com/a%2F%2Fb",
+		"https://example.com/%7euser",
+		"https://example.com/%7Euser",
+		"https://example.com/a%2fb",
+		"https://example.com/中文",
+		"https://example.com/%zz",
+		"https://example.com/?q=%7euser",
+		"https://example.com/#part%2done",
+		"https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example/profile",
+		"https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/profile",
+	}
+	for _, socialURL := range invalid {
+		t.Run("reject "+socialURL, func(t *testing.T) {
+			repository := &siteRepositoryFake{}
+			service := newSiteService(t, repository, &activeMediaFake{}, time.Now)
+			site := DefaultSite()
+			site.SocialLinks = []SocialLink{{Label: "Profile", URL: socialURL}}
+
+			_, err := service.PutSite(context.Background(), site, 0)
+
+			require.ErrorIs(t, err, ErrInvalid)
+			require.Empty(t, repository.createCalls)
+		})
+	}
+}
+
 func TestSiteServiceRequiresActiveSEOImageBeforeWrite(t *testing.T) {
 	repository := &siteRepositoryFake{}
 	mediaValidator := &activeMediaFake{}

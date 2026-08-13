@@ -3,10 +3,14 @@ package settings
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"golang.org/x/net/idna"
 )
 
 const (
@@ -125,13 +129,183 @@ func canonicalSocialURL(raw string) bool {
 		return false
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Opaque != "" {
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Opaque != "" || parsed.ForceQuery {
 		return false
 	}
-	if parsed.Hostname() == "" || parsed.Hostname() != strings.ToLower(parsed.Hostname()) || parsed.Port() == "443" {
+	authority, ok := canonicalSocialAuthority(parsed)
+	if !ok {
 		return false
 	}
-	return parsed.String() == raw
+	canonicalPath, ok := canonicalURLComponent(parsed.EscapedPath(), pathByteAllowed)
+	if !ok || !cleanAbsoluteURLPath(canonicalPath) {
+		return false
+	}
+	canonical := "https://" + authority + canonicalPath
+	if parsed.RawQuery != "" {
+		query, valid := canonicalURLComponent(parsed.RawQuery, queryOrFragmentByteAllowed)
+		if !valid || query == "" {
+			return false
+		}
+		canonical += "?" + query
+	}
+	fragmentDelimiter := strings.IndexByte(raw, '#') >= 0
+	if fragmentDelimiter {
+		fragment, valid := canonicalURLComponent(parsed.EscapedFragment(), queryOrFragmentByteAllowed)
+		if !valid || fragment == "" {
+			return false
+		}
+		canonical += "#" + fragment
+	}
+	return raw == canonical
+}
+
+func canonicalSocialAuthority(parsed *url.URL) (string, bool) {
+	hostname := parsed.Hostname()
+	if hostname == "" || strings.Contains(hostname, "%") {
+		return "", false
+	}
+	var host string
+	if address, err := netip.ParseAddr(hostname); err == nil {
+		if address.Zone() != "" {
+			return "", false
+		}
+		if address.Is4() {
+			host = address.String()
+		} else {
+			host = "[" + address.String() + "]"
+		}
+	} else {
+		if looksLikeNoncanonicalIP(hostname) || strings.HasSuffix(hostname, ".") {
+			return "", false
+		}
+		asciiHost, conversionErr := idna.Lookup.ToASCII(hostname)
+		if conversionErr != nil || asciiHost == "" || asciiHost != hostname || asciiHost != strings.ToLower(asciiHost) || !validDNSNameLength(asciiHost) {
+			return "", false
+		}
+		host = asciiHost
+	}
+
+	port := parsed.Port()
+	if port != "" {
+		portNumber, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || portNumber == 0 || portNumber == 443 || strconv.FormatUint(portNumber, 10) != port {
+			return "", false
+		}
+		host += ":" + port
+	}
+	if parsed.Host != host {
+		return "", false
+	}
+	return host, true
+}
+
+func looksLikeNoncanonicalIP(host string) bool {
+	if strings.Contains(host, ":") {
+		return true
+	}
+	for _, character := range host {
+		if character != '.' && (character < '0' || character > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func validDNSNameLength(host string) bool {
+	if len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalURLComponent(raw string, allowed func(byte) bool) (string, bool) {
+	var canonical strings.Builder
+	canonical.Grow(len(raw))
+	for index := 0; index < len(raw); {
+		current := raw[index]
+		if current == '%' {
+			if index+2 >= len(raw) {
+				return "", false
+			}
+			high, highOK := hexadecimalValue(raw[index+1])
+			low, lowOK := hexadecimalValue(raw[index+2])
+			if !highOK || !lowOK {
+				return "", false
+			}
+			decoded := high<<4 | low
+			if unreservedURLByte(decoded) {
+				canonical.WriteByte(decoded)
+			} else {
+				canonical.WriteByte('%')
+				canonical.WriteByte(upperHexadecimal(decoded >> 4))
+				canonical.WriteByte(upperHexadecimal(decoded & 0x0f))
+			}
+			index += 3
+			continue
+		}
+		if current < utf8.RuneSelf && allowed(current) {
+			canonical.WriteByte(current)
+		} else {
+			canonical.WriteByte('%')
+			canonical.WriteByte(upperHexadecimal(current >> 4))
+			canonical.WriteByte(upperHexadecimal(current & 0x0f))
+		}
+		index++
+	}
+	return canonical.String(), true
+}
+
+func cleanAbsoluteURLPath(value string) bool {
+	if value == "" {
+		return true
+	}
+	structuralPath := strings.ReplaceAll(value, "%2F", "/")
+	if structuralPath[0] != '/' || strings.Contains(structuralPath, "//") {
+		return false
+	}
+	for _, segment := range strings.Split(structuralPath, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func pathByteAllowed(value byte) bool {
+	return unreservedURLByte(value) || strings.ContainsRune("!$&'()*+,;=:@/", rune(value))
+}
+
+func queryOrFragmentByteAllowed(value byte) bool {
+	return pathByteAllowed(value) || value == '?'
+}
+
+func unreservedURLByte(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || strings.ContainsRune("-._~", rune(value))
+}
+
+func hexadecimalValue(value byte) (byte, bool) {
+	switch {
+	case value >= '0' && value <= '9':
+		return value - '0', true
+	case value >= 'a' && value <= 'f':
+		return value - 'a' + 10, true
+	case value >= 'A' && value <= 'F':
+		return value - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
+func upperHexadecimal(value byte) byte {
+	if value < 10 {
+		return '0' + value
+	}
+	return 'A' + value - 10
 }
 
 func validRequiredRunes(value string, maximum int) bool {

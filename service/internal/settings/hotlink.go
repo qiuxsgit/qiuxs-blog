@@ -104,6 +104,7 @@ func (s *hotlinkService) Put(ctx context.Context, allowEmptyReferer bool, entrie
 	s.cacheGeneration++
 	s.cache = HotlinkPolicy{}
 	s.cacheValid = false
+	s.loadFlight = nil
 	s.cacheMu.Unlock()
 	return cloneHotlinkPolicy(stored), nil
 }
@@ -161,7 +162,9 @@ func (s *hotlinkService) Current(ctx context.Context) (HotlinkPolicy, error) {
 			s.cache = cloneHotlinkPolicy(loaded)
 			s.cacheValid = true
 		}
-		s.loadFlight = nil
+		if s.loadFlight == flight {
+			s.loadFlight = nil
+		}
 		close(flight.done)
 		s.cacheMu.Unlock()
 		if generationChanged {

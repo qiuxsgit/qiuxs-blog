@@ -265,6 +265,93 @@ func TestHotlinkCurrentDiscardsStaleLoadErrorAfterSuccessfulPut(t *testing.T) {
 	require.Equal(t, 2, repository.getCallCount(), "the invalidated error must be retried rather than returned")
 }
 
+func TestHotlinkCurrentAfterPutStartsFreshLoadBeforeStaleLoadReturns(t *testing.T) {
+	oldPolicy := HotlinkPolicy{Entries: []HotlinkEntry{{Hostname: "old.example", Enabled: true}}}
+	newPolicy := HotlinkPolicy{Entries: []HotlinkEntry{{Hostname: "new.example", Enabled: true}}}
+	oldStarted := make(chan struct{}, 1)
+	oldRelease := make(chan struct{})
+	newStarted := make(chan struct{}, 1)
+	repository := &hotlinkRepositoryFake{
+		replaceResult: newPolicy,
+		getSteps: []hotlinkGetStep{
+			{result: oldPolicy, started: oldStarted, release: oldRelease, ignoreContext: true},
+			{result: newPolicy, started: newStarted},
+		},
+	}
+	service := newHotlinkService(t, repository, time.Now)
+
+	firstResult := currentHotlinkAsync(service, context.Background())
+	awaitSignal(t, oldStarted)
+	_, err := service.Put(context.Background(), false, []HotlinkEntry{{Hostname: "new.example", Enabled: true}})
+	require.NoError(t, err)
+
+	secondResult := currentHotlinkAsync(service, context.Background())
+	select {
+	case <-newStarted:
+	case <-time.After(100 * time.Millisecond):
+		close(oldRelease)
+		awaitHotlinkResult(t, firstResult)
+		awaitHotlinkResult(t, secondResult)
+		t.Fatal("Current started after Put joined the stale pre-write load")
+	}
+	require.Equal(t, currentHotlinkResult{policy: newPolicy}, awaitHotlinkResult(t, secondResult))
+
+	close(oldRelease)
+	require.Equal(t, currentHotlinkResult{policy: newPolicy}, awaitHotlinkResult(t, firstResult))
+	cached, err := service.Current(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, newPolicy, cached)
+	require.Equal(t, 2, repository.getCallCount())
+}
+
+func TestStaleHotlinkLoadCompletionDoesNotDetachOrOverwriteNewFlight(t *testing.T) {
+	oldPolicy := HotlinkPolicy{Entries: []HotlinkEntry{{Hostname: "old.example", Enabled: true}}}
+	newPolicy := HotlinkPolicy{Entries: []HotlinkEntry{{Hostname: "new.example", Enabled: true}}}
+	oldStarted := make(chan struct{}, 1)
+	oldRelease := make(chan struct{})
+	newStarted := make(chan struct{}, 1)
+	newRelease := make(chan struct{})
+	unexpectedStarted := make(chan struct{}, 1)
+	repository := &hotlinkRepositoryFake{
+		replaceResult: newPolicy,
+		getSteps: []hotlinkGetStep{
+			{result: oldPolicy, started: oldStarted, release: oldRelease, ignoreContext: true},
+			{result: newPolicy, started: newStarted, release: newRelease},
+			{result: HotlinkPolicy{Entries: []HotlinkEntry{{Hostname: "unexpected.example"}}}, started: unexpectedStarted},
+		},
+	}
+	service := newHotlinkService(t, repository, time.Now)
+	oldContext, cancelOld := context.WithCancel(context.Background())
+
+	oldResult := currentHotlinkAsync(service, oldContext)
+	awaitSignal(t, oldStarted)
+	_, err := service.Put(context.Background(), false, []HotlinkEntry{{Hostname: "new.example", Enabled: true}})
+	require.NoError(t, err)
+	newResult := currentHotlinkAsync(service, context.Background())
+	awaitSignal(t, newStarted)
+
+	cancelOld()
+	close(oldRelease)
+	require.Error(t, awaitHotlinkResult(t, oldResult).err)
+	require.Equal(t, 2, repository.getCallCount(), "stale completion must leave the newer flight registered")
+	select {
+	case <-unexpectedStarted:
+		t.Fatal("stale completion detached the newer flight and started a third load")
+	default:
+	}
+
+	joinedResult := currentHotlinkAsync(service, context.Background())
+	require.Never(t, func() bool { return repository.getCallCount() != 2 }, 20*time.Millisecond, time.Millisecond)
+	close(newRelease)
+	require.Equal(t, currentHotlinkResult{policy: newPolicy}, awaitHotlinkResult(t, newResult))
+	require.Equal(t, currentHotlinkResult{policy: newPolicy}, awaitHotlinkResult(t, joinedResult))
+
+	cached, err := service.Current(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, newPolicy, cached)
+	require.Equal(t, 2, repository.getCallCount())
+}
+
 func TestHotlinkCurrentCoalescesConcurrentLoadFailureWithoutCachingIt(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
@@ -419,16 +506,35 @@ type hotlinkRepositoryFake struct {
 	getStarted        chan struct{}
 	getRelease        chan struct{}
 	getWaitForContext bool
+	getSteps          []hotlinkGetStep
+}
+
+type hotlinkGetStep struct {
+	result        HotlinkPolicy
+	err           error
+	started       chan struct{}
+	release       <-chan struct{}
+	ignoreContext bool
 }
 
 func (f *hotlinkRepositoryFake) GetHotlinkPolicy(ctx context.Context) (HotlinkPolicy, error) {
 	f.mu.Lock()
+	callIndex := f.getCalls
 	f.getCalls++
 	result := cloneHotlinkPolicy(f.getResult)
 	err := f.getErr
 	started := f.getStarted
-	release := f.getRelease
+	var release <-chan struct{} = f.getRelease
 	waitForContext := f.getWaitForContext
+	ignoreContext := false
+	if callIndex < len(f.getSteps) {
+		step := f.getSteps[callIndex]
+		result = cloneHotlinkPolicy(step.result)
+		err = step.err
+		started = step.started
+		release = step.release
+		ignoreContext = step.ignoreContext
+	}
 	f.mu.Unlock()
 	if started != nil {
 		select {
@@ -437,7 +543,15 @@ func (f *hotlinkRepositoryFake) GetHotlinkPolicy(ctx context.Context) (HotlinkPo
 		}
 	}
 	if release != nil {
-		<-release
+		if ignoreContext {
+			<-release
+		} else {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return HotlinkPolicy{}, ctx.Err()
+			}
+		}
 	}
 	if waitForContext {
 		f.mu.Lock()
@@ -447,6 +561,31 @@ func (f *hotlinkRepositoryFake) GetHotlinkPolicy(ctx context.Context) (HotlinkPo
 		return HotlinkPolicy{}, ctx.Err()
 	}
 	return result, err
+}
+
+type currentHotlinkResult struct {
+	policy HotlinkPolicy
+	err    error
+}
+
+func currentHotlinkAsync(service HotlinkService, ctx context.Context) <-chan currentHotlinkResult {
+	result := make(chan currentHotlinkResult, 1)
+	go func() {
+		policy, err := service.Current(ctx)
+		result <- currentHotlinkResult{policy: policy, err: err}
+	}()
+	return result
+}
+
+func awaitHotlinkResult(t *testing.T, result <-chan currentHotlinkResult) currentHotlinkResult {
+	t.Helper()
+	select {
+	case got := <-result:
+		return got
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for hotlink result")
+		return currentHotlinkResult{}
+	}
 }
 
 func (f *hotlinkRepositoryFake) ReplaceHotlinkPolicy(_ context.Context, policy HotlinkPolicy, at time.Time) (HotlinkPolicy, error) {

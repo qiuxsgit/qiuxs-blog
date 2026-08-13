@@ -133,17 +133,27 @@ func (s *service) Register(ctx context.Context, gfsFileID int64, originalName st
 }
 
 func matchesRegistrationReplay(existing Media, gfsFileID int64, originalName string) bool {
-	return existing.GFSFileID == gfsFileID && existing.OriginalName == originalName
+	return validStoredRegistration(existing, gfsFileID, originalName)
 }
 
 func matchesVerifiedMetadata(existing Media, metadata Metadata) bool {
-	return existing.GFSFileID == metadata.FileID &&
+	return validStoredRegistration(existing, metadata.FileID, metadata.FileName) &&
 		existing.OriginalName == metadata.FileName &&
 		existing.MIMEType == metadata.ContentType &&
 		existing.FileSize == metadata.FileSize &&
 		existing.Width == metadata.Width &&
-		existing.Height == metadata.Height &&
-		existing.State == "active"
+		existing.Height == metadata.Height
+}
+
+func validStoredRegistration(existing Media, gfsFileID int64, originalName string) bool {
+	if existing.ID <= 0 || existing.State != "active" || !mediaPublicKeyPattern.MatchString(existing.PublicKey) ||
+		existing.CreatedAt.IsZero() || existing.UpdatedAt.IsZero() || existing.UpdatedAt.Before(existing.CreatedAt) {
+		return false
+	}
+	return validateMetadata(gfsFileID, originalName, Metadata{
+		FileID: existing.GFSFileID, FileName: existing.OriginalName, ContentType: existing.MIMEType,
+		FileSize: existing.FileSize, Width: existing.Width, Height: existing.Height,
+	}) == nil
 }
 
 func (s *service) ResolveReferences(ctx context.Context, coverID *int64, publicKeys []string) (*Media, []Reference, error) {

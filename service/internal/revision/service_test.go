@@ -206,6 +206,21 @@ func TestServiceGetDraftAndPreviewReadCompleteCurrentDraftWithoutMutation(t *tes
 	require.Empty(t, repository.saveCalls)
 }
 
+func TestServiceGetDraftAtReadsExactPointerAndPreservesConflict(t *testing.T) {
+	want := Draft{ID: 21, ArticleID: 11, RevisionNo: 2, LockVersion: 3, Status: StatusEditing, Reason: ReasonDraft}
+	repository := &revisionRepositoryFake{draftAt: want}
+	service := newRevisionService(t, repository, &tagResolverFake{}, &mediaResolverFake{}, time.Now)
+
+	got, err := service.GetDraftAt(context.Background(), 11, 21)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	require.Equal(t, [][2]int64{{11, 21}}, repository.getAtCalls)
+
+	repository.getAtErr = ErrConflict
+	_, err = service.GetDraftAt(context.Background(), 11, 21)
+	require.ErrorIs(t, err, ErrConflict)
+}
+
 func TestServiceValidateFreezableUsesStoredDraftContent(t *testing.T) {
 	service := newRevisionService(t, &revisionRepositoryFake{}, &tagResolverFake{}, &mediaResolverFake{}, time.Now)
 	require.NoError(t, service.ValidateFreezable(Draft{Title: "Version", ContentMD: "body"}))
@@ -390,6 +405,9 @@ type revisionRepositoryFake struct {
 	draft            Draft
 	getErr           error
 	getCalls         []int64
+	draftAt          Draft
+	getAtErr         error
+	getAtCalls       [][2]int64
 	saveResult       Draft
 	saveErr          error
 	saveCalls        []revisionSaveCall
@@ -412,6 +430,11 @@ func (r *revisionRepositoryFake) GetDraft(_ context.Context, articleID int64) (D
 	}
 	r.getCalls = append(r.getCalls, articleID)
 	return r.draft, r.getErr
+}
+
+func (r *revisionRepositoryFake) GetDraftAt(_ context.Context, articleID, revisionID int64) (Draft, error) {
+	r.getAtCalls = append(r.getAtCalls, [2]int64{articleID, revisionID})
+	return r.draftAt, r.getAtErr
 }
 
 func (r *revisionRepositoryFake) CreateVersion(_ context.Context, articleID, currentRevisionID, lockVersion int64, at time.Time) (Version, Draft, error) {

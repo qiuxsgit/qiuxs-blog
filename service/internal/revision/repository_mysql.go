@@ -16,6 +16,7 @@ import (
 
 const (
 	storedEditingDraftSelect      = "SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE article_id = ? AND status = 'editing'"
+	storedEditingDraftAtSelect    = "SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'editing'"
 	storedDraftTagsSelect         = "SELECT tag_id, tag_name, tag_slug, position FROM article_revision_tags WHERE revision_id = ? ORDER BY position ASC"
 	storedDraftMediaSelect        = "SELECT arm.media_id, m.public_key, arm.purpose, arm.position FROM article_revision_media arm JOIN media m ON m.id = arm.media_id WHERE arm.revision_id = ? ORDER BY arm.position ASC"
 	draftUpdateStatement          = "UPDATE article_revisions SET title = ?, summary = ?, cover_media_id = ?, content_md = ?, content_hash = ?, lock_version = lock_version + 1, updated_at = ? WHERE article_id = ? AND status = 'editing' AND lock_version = ?"
@@ -60,6 +61,20 @@ func (r *MySQLRepository) GetDraft(ctx context.Context, articleID int64) (Draft,
 	if articleID <= 0 {
 		return Draft{}, ErrInvalidContent
 	}
+	return r.getDraft(ctx, storedEditingDraftSelect, []any{articleID}, ErrNotFound, "get article draft")
+}
+
+func (r *MySQLRepository) GetDraftAt(ctx context.Context, articleID, revisionID int64) (Draft, error) {
+	if err := r.validate(ctx); err != nil {
+		return Draft{}, err
+	}
+	if articleID <= 0 || revisionID <= 0 {
+		return Draft{}, ErrInvalidContent
+	}
+	return r.getDraft(ctx, storedEditingDraftAtSelect, []any{revisionID, articleID}, ErrConflict, "get article draft at pointer")
+}
+
+func (r *MySQLRepository) getDraft(ctx context.Context, statement string, arguments []any, missingError error, operation string) (Draft, error) {
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return Draft{}, revisionSafeWrap("begin draft read", err)
@@ -71,7 +86,7 @@ func (r *MySQLRepository) GetDraft(ctx context.Context, articleID int64) (Draft,
 		}
 	}()
 
-	draft, err := scanDraft(tx.QueryRowContext(ctx, storedEditingDraftSelect, articleID), "get article draft")
+	draft, err := scanStoredRevision(tx.QueryRowContext(ctx, statement, arguments...), StatusEditing, missingError, operation)
 	if err != nil {
 		return Draft{}, err
 	}

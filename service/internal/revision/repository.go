@@ -10,6 +10,7 @@ import (
 
 type Repository interface {
 	GetDraft(context.Context, int64) (Draft, error)
+	GetDraftAt(context.Context, int64, int64) (Draft, error)
 	SaveDraft(context.Context, int64, int64, PreparedContent, time.Time) (Draft, error)
 	CreateVersion(context.Context, int64, int64, int64, time.Time) (Version, Draft, error)
 	ListVersions(context.Context, int64) ([]Version, error)

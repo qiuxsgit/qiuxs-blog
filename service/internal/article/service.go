@@ -10,7 +10,10 @@ import (
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/revision"
 )
 
-const maximumSlugRetries = 5
+const (
+	maximumSlugRetries        = 5
+	maximumDetailReadAttempts = 3
+)
 
 type Detail struct {
 	Article Article
@@ -80,15 +83,27 @@ func (s *service) Get(ctx context.Context, id int64) (Detail, error) {
 	if err := s.validateID(ctx, id); err != nil {
 		return Detail{}, err
 	}
-	item, err := s.repository.FindByID(ctx, id)
-	if err != nil {
-		return Detail{}, articleSafeWrap("find article", err)
+	for range maximumDetailReadAttempts {
+		item, err := s.repository.FindByID(ctx, id)
+		if err != nil {
+			return Detail{}, articleSafeWrap("find article", err)
+		}
+		if item.ID <= 0 || item.ID != id || item.DraftRevisionID <= 0 || item.PublishedRevisionID != nil && *item.PublishedRevisionID <= 0 {
+			return Detail{}, articleSafeWrap("find article", errors.New("stored article identity is invalid"))
+		}
+		draft, err := s.drafts.GetDraftAt(ctx, item.ID, item.DraftRevisionID)
+		if errors.Is(err, revision.ErrConflict) {
+			continue
+		}
+		if err != nil {
+			return Detail{}, articleSafeWrap("load article draft", err)
+		}
+		if draft.ID != item.DraftRevisionID || draft.ArticleID != item.ID {
+			return Detail{}, articleSafeWrap("load article draft", errors.New("draft identity mismatch"))
+		}
+		return Detail{Article: item, Draft: draft}, nil
 	}
-	draft, err := s.drafts.GetDraft(ctx, item.ID)
-	if err != nil {
-		return Detail{}, articleSafeWrap("load article draft", err)
-	}
-	return Detail{Article: item, Draft: draft}, nil
+	return Detail{}, articleSafeWrap("load coherent article draft", errors.New("draft pointer changed during bounded read"))
 }
 
 func (s *service) List(ctx context.Context, state State) ([]Summary, error) {

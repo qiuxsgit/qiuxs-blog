@@ -54,6 +54,7 @@ const (
 	flowTrashArticle        = "UPDATE articles SET state = 'trashed', updated_at = ? WHERE id = ? AND state = 'active' AND published_revision_id IS NULL"
 	flowUntrashArticle      = "UPDATE articles SET state = 'active', updated_at = ? WHERE id = ? AND state = 'trashed'"
 	flowSelectEditingDraft  = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE article_id = ? AND status = 'editing'"
+	flowSelectEditingAt     = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'editing'"
 	flowSelectDraftTags     = "SELECT tag_id, tag_name, tag_slug, position FROM article_revision_tags WHERE revision_id = ? ORDER BY position ASC"
 	flowSelectDraftMedia    = "SELECT arm.media_id, m.public_key, arm.purpose, arm.position FROM article_revision_media arm JOIN media m ON m.id = arm.media_id WHERE arm.revision_id = ? ORDER BY arm.position ASC"
 	flowUpdateDraft         = "UPDATE article_revisions SET title = ?, summary = ?, cover_media_id = ?, content_md = ?, content_hash = ?, lock_version = lock_version + 1, updated_at = ? WHERE article_id = ? AND status = 'editing' AND lock_version = ?"
@@ -325,7 +326,7 @@ func TestContentRevisionMediaAndHotlinkFlow(t *testing.T) {
 	// 11. Preview contains the immutable slug plus the restored complete draft.
 	flow.expectAdmin()
 	expectQuery(flow.mock, flowSelectArticle).WithArgs(int64(1)).WillReturnRows(flowArticleRows(1, "active", nil, flow.now))
-	flow.expectDraftRead(3, 3, 1, "editing", "draft", flowDraftTitle, flowDraftSummary, flowDraftBody, hashOne, "Go")
+	flow.expectDraftReadAt(3, 3, 1, "editing", "draft", flowDraftTitle, flowDraftSummary, flowDraftBody, hashOne, "Go")
 	response = flow.adminJSON(http.MethodGet, "/api/admin/v1/articles/1/preview", nil)
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	var preview struct {
@@ -599,6 +600,13 @@ func (flow *contentMediaFlow) expectActiveMediaResolution() {
 func (flow *contentMediaFlow) expectDraftRead(id, revisionNo, lock int64, status, reason, title, summary, body, hash, tagName string) {
 	flow.mock.ExpectBegin()
 	flow.expectRevisionScalar(flowSelectEditingDraft, []driverArg{int64(1)}, id, revisionNo, lock, status, reason, title, summary, body, hash)
+	flow.expectStoredAssociations(id, tagName)
+	flow.mock.ExpectCommit()
+}
+
+func (flow *contentMediaFlow) expectDraftReadAt(id, revisionNo, lock int64, status, reason, title, summary, body, hash, tagName string) {
+	flow.mock.ExpectBegin()
+	flow.expectRevisionScalar(flowSelectEditingAt, []driverArg{id, int64(1)}, id, revisionNo, lock, status, reason, title, summary, body, hash)
 	flow.expectStoredAssociations(id, tagName)
 	flow.mock.ExpectCommit()
 }

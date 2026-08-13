@@ -44,7 +44,7 @@ func TestServiceCreateRetriesOnlySlugConflictsAtMostFiveTimes(t *testing.T) {
 	t.Run("success after conflict", func(t *testing.T) {
 		repository := newArticleRepositoryFake()
 		repository.createResults = []articleResult{{err: ErrSlugConflict}, {article: Article{ID: 11, Slug: "bbbbbbbbbbbb", DraftRevisionID: 21, State: StateActive}}}
-		drafts := &draftReaderFake{byArticleID: map[int64]revision.Draft{11: {ID: 21, ArticleID: 11}}}
+		drafts := &draftReaderFake{}
 		service := newArticleService(t, repository, drafts, append(bytes.Repeat([]byte{0}, 12), bytes.Repeat([]byte{1}, 12)...), time.Now)
 
 		got, err := service.Create(context.Background())
@@ -89,12 +89,12 @@ func TestServiceCreateSanitizesRandomFailure(t *testing.T) {
 	require.NotContains(t, err.Error(), "EOF")
 }
 
-func TestServiceGetCombinesArticleAndCurrentDraft(t *testing.T) {
+func TestServiceGetCombinesArticleWithItsExactDraftPointer(t *testing.T) {
 	article := Article{ID: 11, Slug: "aaaaaaaaaaaa", DraftRevisionID: 21, State: StateActive}
 	draft := revision.Draft{ID: 21, ArticleID: 11, Title: "Draft"}
 	repository := newArticleRepositoryFake()
 	repository.byID[11] = article
-	drafts := &draftReaderFake{byArticleID: map[int64]revision.Draft{11: draft}}
+	drafts := &draftReaderFake{byPointer: map[draftReadCall]revision.Draft{{articleID: 11, revisionID: 21}: draft}}
 	service := newArticleService(t, repository, drafts, bytes.Repeat([]byte{0}, 12), time.Now)
 
 	got, err := service.Get(context.Background(), 11)
@@ -102,7 +102,102 @@ func TestServiceGetCombinesArticleAndCurrentDraft(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, Detail{Article: article, Draft: draft}, got)
 	require.Equal(t, []int64{11}, repository.findCalls)
-	require.Equal(t, []int64{11}, drafts.calls)
+	require.Equal(t, []draftReadCall{{articleID: 11, revisionID: 21}}, drafts.calls)
+	require.Empty(t, drafts.untargetedCalls)
+}
+
+func TestServiceGetRetriesPointerConflictAndReturnsOnlyCoherentLatestDetail(t *testing.T) {
+	repository := newArticleRepositoryFake()
+	repository.findResults = []articleResult{
+		{article: Article{ID: 11, Slug: "aaaaaaaaaaaa", DraftRevisionID: 21, State: StateActive}},
+		{article: Article{ID: 11, Slug: "aaaaaaaaaaaa", DraftRevisionID: 24, State: StateActive}},
+	}
+	drafts := &draftReaderFake{results: []draftResult{
+		{err: revision.ErrConflict},
+		{draft: revision.Draft{ID: 24, ArticleID: 11, Title: "Latest"}},
+	}}
+	service := newArticleService(t, repository, drafts, bytes.Repeat([]byte{0}, 12), time.Now)
+
+	got, err := service.Get(context.Background(), 11)
+
+	require.NoError(t, err)
+	require.Equal(t, int64(24), got.Article.DraftRevisionID)
+	require.Equal(t, int64(24), got.Draft.ID)
+	require.Equal(t, "Latest", got.Draft.Title)
+	require.Equal(t, []int64{11, 11}, repository.findCalls)
+	require.Equal(t, []draftReadCall{{articleID: 11, revisionID: 21}, {articleID: 11, revisionID: 24}}, drafts.calls)
+}
+
+func TestServiceGetBoundsPointerConflictRetriesAndSanitizesExhaustion(t *testing.T) {
+	repository := newArticleRepositoryFake()
+	repository.findResults = []articleResult{
+		{article: Article{ID: 11, DraftRevisionID: 21}},
+		{article: Article{ID: 11, DraftRevisionID: 24}},
+		{article: Article{ID: 11, DraftRevisionID: 27}},
+	}
+	drafts := &draftReaderFake{results: []draftResult{{err: revision.ErrConflict}, {err: revision.ErrConflict}, {err: revision.ErrConflict}}}
+	service := newArticleService(t, repository, drafts, bytes.Repeat([]byte{0}, 12), time.Now)
+
+	_, err := service.Get(context.Background(), 11)
+
+	require.EqualError(t, err, "load coherent article draft failed")
+	require.NotErrorIs(t, err, revision.ErrConflict)
+	require.Len(t, repository.findCalls, 3)
+	require.Equal(t, []draftReadCall{{articleID: 11, revisionID: 21}, {articleID: 11, revisionID: 24}, {articleID: 11, revisionID: 27}}, drafts.calls)
+}
+
+func TestServiceGetDoesNotRetryDependenciesOrInvalidDraftIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		draft revision.Draft
+		err   error
+	}{
+		{name: "dependency", err: errors.New("draft-dependency-secret")},
+		{name: "wrong draft ID", draft: revision.Draft{ID: 22, ArticleID: 11}},
+		{name: "wrong article ID", draft: revision.Draft{ID: 21, ArticleID: 12}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newArticleRepositoryFake()
+			repository.byID[11] = Article{ID: 11, DraftRevisionID: 21}
+			drafts := &draftReaderFake{results: []draftResult{{draft: test.draft, err: test.err}}}
+			service := newArticleService(t, repository, drafts, bytes.Repeat([]byte{0}, 12), time.Now)
+
+			_, err := service.Get(context.Background(), 11)
+
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "secret")
+			require.Len(t, repository.findCalls, 1)
+			require.Len(t, drafts.calls, 1)
+		})
+	}
+}
+
+func TestServiceGetRejectsInvalidStoredArticleIdentityBeforeDraftRead(t *testing.T) {
+	invalidPublishedID := int64(0)
+	for _, test := range []struct {
+		name    string
+		article Article
+	}{
+		{name: "different article ID", article: Article{ID: 12, DraftRevisionID: 21}},
+		{name: "zero article ID", article: Article{ID: 0, DraftRevisionID: 21}},
+		{name: "zero draft pointer", article: Article{ID: 11, DraftRevisionID: 0}},
+		{name: "negative draft pointer", article: Article{ID: 11, DraftRevisionID: -1}},
+		{name: "invalid published pointer", article: Article{ID: 11, DraftRevisionID: 21, PublishedRevisionID: &invalidPublishedID}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newArticleRepositoryFake()
+			repository.byID[11] = test.article
+			drafts := &draftReaderFake{}
+			service := newArticleService(t, repository, drafts, bytes.Repeat([]byte{0}, 12), time.Now)
+
+			_, err := service.Get(context.Background(), 11)
+
+			require.EqualError(t, err, "find article failed")
+			require.NotErrorIs(t, err, ErrNotFound)
+			require.Equal(t, []int64{11}, repository.findCalls)
+			require.Empty(t, drafts.calls)
+		})
+	}
 }
 
 func TestServiceListAcceptsOnlyExplicitStatesAndPreservesRepositoryOrder(t *testing.T) {
@@ -270,6 +365,7 @@ type articleRepositoryFake struct {
 	createSlugs   []string
 	createTimes   []time.Time
 	byID          map[int64]Article
+	findResults   []articleResult
 	findErr       error
 	findCalls     []int64
 	listResults   map[State][]Summary
@@ -295,6 +391,11 @@ func (r *articleRepositoryFake) Create(_ context.Context, slug string, at time.T
 
 func (r *articleRepositoryFake) FindByID(_ context.Context, id int64) (Article, error) {
 	r.findCalls = append(r.findCalls, id)
+	if len(r.findResults) > 0 {
+		result := r.findResults[0]
+		r.findResults = r.findResults[1:]
+		return result.article, result.err
+	}
 	if r.findErr != nil {
 		return Article{}, r.findErr
 	}
@@ -315,18 +416,41 @@ func (r *articleRepositoryFake) SetState(_ context.Context, id int64, from, to S
 	return r.setStateErr
 }
 
+type draftReadCall struct {
+	articleID  int64
+	revisionID int64
+}
+
+type draftResult struct {
+	draft revision.Draft
+	err   error
+}
+
 type draftReaderFake struct {
-	byArticleID map[int64]revision.Draft
-	err         error
-	calls       []int64
+	byPointer       map[draftReadCall]revision.Draft
+	results         []draftResult
+	err             error
+	calls           []draftReadCall
+	untargetedCalls []int64
 }
 
 func (r *draftReaderFake) GetDraft(_ context.Context, articleID int64) (revision.Draft, error) {
-	r.calls = append(r.calls, articleID)
+	r.untargetedCalls = append(r.untargetedCalls, articleID)
+	return revision.Draft{}, errors.New("untargeted draft read is forbidden")
+}
+
+func (r *draftReaderFake) GetDraftAt(_ context.Context, articleID, revisionID int64) (revision.Draft, error) {
+	call := draftReadCall{articleID: articleID, revisionID: revisionID}
+	r.calls = append(r.calls, call)
+	if len(r.results) > 0 {
+		result := r.results[0]
+		r.results = r.results[1:]
+		return result.draft, result.err
+	}
 	if r.err != nil {
 		return revision.Draft{}, r.err
 	}
-	draft, exists := r.byArticleID[articleID]
+	draft, exists := r.byPointer[call]
 	if !exists {
 		return revision.Draft{}, revision.ErrNotFound
 	}

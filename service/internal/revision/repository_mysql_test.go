@@ -17,6 +17,7 @@ import (
 
 const (
 	selectEditingDraftSQL     = `SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE article_id = ? AND status = 'editing'`
+	selectEditingDraftAtSQL   = `SELECT id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'editing'`
 	selectDraftTagsSQL        = `SELECT tag_id, tag_name, tag_slug, position FROM article_revision_tags WHERE revision_id = ? ORDER BY position ASC`
 	selectDraftMediaSQL       = `SELECT arm.media_id, m.public_key, arm.purpose, arm.position FROM article_revision_media arm JOIN media m ON m.id = arm.media_id WHERE arm.revision_id = ? ORDER BY arm.position ASC`
 	updateEditingDraftSQL     = `UPDATE article_revisions SET title = ?, summary = ?, cover_media_id = ?, content_md = ?, content_hash = ?, lock_version = lock_version + 1, updated_at = ? WHERE article_id = ? AND status = 'editing' AND lock_version = ?`
@@ -826,6 +827,45 @@ func TestMySQLRepositoryGetDraftLoadsEditingScalarAndOrderedAssociations(t *test
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}, got)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMySQLRepositoryGetDraftAtLoadsOnlyExpectedEditingPointerInOneReadTransaction(t *testing.T) {
+	repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+	createdAt := time.Date(2026, 8, 13, 1, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(time.Hour)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEditingDraftAtSQL).WithArgs(int64(21), int64(11)).WillReturnRows(draftScalarRows().AddRow(
+		int64(21), int64(11), int64(2), "editing", "draft", "Title", "Summary", nil, "body", testContentHash, int64(3), createdAt, updatedAt,
+	))
+	mock.ExpectQuery(selectDraftTagsSQL).WithArgs(int64(21)).WillReturnRows(emptyStoredTagRows())
+	mock.ExpectQuery(selectDraftMediaSQL).WithArgs(int64(21)).WillReturnRows(sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}))
+	mock.ExpectCommit()
+
+	got, err := repository.GetDraftAt(context.Background(), 11, 21)
+
+	require.NoError(t, err)
+	require.Equal(t, int64(21), got.ID)
+	require.Equal(t, int64(11), got.ArticleID)
+	require.NotNil(t, got.Tags)
+	require.NotNil(t, got.Media)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMySQLRepositoryGetDraftAtMapsReplacedPointerToConflictAndRollsBack(t *testing.T) {
+	repository, mock, _ := newRevisionRepositoryTest(t, 1, 1)
+	mock.ExpectBegin()
+	mock.ExpectQuery(selectEditingDraftAtSQL).WithArgs(int64(21), int64(11)).WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	_, err := repository.GetDraftAt(context.Background(), 11, 21)
+
+	require.ErrorIs(t, err, ErrConflict)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	for _, ids := range [][2]int64{{0, 21}, {11, 0}, {-1, 21}, {11, -1}} {
+		_, err = repository.GetDraftAt(context.Background(), ids[0], ids[1])
+		require.ErrorIs(t, err, ErrInvalidContent)
+	}
 }
 
 func TestMySQLRepositoryGetDraftReturnsNonNilEmptyAssociationsAndNullCover(t *testing.T) {

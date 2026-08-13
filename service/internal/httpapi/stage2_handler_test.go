@@ -64,6 +64,10 @@ func (f *stage2RevisionFake) GetDraft(context.Context, int64) (revision.Draft, e
 	f.calls++
 	return f.draft, f.err
 }
+func (f *stage2RevisionFake) GetDraftAt(context.Context, int64, int64) (revision.Draft, error) {
+	f.calls++
+	return f.draft, f.err
+}
 func (f *stage2RevisionFake) SaveDraft(_ context.Context, _ int64, lock int64, content revision.Content) (revision.Draft, error) {
 	f.calls++
 	f.saveLock = lock

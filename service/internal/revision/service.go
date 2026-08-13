@@ -13,6 +13,7 @@ import (
 
 type Service interface {
 	GetDraft(context.Context, int64) (Draft, error)
+	GetDraftAt(context.Context, int64, int64) (Draft, error)
 	SaveDraft(context.Context, int64, int64, Content) (Draft, error)
 	Preview(context.Context, int64) (Draft, error)
 	CreateVersion(context.Context, int64, int64) (Version, Draft, error)
@@ -51,6 +52,17 @@ func (s *service) GetDraft(ctx context.Context, articleID int64) (Draft, error) 
 	draft, err := s.repository.GetDraft(ctx, articleID)
 	if err != nil {
 		return Draft{}, revisionSafeWrap("get article draft", err)
+	}
+	return draft, nil
+}
+
+func (s *service) GetDraftAt(ctx context.Context, articleID, revisionID int64) (Draft, error) {
+	if err := s.validate(ctx, articleID); err != nil || revisionID <= 0 {
+		return Draft{}, ErrInvalidContent
+	}
+	draft, err := s.repository.GetDraftAt(ctx, articleID, revisionID)
+	if err != nil {
+		return Draft{}, revisionSafeWrap("get article draft at pointer", err)
 	}
 	return draft, nil
 }

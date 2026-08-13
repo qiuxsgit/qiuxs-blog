@@ -62,7 +62,7 @@ type PreparedContent struct {
 }
 
 type DraftReader interface {
-	GetDraft(context.Context, int64) (Draft, error)
+	GetDraftAt(context.Context, int64, int64) (Draft, error)
 }
 
 var (

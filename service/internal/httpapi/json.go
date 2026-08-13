@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -31,7 +32,7 @@ func decodeAdminJSON[T any](_ *gin.Context, request *http.Request, writer http.R
 
 	request.Body = http.MaxBytesReader(writer, request.Body, limit)
 	body, err := io.ReadAll(request.Body)
-	if err != nil || len(body) == 0 {
+	if err != nil || len(body) == 0 || !utf8.Valid(body) {
 		return zero, ErrInvalidRequest
 	}
 	trimmed := bytes.TrimSpace(body)

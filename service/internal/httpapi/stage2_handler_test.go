@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -330,6 +332,76 @@ func TestAdminHandlerRejectsMalformedBoundedJSONAndInvalidParameters(t *testing.
 	}
 }
 
+func TestAdminHandlerRejectsInvalidUTF8RawJSONWithoutDomainCalls(t *testing.T) {
+	tests := []struct {
+		name, method, path string
+		body               []byte
+	}{
+		{"object key", http.MethodPost, "/api/admin/v1/tags", append(append([]byte(`{"na`), 0xff), []byte(`me":"Go"}`)...)},
+		{"top-level string", http.MethodPost, "/api/admin/v1/tags", append(append([]byte(`{"name":"G`), 0xff), []byte(`o"}`)...)},
+		{"nested string", http.MethodPut, "/api/admin/v1/settings/hotlink", append(append([]byte(`{"allowEmptyReferer":false,"entries":[{"hostname":"exam`), 0xff), []byte(`ple.com","enabled":true}]}`)...)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			system := newStage2System(t, true)
+			response := performRawHandlerRequest(system.router, test.method, test.path, "application/json", test.body)
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			requireProblemResponse(t, response, http.StatusBadRequest, "invalid_request")
+			require.NotContains(t, response.Body.String(), string([]byte{0xff}))
+			require.Zero(t, system.tags.calls)
+			require.Zero(t, system.hotlink.calls)
+		})
+	}
+}
+
+func TestAdminHandlerRejectsUnexpectedQueryOnEveryStage2Endpoint(t *testing.T) {
+	requests := []struct {
+		method, path string
+	}{
+		{http.MethodGet, "/api/admin/v1/articles"},
+		{http.MethodPost, "/api/admin/v1/articles"},
+		{http.MethodGet, "/api/admin/v1/articles/11"},
+		{http.MethodPut, "/api/admin/v1/articles/11/draft"},
+		{http.MethodGet, "/api/admin/v1/articles/11/preview"},
+		{http.MethodGet, "/api/admin/v1/articles/11/versions"},
+		{http.MethodPost, "/api/admin/v1/articles/11/versions"},
+		{http.MethodPost, "/api/admin/v1/articles/11/versions/13/restore"},
+		{http.MethodPost, "/api/admin/v1/articles/11/trash"},
+		{http.MethodPost, "/api/admin/v1/articles/11/untrash"},
+		{http.MethodGet, "/api/admin/v1/tags"},
+		{http.MethodPost, "/api/admin/v1/tags"},
+		{http.MethodPatch, "/api/admin/v1/tags/21"},
+		{http.MethodPost, "/api/admin/v1/media/upload-policy"},
+		{http.MethodPost, "/api/admin/v1/media"},
+		{http.MethodGet, "/api/admin/v1/settings/site"},
+		{http.MethodPut, "/api/admin/v1/settings/site"},
+		{http.MethodGet, "/api/admin/v1/settings/hotlink"},
+		{http.MethodPut, "/api/admin/v1/settings/hotlink"},
+	}
+	for _, request := range requests {
+		t.Run(request.method+" "+request.path, func(t *testing.T) {
+			system := newStage2System(t, true)
+			response := performHandlerRequest(system.router, request.method, request.path+"?unexpected=value", "", "", nil)
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			requireProblemResponse(t, response, http.StatusBadRequest, "invalid_request")
+			require.Zero(t, system.articles.calls)
+			require.Zero(t, system.revisions.calls)
+			require.Zero(t, system.tags.calls)
+			require.Zero(t, system.media.calls)
+			require.Zero(t, system.site.calls)
+			require.Zero(t, system.hotlink.calls)
+		})
+	}
+}
+
+func TestPutHotlinkSettingsMapsConflictToDocumentedProblem(t *testing.T) {
+	system := newStage2System(t, true)
+	system.hotlink.err = settings.ErrConflict
+	response := performHandlerRequest(system.router, http.MethodPut, "/api/admin/v1/settings/hotlink", "application/json", `{"allowEmptyReferer":false,"entries":[]}`, nil)
+	require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	requireProblemResponse(t, response, http.StatusConflict, "settings_conflict")
+}
+
 func TestAdminHandlerAcceptsExactJSONBodyLimits(t *testing.T) {
 	tests := []struct {
 		name, method, path, prefix, suffix string
@@ -514,4 +586,15 @@ func stage2Tag() tag.Tag {
 
 func siteRequestJSON() string {
 	return `{"lockVersion":2,"siteName":"qiuxs","authorName":"qiuxs","authorBio":"","homeStatus":"","aboutMd":"about","socialLinks":[{"label":"GitHub","url":"https://github.com/qiuxs"}],"seoDefaultTitle":"","seoDefaultDescription":"","seoDefaultImageMediaId":null,"filingName":"长安休息室","filingNumber":"浙ICP备17057726号-1"}`
+}
+
+func performRawHandlerRequest(router http.Handler, method, path, contentType string, body []byte) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, bytes.NewReader(body))
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
+	request.Header.Set("X-Request-ID", "handler-request-42")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	return recorder
 }

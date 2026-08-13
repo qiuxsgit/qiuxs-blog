@@ -162,6 +162,28 @@ func TestAuthHandlerLoginRejectsUnknownFieldsTrailingJSONAndWrongContentType(t *
 	}
 }
 
+func TestAuthHandlerLoginRejectsInvalidUTF8RawJSONBeforeService(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{"object key", append(append([]byte(`{"user`), 0xff), []byte(`name":"admin.user","password":"x"}`)...)},
+		{"username", append(append([]byte(`{"username":"adm`), 0xff), []byte(`in","password":"x"}`)...)},
+		{"password", append(append([]byte(`{"username":"admin.user","password":"x`), 0xff), []byte(`"}`)...)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			system := newHandlerTestSystem(t)
+			response := performRawHandlerRequest(system.router, http.MethodPost, "/api/admin/v1/session", "application/json", test.body)
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			requireProblemResponse(t, response, http.StatusBadRequest, "invalid_request")
+			require.Zero(t, system.repo.findCalls)
+			require.Empty(t, system.limiter.ip)
+			require.Empty(t, system.store.sessions)
+		})
+	}
+}
+
 func TestAuthHandlerLoginRequiresExactUniqueStringProperties(t *testing.T) {
 	tests := []struct {
 		name string

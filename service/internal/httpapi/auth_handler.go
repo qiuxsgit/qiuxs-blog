@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -100,7 +101,11 @@ func decodeLoginRequest(c *gin.Context) (LoginRequest, error) {
 	}
 
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxLoginBodyBytes)
-	decoder := json.NewDecoder(c.Request.Body)
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil || len(body) == 0 || !utf8.Valid(body) {
+		return LoginRequest{}, ErrInvalidRequest
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	request, err := decodeLoginObject(decoder)
 	if err != nil {

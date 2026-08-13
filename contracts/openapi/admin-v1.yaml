@@ -26,6 +26,7 @@ paths:
         '503': {$ref: '#/components/responses/ProblemResponse'}
     delete:
       operationId: logoutAdmin
+      security: []
       responses:
         '204': {description: Session removed or already absent}
         '403': {$ref: '#/components/responses/ProblemResponse'}
@@ -33,6 +34,8 @@ paths:
   /api/admin/v1/me:
     get:
       operationId: getCurrentAdmin
+      security:
+        - AdminSession: []
       responses:
         '200':
           description: Current administrator
@@ -44,6 +47,8 @@ paths:
   /api/admin/v1/articles:
     get:
       operationId: listArticles
+      security:
+        - AdminSession: []
       parameters:
         - name: state
           in: query
@@ -56,8 +61,11 @@ paths:
         '503': {$ref: '#/components/responses/ProblemResponse'}
     post:
       operationId: createArticle
+      security:
+        - AdminSession: []
       responses:
         '201': {$ref: '#/components/responses/ArticleDetailResponse'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
         '401': {$ref: '#/components/responses/ProblemResponse'}
         '403': {$ref: '#/components/responses/ProblemResponse'}
         '409': {$ref: '#/components/responses/ProblemResponse'}
@@ -67,6 +75,8 @@ paths:
       - {$ref: '#/components/parameters/ArticleId'}
     get:
       operationId: getArticle
+      security:
+        - AdminSession: []
       responses:
         '200': {$ref: '#/components/responses/ArticleDetailResponse'}
         '400': {$ref: '#/components/responses/ProblemResponse'}
@@ -78,6 +88,8 @@ paths:
       - {$ref: '#/components/parameters/ArticleId'}
     put:
       operationId: saveArticleDraft
+      security:
+        - AdminSession: []
       requestBody:
         required: true
         content:
@@ -97,6 +109,8 @@ paths:
       - {$ref: '#/components/parameters/ArticleId'}
     get:
       operationId: getArticlePreview
+      security:
+        - AdminSession: []
       responses:
         '200':
           description: Current draft preview
@@ -112,6 +126,8 @@ paths:
       - {$ref: '#/components/parameters/ArticleId'}
     get:
       operationId: listArticleVersions
+      security:
+        - AdminSession: []
       responses:
         '200':
           description: Frozen article revisions
@@ -124,6 +140,8 @@ paths:
         '503': {$ref: '#/components/responses/ProblemResponse'}
     post:
       operationId: createArticleVersion
+      security:
+        - AdminSession: []
       requestBody:
         required: true
         content:
@@ -148,6 +166,8 @@ paths:
       - {$ref: '#/components/parameters/RevisionId'}
     post:
       operationId: restoreArticleVersion
+      security:
+        - AdminSession: []
       requestBody:
         required: true
         content:
@@ -167,6 +187,8 @@ paths:
       - {$ref: '#/components/parameters/ArticleId'}
     post:
       operationId: trashArticle
+      security:
+        - AdminSession: []
       responses:
         '204': {description: Article moved to trash}
         '400': {$ref: '#/components/responses/ProblemResponse'}
@@ -180,6 +202,8 @@ paths:
       - {$ref: '#/components/parameters/ArticleId'}
     post:
       operationId: untrashArticle
+      security:
+        - AdminSession: []
       responses:
         '204': {description: Article restored from trash}
         '400': {$ref: '#/components/responses/ProblemResponse'}
@@ -191,16 +215,21 @@ paths:
   /api/admin/v1/tags:
     get:
       operationId: listTags
+      security:
+        - AdminSession: []
       responses:
         '200':
           description: Tags in stable display order
           content:
             application/json:
               schema: {$ref: '#/components/schemas/TagList'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
         '401': {$ref: '#/components/responses/ProblemResponse'}
         '503': {$ref: '#/components/responses/ProblemResponse'}
     post:
       operationId: createTag
+      security:
+        - AdminSession: []
       requestBody:
         required: true
         content:
@@ -222,6 +251,8 @@ paths:
       - {$ref: '#/components/parameters/TagId'}
     patch:
       operationId: renameTag
+      security:
+        - AdminSession: []
       requestBody:
         required: true
         content:
@@ -242,18 +273,23 @@ paths:
   /api/admin/v1/media/upload-policy:
     post:
       operationId: createMediaUploadPolicy
+      security:
+        - AdminSession: []
       responses:
         '200':
           description: Short-lived direct GFS upload policy
           content:
             application/json:
               schema: {$ref: '#/components/schemas/MediaUploadPolicy'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
         '401': {$ref: '#/components/responses/ProblemResponse'}
         '403': {$ref: '#/components/responses/ProblemResponse'}
         '503': {$ref: '#/components/responses/ProblemResponse'}
   /api/admin/v1/media:
     post:
       operationId: registerMedia
+      security:
+        - AdminSession: []
       requestBody:
         required: true
         content:
@@ -274,12 +310,17 @@ paths:
   /api/admin/v1/settings/site:
     get:
       operationId: getSiteSettings
+      security:
+        - AdminSession: []
       responses:
         '200': {$ref: '#/components/responses/SiteSettingsResponse'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
         '401': {$ref: '#/components/responses/ProblemResponse'}
         '503': {$ref: '#/components/responses/ProblemResponse'}
     put:
       operationId: putSiteSettings
+      security:
+        - AdminSession: []
       requestBody:
         required: true
         content:
@@ -296,16 +337,21 @@ paths:
   /api/admin/v1/settings/hotlink:
     get:
       operationId: getHotlinkSettings
+      security:
+        - AdminSession: []
       responses:
         '200':
           description: Current hotlink policy
           content:
             application/json:
               schema: {$ref: '#/components/schemas/HotlinkSettingsView'}
+        '400': {$ref: '#/components/responses/ProblemResponse'}
         '401': {$ref: '#/components/responses/ProblemResponse'}
         '503': {$ref: '#/components/responses/ProblemResponse'}
     put:
       operationId: putHotlinkSettings
+      security:
+        - AdminSession: []
       requestBody:
         required: true
         content:
@@ -320,9 +366,15 @@ paths:
         '400': {$ref: '#/components/responses/ProblemResponse'}
         '401': {$ref: '#/components/responses/ProblemResponse'}
         '403': {$ref: '#/components/responses/ProblemResponse'}
+        '409': {$ref: '#/components/responses/ProblemResponse'}
         '422': {$ref: '#/components/responses/ProblemResponse'}
         '503': {$ref: '#/components/responses/ProblemResponse'}
 components:
+  securitySchemes:
+    AdminSession:
+      type: apiKey
+      in: cookie
+      name: qx_blog_session
   parameters:
     ArticleId:
       name: articleId

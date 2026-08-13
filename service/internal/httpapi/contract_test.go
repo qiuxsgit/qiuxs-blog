@@ -22,6 +22,12 @@ type operationContract struct {
 	schema      string
 }
 
+var authOperationContracts = []operationContract{
+	{"POST", "/api/admin/v1/session", "loginAdmin", 200, "AdminView"},
+	{"DELETE", "/api/admin/v1/session", "logoutAdmin", 204, ""},
+	{"GET", "/api/admin/v1/me", "getCurrentAdmin", 200, "AdminView"},
+}
+
 var stage2OperationContracts = []operationContract{
 	{"GET", "/api/admin/v1/articles", "listArticles", 200, "ArticleList"},
 	{"POST", "/api/admin/v1/articles", "createArticle", 201, "ArticleDetail"},
@@ -85,6 +91,89 @@ func TestAdminContractContainsExactStage2Operations(t *testing.T) {
 		})
 	}
 	require.Nil(t, doc.Paths.Find("/img/proxy/{publicKey}"))
+}
+
+func TestAdminContractContainsExactOperationSet(t *testing.T) {
+	doc := loadAdminContract(t)
+	wanted := make([]string, 0, len(authOperationContracts)+len(stage2OperationContracts))
+	for _, operation := range append(append([]operationContract(nil), authOperationContracts...), stage2OperationContracts...) {
+		wanted = append(wanted, operation.method+" "+operation.path+" "+operation.operationID)
+	}
+	actual := make([]string, 0, len(wanted))
+	for path, pathItem := range doc.Paths.Map() {
+		for method, operation := range pathItem.Operations() {
+			actual = append(actual, method+" "+path+" "+operation.OperationID)
+		}
+	}
+	sort.Strings(wanted)
+	sort.Strings(actual)
+	require.Equal(t, wanted, actual)
+}
+
+func TestAdminContractDefinesAndAppliesExactSessionSecurity(t *testing.T) {
+	doc := loadAdminContract(t)
+	schemeRef := doc.Components.SecuritySchemes["AdminSession"]
+	require.NotNil(t, schemeRef)
+	require.NotNil(t, schemeRef.Value)
+	require.Equal(t, "apiKey", schemeRef.Value.Type)
+	require.Equal(t, "cookie", schemeRef.Value.In)
+	require.Equal(t, "qx_blog_session", schemeRef.Value.Name)
+	require.Empty(t, schemeRef.Value.Scheme)
+	require.Empty(t, schemeRef.Value.BearerFormat)
+	require.Nil(t, doc.Paths.Find("/api/admin/v1/session").Post.Security, "login must remain unauthenticated")
+	logoutSecurity := doc.Paths.Find("/api/admin/v1/session").Delete.Security
+	require.NotNil(t, logoutSecurity, "logout must explicitly preserve anonymous idempotency")
+	require.Empty(t, *logoutSecurity, "logout must remain unauthenticated")
+
+	protected := append(append([]operationContract(nil), stage2OperationContracts...),
+		operationContract{"GET", "/api/admin/v1/me", "getCurrentAdmin", 200, "AdminView"},
+	)
+	for _, expected := range protected {
+		operation := doc.Paths.Find(expected.path).Operations()[expected.method]
+		require.NotNilf(t, operation.Security, "%s security", expected.operationID)
+		require.Equalf(t, openapi3.SecurityRequirements{{"AdminSession": []string{}}}, *operation.Security, "%s security", expected.operationID)
+	}
+}
+
+func TestAdminContractDocumentsExactOperationResponseStatuses(t *testing.T) {
+	doc := loadAdminContract(t)
+	expected := map[string][]string{
+		"loginAdmin":              {"200", "400", "401", "403", "429", "503"},
+		"logoutAdmin":             {"204", "403", "503"},
+		"getCurrentAdmin":         {"200", "401", "503"},
+		"listArticles":            {"200", "400", "401", "503"},
+		"createArticle":           {"201", "400", "401", "403", "409", "503"},
+		"getArticle":              {"200", "400", "401", "404", "503"},
+		"saveArticleDraft":        {"200", "400", "401", "403", "404", "409", "422", "503"},
+		"getArticlePreview":       {"200", "400", "401", "404", "503"},
+		"listArticleVersions":     {"200", "400", "401", "404", "503"},
+		"createArticleVersion":    {"201", "400", "401", "403", "404", "409", "422", "503"},
+		"restoreArticleVersion":   {"200", "400", "401", "403", "404", "409", "422", "503"},
+		"trashArticle":            {"204", "400", "401", "403", "404", "409", "503"},
+		"untrashArticle":          {"204", "400", "401", "403", "404", "409", "503"},
+		"listTags":                {"200", "400", "401", "503"},
+		"createTag":               {"201", "400", "401", "403", "409", "503"},
+		"renameTag":               {"200", "400", "401", "403", "404", "409", "503"},
+		"createMediaUploadPolicy": {"200", "400", "401", "403", "503"},
+		"registerMedia":           {"201", "400", "401", "403", "409", "422", "503"},
+		"getSiteSettings":         {"200", "400", "401", "503"},
+		"putSiteSettings":         {"200", "400", "401", "403", "409", "422", "503"},
+		"getHotlinkSettings":      {"200", "400", "401", "503"},
+		"putHotlinkSettings":      {"200", "400", "401", "403", "409", "422", "503"},
+	}
+	for path, pathItem := range doc.Paths.Map() {
+		for _, operation := range pathItem.Operations() {
+			statuses := make([]string, 0, operation.Responses.Len())
+			for status := range operation.Responses.Map() {
+				statuses = append(statuses, status)
+			}
+			sort.Strings(statuses)
+			wanted, ok := expected[operation.OperationID]
+			require.Truef(t, ok, "unexpected operation %s at %s", operation.OperationID, path)
+			sort.Strings(wanted)
+			require.Equal(t, wanted, statuses, operation.OperationID)
+		}
+	}
 }
 
 func TestAdminContractRequestShapesAreExactAndClosed(t *testing.T) {

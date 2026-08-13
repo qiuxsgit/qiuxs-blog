@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"regexp"
 
 	"github.com/go-sql-driver/mysql"
@@ -15,6 +16,8 @@ var tableNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 var primaryKeyErrorPattern = regexp.MustCompile("(?i)for key ['`](?:[^'`.]+\\.)?PRIMARY['`]")
 
 const maxHealingRetries = 5
+
+var errNotConfigured = errors.New("id generator is not configured")
 
 type Counter interface {
 	Increment(ctx context.Context, key string) (int64, error)
@@ -33,7 +36,7 @@ func New(counter Counter, db *sql.DB, offset, step int64, heal bool) (*Generator
 	if offset < 1 || step < 1 || offset > step {
 		return nil, fmt.Errorf("id generation lane must satisfy 1 <= offset <= step")
 	}
-	if counter == nil {
+	if nilCounter(counter) {
 		return nil, fmt.Errorf("ID counter is required")
 	}
 	if heal && db == nil {
@@ -50,10 +53,13 @@ func New(counter Counter, db *sql.DB, offset, step int64, heal bool) (*Generator
 }
 
 func (g *Generator) HealEnabled() bool {
-	return g.heal
+	return g != nil && g.heal
 }
 
 func (g *Generator) Next(ctx context.Context, table string) (int64, error) {
+	if err := g.validate(); err != nil {
+		return 0, err
+	}
 	key, err := counterKey(table)
 	if err != nil {
 		return 0, err
@@ -74,6 +80,9 @@ func (g *Generator) Next(ctx context.Context, table string) (int64, error) {
 }
 
 func (g *Generator) Insert(ctx context.Context, table string, insert func(id int64) error) error {
+	if err := g.validate(); err != nil {
+		return err
+	}
 	if _, err := counterKey(table); err != nil {
 		return err
 	}
@@ -106,6 +115,9 @@ func (g *Generator) Insert(ctx context.Context, table string, insert func(id int
 }
 
 func (g *Generator) Heal(ctx context.Context, table string) error {
+	if err := g.validate(); err != nil {
+		return err
+	}
 	key, err := counterKey(table)
 	if err != nil {
 		return err
@@ -139,6 +151,26 @@ func (g *Generator) Heal(ctx context.Context, table string) error {
 		return fmt.Errorf("raise ID counter for %q: %w", table, err)
 	}
 	return nil
+}
+
+func (g *Generator) validate() error {
+	if g == nil || nilCounter(g.counter) || g.offset < 1 || g.step < 1 || g.offset > g.step || g.heal && g.db == nil {
+		return errNotConfigured
+	}
+	return nil
+}
+
+func nilCounter(counter Counter) bool {
+	if counter == nil {
+		return true
+	}
+	value := reflect.ValueOf(counter)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func IsPKConflict(err error) bool {

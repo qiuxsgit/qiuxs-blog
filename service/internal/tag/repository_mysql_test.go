@@ -156,6 +156,7 @@ func TestMySQLRepositoryRenameUpdatesNameThenReadsStableSlug(t *testing.T) {
 	repository, mock, _ := newRepositoryTest(t, 1)
 	at := time.Date(2026, 8, 13, 18, 0, 0, 123000, time.FixedZone("CST", 8*60*60))
 	createdAt := at.UTC().Add(-time.Hour)
+	mock.ExpectBegin()
 	mock.ExpectExec(renameTagSQL).
 		WithArgs("Modern Go", at.UTC(), int64(41)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -163,6 +164,7 @@ func TestMySQLRepositoryRenameUpdatesNameThenReadsStableSlug(t *testing.T) {
 		WithArgs(int64(41)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "slug", "created_at", "updated_at"}).
 			AddRow(int64(41), "Modern Go", "t_stable_slug", createdAt, at.UTC()))
+	mock.ExpectCommit()
 
 	got, err := repository.Rename(context.Background(), 41, "Modern Go", at)
 
@@ -174,23 +176,104 @@ func TestMySQLRepositoryRenameUpdatesNameThenReadsStableSlug(t *testing.T) {
 func TestMySQLRepositoryRenameMapsZeroRowsAndMissingSelectToNotFound(t *testing.T) {
 	t.Run("zero update rows", func(t *testing.T) {
 		repository, mock, _ := newRepositoryTest(t, 1)
+		mock.ExpectBegin()
 		mock.ExpectExec(renameTagSQL).
 			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectRollback()
 
 		_, err := repository.Rename(context.Background(), 41, "Go", time.Now())
 
 		require.ErrorIs(t, err, ErrNotFound)
+		require.NoError(t, mock.ExpectationsWereMet())
 	})
 
 	t.Run("select disappeared", func(t *testing.T) {
 		repository, mock, _ := newRepositoryTest(t, 1)
+		mock.ExpectBegin()
 		mock.ExpectExec(renameTagSQL).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectQuery(selectTagSQL + ` WHERE id = ?`).WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
 
 		_, err := repository.Rename(context.Background(), 41, "Go", time.Now())
 
 		require.ErrorIs(t, err, ErrNotFound)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestMySQLRepositoryRenameRollsBackOnUpdateRowsAffectedAndScanErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(sqlmock.Sqlmock)
+	}{
+		{name: "update", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectExec(renameTagSQL).WillReturnError(errors.New("update-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "rows affected", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectExec(renameTagSQL).WillReturnResult(sqlmock.NewErrorResult(errors.New("rows-secret")))
+			mock.ExpectRollback()
+		}},
+		{name: "select", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectExec(renameTagSQL).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectQuery(selectTagSQL + ` WHERE id = ?`).WillReturnError(errors.New("select-secret"))
+			mock.ExpectRollback()
+		}},
+		{name: "scan", setup: func(mock sqlmock.Sqlmock) {
+			mock.ExpectBegin()
+			mock.ExpectExec(renameTagSQL).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectQuery(selectTagSQL + ` WHERE id = ?`).
+				WillReturnRows(sqlmock.NewRows([]string{"id", "name", "slug", "created_at", "updated_at"}).
+					AddRow("not-an-id", "Go", "t_go", time.Now(), time.Now()))
+			mock.ExpectRollback()
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository, mock, _ := newRepositoryTest(t, 1)
+			test.setup(mock)
+
+			_, err := repository.Rename(context.Background(), 41, "Go", time.Now())
+
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "secret")
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestMySQLRepositoryRenameHandlesBeginAndCommitErrors(t *testing.T) {
+	t.Run("begin", func(t *testing.T) {
+		repository, mock, _ := newRepositoryTest(t, 1)
+		mock.ExpectBegin().WillReturnError(errors.New("begin-secret"))
+
+		_, err := repository.Rename(context.Background(), 41, "Go", time.Now())
+
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "begin-secret")
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("commit", func(t *testing.T) {
+		repository, mock, _ := newRepositoryTest(t, 1)
+		at := time.Now().UTC()
+		mock.ExpectBegin()
+		mock.ExpectExec(renameTagSQL).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(selectTagSQL + ` WHERE id = ?`).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "name", "slug", "created_at", "updated_at"}).
+				AddRow(int64(41), "Go", "t_go", at, at))
+		mock.ExpectCommit().WillReturnError(errors.New("commit-secret"))
+
+		_, err := repository.Rename(context.Background(), 41, "Go", at)
+
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "commit-secret")
+		require.NoError(t, mock.ExpectationsWereMet())
 	})
 }
 
@@ -207,13 +290,16 @@ func TestMySQLRepositoryRenameMapsOnlyNameConflict(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			repository, mock, _ := newRepositoryTest(t, 1)
 			mysqlErr := &mysql.MySQLError{Number: 1062, Message: fmt.Sprintf("Duplicate entry 'rename-secret' for key '%s'", test.key)}
+			mock.ExpectBegin()
 			mock.ExpectExec(renameTagSQL).WillReturnError(mysqlErr)
+			mock.ExpectRollback()
 
 			_, err := repository.Rename(context.Background(), 41, "Secret Name", time.Now())
 
 			require.Equal(t, test.want, errors.Is(err, ErrNameConflict))
 			require.ErrorIs(t, err, mysqlErr)
 			require.NotContains(t, err.Error(), "rename-secret")
+			require.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
 }
@@ -235,6 +321,10 @@ func TestMySQLRepositoryRejectsInvalidDependenciesInputsAndNilContext(t *testing
 			return callErr
 		}},
 		{name: "nil generator", fn: func() error { _, callErr := NewMySQLRepository(db, nil).List(context.Background()); return callErr }},
+		{name: "zero generator create", fn: func() error {
+			_, callErr := NewMySQLRepository(db, &idgen.Generator{}).Create(context.Background(), "Go", "t_go", time.Now())
+			return callErr
+		}},
 		{name: "nil context create", fn: func() error { _, callErr := valid.Create(nil, "Go", "t_go", time.Now()); return callErr }},
 		{name: "nil context list", fn: func() error { _, callErr := valid.List(nil); return callErr }},
 		{name: "nil context rename", fn: func() error { _, callErr := valid.Rename(nil, 1, "Go", time.Now()); return callErr }},
@@ -248,6 +338,20 @@ func TestMySQLRepositoryRejectsInvalidDependenciesInputsAndNilContext(t *testing
 			require.NotPanics(t, func() { require.Error(t, call.fn()) })
 		})
 	}
+}
+
+func TestMySQLRepositoryCreateSafelyPropagatesZeroGeneratorConfiguration(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	repository := NewMySQLRepository(db, &idgen.Generator{})
+
+	require.NotPanics(t, func() {
+		_, err = repository.Create(context.Background(), "Go", "t_go", time.Now())
+	})
+
+	require.EqualError(t, err, "create tag failed")
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestMySQLRepositorySanitizesDependencyErrors(t *testing.T) {

@@ -122,7 +122,18 @@ func (r *MySQLRepository) Rename(ctx context.Context, id int64, name string, at 
 		return Tag{}, ErrInvalidName
 	}
 	at = at.UTC()
-	result, err := r.db.ExecContext(ctx, "UPDATE tags SET name = ?, updated_at = ? WHERE id = ?", name, at, id)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Tag{}, safeWrap("rename tag", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	result, err := tx.ExecContext(ctx, "UPDATE tags SET name = ?, updated_at = ? WHERE id = ?", name, at, id)
 	if err != nil {
 		if isNamedDuplicate(err, tagNameUniquePattern) {
 			return Tag{}, sanitizedJoin("rename tag", ErrNameConflict, err)
@@ -136,7 +147,15 @@ func (r *MySQLRepository) Rename(ctx context.Context, id int64, name string, at 
 	if rowsAffected == 0 {
 		return Tag{}, ErrNotFound
 	}
-	return scanTag(r.db.QueryRowContext(ctx, "SELECT "+tagColumns+" FROM tags WHERE id = ?", id), "find renamed tag")
+	renamed, err := scanTag(tx.QueryRowContext(ctx, "SELECT "+tagColumns+" FROM tags WHERE id = ?", id), "find renamed tag")
+	if err != nil {
+		return Tag{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Tag{}, safeWrap("rename tag", err)
+	}
+	committed = true
+	return renamed, nil
 }
 
 func (r *MySQLRepository) validate(ctx context.Context) error {

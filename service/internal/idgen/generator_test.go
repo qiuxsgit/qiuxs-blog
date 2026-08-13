@@ -116,6 +116,65 @@ func TestNewRejectsNilCounter(t *testing.T) {
 	assert.ErrorContains(t, err, "counter")
 }
 
+func TestNewRejectsTypedNilCounter(t *testing.T) {
+	var counter *fakeCounter
+
+	generator, err := New(counter, nil, 1, 1, false)
+
+	assert.Nil(t, generator)
+	assert.ErrorContains(t, err, "counter")
+}
+
+func TestGeneratorMethodsRejectNilAndZeroValueWithoutPanic(t *testing.T) {
+	var nilGenerator *Generator
+	var typedNilCounter *fakeCounter
+	zeroGenerator := &Generator{}
+
+	for _, test := range []struct {
+		name      string
+		generator *Generator
+	}{
+		{name: "nil receiver", generator: nilGenerator},
+		{name: "zero value", generator: zeroGenerator},
+		{name: "invalid lane", generator: &Generator{counter: newFakeCounter()}},
+		{name: "typed nil counter", generator: &Generator{counter: typedNilCounter, offset: 1, step: 1}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, call := range []struct {
+				name string
+				fn   func() error
+			}{
+				{name: "next", fn: func() error {
+					_, callErr := test.generator.Next(context.Background(), "admins")
+					return callErr
+				}},
+				{name: "insert", fn: func() error {
+					return test.generator.Insert(context.Background(), "admins", func(int64) error {
+						t.Fatal("insert callback must not run for an unconfigured generator")
+						return nil
+					})
+				}},
+				{name: "heal", fn: func() error {
+					return test.generator.Heal(context.Background(), "admins")
+				}},
+			} {
+				t.Run(call.name, func(t *testing.T) {
+					var err error
+					require.NotPanics(t, func() { err = call.fn() })
+					assert.EqualError(t, err, "id generator is not configured")
+				})
+			}
+		})
+	}
+}
+
+func TestHealEnabledIsSafeForNilAndZeroValue(t *testing.T) {
+	var nilGenerator *Generator
+
+	assert.NotPanics(t, func() { assert.False(t, nilGenerator.HealEnabled()) })
+	assert.False(t, (&Generator{}).HealEnabled())
+}
+
 func TestNextRejectsInvalidTableBeforeCounterUse(t *testing.T) {
 	tests := []string{
 		"",

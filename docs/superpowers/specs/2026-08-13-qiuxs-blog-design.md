@@ -590,12 +590,13 @@ result
 
 ### 18.1 自动化测试
 
-- `service`：领域单元测试，MySQL 与 Redis 集成测试，Redis 主键生成/分段/冲突自愈、认证、乐观锁、Release、回调幂等和防重放测试。
+- `service`：领域单元测试和进程内流程测试。MySQL 边界使用 sqlmock，Redis 边界使用 miniredis，覆盖 Redis 主键生成/分段/冲突自愈、认证、乐观锁、Release、回调幂等和防重放；自动测试不得启动容器或连接已部署的 MySQL/Redis。
 - `admin`：Vitest + React Testing Library，覆盖登录、整篇 Markdown 粘贴、自动保存、冲突、上传和发布状态。
 - `site`：Markdown 固定样例、危险 HTML 拒绝、路由、RSS、Sitemap、OG、备案组件和 Bundle Schema 测试。
 - Playwright：覆盖登录、编辑、预览、上传图片和创建发布任务的关键流程。
 - 视觉回归：保存已确认首页与文章详情页的桌面、移动截图基线。
 - GFS 契约测试：验证上传返回、媒体元数据、签名读取及临时重定向行为。
+- 真实 MySQL、Redis 与网络部署只在第 6 阶段执行人工烟测，不作为自动测试依赖。
 
 ### 18.2 构建门禁
 

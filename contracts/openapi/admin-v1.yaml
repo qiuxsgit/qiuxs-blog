@@ -500,8 +500,11 @@ components:
     PreviewView:
       type: object
       additionalProperties: false
-      required: [draft]
+      required: [slug, draft]
       properties:
+        slug:
+          type: string
+          pattern: '^[a-z0-9_-]{12}$'
         draft: {$ref: '#/components/schemas/DraftView'}
     RevisionView:
       type: object

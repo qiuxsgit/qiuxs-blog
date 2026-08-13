@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -266,6 +267,18 @@ func TestAdminHandlerServesEveryStage2Operation(t *testing.T) {
 	require.Equal(t, article.StateTrashed, system.articles.listState)
 	require.Equal(t, int64(1), system.revisions.saveLock)
 	require.Equal(t, []int64{22, 21}, system.revisions.saveContent.TagIDs)
+}
+
+func TestAdminHandlerPreviewUsesArticleDetailForImmutableSlugAndDraft(t *testing.T) {
+	system := newStage2System(t, true)
+	response := performHandlerRequest(system.router, http.MethodGet, "/api/admin/v1/articles/11/preview", "", "", nil)
+	require.Equal(t, http.StatusOK, response.Code)
+	var preview PreviewView
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &preview))
+	require.Equal(t, stage2Article().Slug, preview.Slug)
+	require.Equal(t, stage2Draft().ID, preview.Draft.Id)
+	require.Equal(t, 1, system.articles.calls)
+	require.Zero(t, system.revisions.calls, "preview draft must come from the same article detail load")
 }
 
 func TestAdminHandlerAuthenticatesBeforeEveryStage2DomainCall(t *testing.T) {

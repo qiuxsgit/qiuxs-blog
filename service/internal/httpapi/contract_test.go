@@ -93,6 +93,17 @@ func TestAdminContractContainsExactStage2Operations(t *testing.T) {
 	require.Nil(t, doc.Paths.Find("/img/proxy/{publicKey}"))
 }
 
+func TestAdminContractPreviewContainsImmutableSlugAndDraft(t *testing.T) {
+	doc := loadAdminContract(t)
+	preview := doc.Components.Schemas["PreviewView"]
+	require.NotNil(t, preview)
+	require.NotNil(t, preview.Value)
+	require.ElementsMatch(t, []string{"slug", "draft"}, preview.Value.Required)
+	require.ElementsMatch(t, []string{"slug", "draft"}, schemaPropertyNames(preview.Value))
+	require.Equal(t, "^[a-z0-9_-]{12}$", preview.Value.Properties["slug"].Value.Pattern)
+	require.Equal(t, "#/components/schemas/DraftView", preview.Value.Properties["draft"].Ref)
+}
+
 func TestAdminContractContainsExactOperationSet(t *testing.T) {
 	doc := loadAdminContract(t)
 	wanted := make([]string, 0, len(authOperationContracts)+len(stage2OperationContracts))

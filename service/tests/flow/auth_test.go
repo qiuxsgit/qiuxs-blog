@@ -232,6 +232,14 @@ func decodeResponse(t *testing.T, response *http.Response, target any) {
 	require.NoError(t, json.NewDecoder(response.Body).Decode(target))
 }
 
+func withoutRedirects(client *http.Client) *http.Client {
+	cloned := *client
+	cloned.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &cloned
+}
+
 func assertLimiterIncremented(t *testing.T, redisServer *miniredis.Miniredis) {
 	t.Helper()
 	var limiterKeys []string

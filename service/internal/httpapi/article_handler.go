@@ -95,12 +95,12 @@ func (h *AdminHandler) GetArticlePreview(c *gin.Context, articleID ArticleId) {
 	if !h.authenticateArticle(c, articleID) {
 		return
 	}
-	draft, err := h.revisions.Preview(c.Request.Context(), articleID)
+	detail, err := h.articles.Get(c.Request.Context(), articleID)
 	if err != nil {
 		writeStage2Problem(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, PreviewView{Draft: draftView(draft)})
+	c.JSON(http.StatusOK, PreviewView{Slug: detail.Article.Slug, Draft: draftView(detail.Draft)})
 }
 
 func (h *AdminHandler) ListArticleVersions(c *gin.Context, articleID ArticleId) {

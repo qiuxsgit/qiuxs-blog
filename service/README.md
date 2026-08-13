@@ -134,10 +134,18 @@ The Admin API covers:
 Article slugs are stable 12-character lowercase URL-safe random values. Media
 public keys are stable `m_` values followed by 22 lowercase URL-safe random
 characters; neither exposes the underlying signed `BIGINT` ID. A draft permits
-a 200-rune title, 600-rune summary, 2 MiB Markdown body, 32 tags, and 256 unique
-body-media references plus one optional cover. Tag display names permit 64
-runes. Raw HTML is rejected, and a draft containing a transient `blob:` link or
-image cannot be frozen into an immutable version.
+a 200-rune title, 600-rune summary, 32 tags, and 256 unique body-media references
+plus one optional cover. Tag display names permit 64 runes. Raw HTML is
+rejected, and a draft containing a transient `blob:` link or image cannot be
+frozen into an immutable version.
+
+The domain validator caps each raw `contentMd` and `aboutMd` field at 2 MiB.
+Separately, the Admin HTTP boundary caps the entire draft-save or site-settings
+JSON request body at 2 MiB, including the JSON envelope, other fields, and
+string escaping. Clients must keep Markdown below the field limit so the encoded
+request remains within the total-body limit. Other Stage 2 content/settings JSON
+request bodies are capped at 64 KiB total. Login JSON has its own 16 KiB total
+cap.
 
 The complete Stage 2 route set is:
 
@@ -186,9 +194,10 @@ social links must be canonical HTTPS URLs, and optional default SEO media must
 already be active.
 
 Site and author names are limited to 100 runes, author bio to 1000, home status
-to 500, About Markdown to 2 MiB, default SEO title to 100, default SEO
-description to 300, and each filing field to 100. At most 16 ordered social
-links are accepted, with case-insensitively unique labels.
+to 500, default SEO title to 100, default SEO description to 300, and each filing
+field to 100. At most 16 ordered social links are accepted, with
+case-insensitively unique labels. The About Markdown field and its HTTP request
+limit follow the byte limits above.
 
 The API always returns the fixed read-only filing link
 `https://beian.miit.gov.cn/`; clients cannot configure or persist that URL.

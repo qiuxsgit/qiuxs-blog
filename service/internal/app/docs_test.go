@@ -35,7 +35,13 @@ func TestStage2Documentation(t *testing.T) {
 			"22 lowercase URL-safe random",
 			"200-rune title",
 			"600-rune summary",
-			"2 MiB Markdown body",
+			"raw `contentMd` and `aboutMd` field at 2 MiB",
+			"entire draft-save or site-settings",
+			"JSON request body at 2 MiB",
+			"including the JSON envelope, other fields, and string escaping",
+			"Clients must keep Markdown below the field limit",
+			"Other Stage 2 content/settings JSON",
+			"request bodies are capped at 64 KiB total",
 			"32 tags",
 			"256 unique",
 			"Tag display names permit 64",
@@ -90,6 +96,8 @@ func TestStage2Documentation(t *testing.T) {
 		})
 		require.NotContains(t, serviceGuide, "run migrations automatically")
 		require.NotContains(t, serviceGuide, "blog-migrate")
+		require.NotContains(t, serviceGuide, "2 MiB Markdown body")
+		require.NotContains(t, serviceGuide, "About Markdown to 2 MiB")
 	})
 
 	t.Run("secret handling", func(t *testing.T) {
@@ -125,7 +133,9 @@ func readDocumentation(t *testing.T, path string) string {
 
 func requireDocumentationContains(t *testing.T, contents string, fragments []string) {
 	t.Helper()
+	normalizedContents := strings.Join(strings.Fields(contents), " ")
 	for _, fragment := range fragments {
-		require.Containsf(t, contents, fragment, "documentation must contain %q", fragment)
+		normalizedFragment := strings.Join(strings.Fields(fragment), " ")
+		require.Containsf(t, normalizedContents, normalizedFragment, "documentation must contain %q", fragment)
 	}
 }

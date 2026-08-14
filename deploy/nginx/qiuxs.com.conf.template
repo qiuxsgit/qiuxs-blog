@@ -4,6 +4,7 @@ server {
     root /web/deploy/blog-site/current;
     client_max_body_size 10m;
     location ~ /\. { deny all; }
+    location /api/ { return 404; }
     location /img/proxy/ {
         proxy_pass http://${BLOG_SERVICE_UPSTREAM};
         proxy_http_version 1.1;

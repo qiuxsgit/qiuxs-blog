@@ -110,6 +110,10 @@ func (h *ReleaseHandler) TestBuilderConfig(c *gin.Context) {
 		return
 	}
 	stored, err := h.configs.Load(c.Request.Context())
+	if errors.Is(err, builder.ErrNotFound) {
+		WriteProblem(c, ErrPreconditionFailed)
+		return
+	}
 	if err == nil {
 		err = h.tester.Test(c.Request.Context(), stored, h.box)
 	}

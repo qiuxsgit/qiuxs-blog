@@ -78,6 +78,56 @@ func TestReleaseHandlerBuilderSaveAndTestNeverReturnToken(t *testing.T) {
 	require.Equal(t, configRepository.stored.ID, tester.config.ID)
 }
 
+func TestPutBuilderConfigOmitsTokenForExistingConfiguration(t *testing.T) {
+	configs := &releaseBuilderRepository{stored: testStoredBuilder()}
+	handler := newTestReleaseHandler(t, configs, &releaseReaderStub{aggregate: testReleaseAggregate(testReleaseTime())}, &releaseOperationsStub{})
+	router := releaseAdminTestRouter(handler, 41)
+
+	response := serveReleaseRequest(router, http.MethodPut, "/api/admin/v1/builder", "application/json", `{"name":"Production","baseUrl":"https://jenkins.example.com","username":"builder","jobName":"blog/deploy","enabled":true}`)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Equal(t, 1, configs.saveCalls)
+	require.Empty(t, configs.saved.Token)
+	require.Contains(t, response.Body.String(), `"tokenConfigured":true`)
+}
+
+func TestPutBuilderConfigRejectsExplicitNullToken(t *testing.T) {
+	configs := &releaseBuilderRepository{stored: testStoredBuilder()}
+	handler := newTestReleaseHandler(t, configs, &releaseReaderStub{aggregate: testReleaseAggregate(testReleaseTime())}, &releaseOperationsStub{})
+	router := releaseAdminTestRouter(handler, 41)
+
+	response := serveReleaseRequest(router, http.MethodPut, "/api/admin/v1/builder", "application/json", `{"name":"Production","baseUrl":"https://jenkins.example.com","username":"builder","token":null,"jobName":"blog/deploy","enabled":true}`)
+
+	requireProblemResponse(t, response, http.StatusBadRequest, "invalid_request")
+	require.Zero(t, configs.saveCalls)
+}
+
+func TestPutBuilderConfigFirstSaveWithoutTokenMapsInvalidConfig(t *testing.T) {
+	configs := &releaseBuilderRepository{saveErr: builder.ErrInvalidConfig}
+	handler := newTestReleaseHandler(t, configs, &releaseReaderStub{aggregate: testReleaseAggregate(testReleaseTime())}, &releaseOperationsStub{})
+	router := releaseAdminTestRouter(handler, 41)
+
+	response := serveReleaseRequest(router, http.MethodPut, "/api/admin/v1/builder", "application/json", `{"name":"Production","baseUrl":"https://jenkins.example.com","username":"builder","jobName":"blog/deploy","enabled":true}`)
+
+	requireProblemResponse(t, response, http.StatusUnprocessableEntity, "invalid_builder")
+	require.Equal(t, 1, configs.saveCalls)
+	require.Empty(t, configs.saved.Token)
+}
+
+func TestTestBuilderConfigMissingConfigurationIsPrecondition(t *testing.T) {
+	configs := &releaseBuilderRepository{loadErr: errors.Join(builder.ErrNotFound, errors.New("builder-secret"))}
+	tester := &builderTesterStub{}
+	handler := newTestReleaseHandlerWithTester(t, configs, &releaseReaderStub{aggregate: testReleaseAggregate(testReleaseTime())}, &releaseOperationsStub{}, tester)
+	router := releaseAdminTestRouter(handler, 41)
+
+	response := serveReleaseRequest(router, http.MethodPost, "/api/admin/v1/builder/test", "", "")
+
+	requireProblemResponse(t, response, http.StatusPreconditionFailed, "precondition_failed")
+	require.Zero(t, tester.calls)
+	require.Contains(t, response.Body.String(), `"requestId":"handler-request-42"`)
+	require.NotContains(t, response.Body.String(), "builder-secret")
+}
+
 func TestReleaseHandlerBundleNegotiatesGzipWithStableIdentityETag(t *testing.T) {
 	body := []byte(`{"schemaVersion":1,"releaseId":7}`)
 	etag := "sha256:" + strings.Repeat("a", 64)
@@ -275,16 +325,18 @@ func testReleaseAggregate(now time.Time) release.Aggregate {
 }
 
 type releaseBuilderRepository struct {
-	stored  builder.StoredConfig
-	saved   builder.ConfigInput
-	loadErr error
-	saveErr error
+	stored    builder.StoredConfig
+	saved     builder.ConfigInput
+	saveCalls int
+	loadErr   error
+	saveErr   error
 }
 
 func (r *releaseBuilderRepository) Load(context.Context) (builder.StoredConfig, error) {
 	return r.stored, r.loadErr
 }
 func (r *releaseBuilderRepository) Save(_ context.Context, input builder.ConfigInput) (builder.ConfigView, error) {
+	r.saveCalls++
 	r.saved = input
 	return r.stored.ConfigView, r.saveErr
 }

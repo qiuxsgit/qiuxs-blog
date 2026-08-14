@@ -40,7 +40,7 @@ func decodeAdminJSON[T any](_ *gin.Context, request *http.Request, writer http.R
 		return zero, ErrInvalidRequest
 	}
 	shapeDecoder := json.NewDecoder(bytes.NewReader(trimmed))
-	if err := validateAdminJSONValue(shapeDecoder, reflect.TypeFor[T](), nil, false); err != nil {
+	if err := validateAdminJSONValue(shapeDecoder, reflect.TypeFor[T](), nil, false, false); err != nil {
 		return zero, ErrInvalidRequest
 	}
 	if token, err := shapeDecoder.Token(); err == nil || !errors.Is(err, io.EOF) || token != nil {
@@ -58,7 +58,7 @@ func decodeAdminJSON[T any](_ *gin.Context, request *http.Request, writer http.R
 	return value, nil
 }
 
-func validateAdminJSONValue(decoder *json.Decoder, target reflect.Type, first json.Token, hasFirst bool) error {
+func validateAdminJSONValue(decoder *json.Decoder, target reflect.Type, first json.Token, hasFirst, rejectNull bool) error {
 	nullable := false
 	for target.Kind() == reflect.Pointer {
 		nullable = true
@@ -73,7 +73,7 @@ func validateAdminJSONValue(decoder *json.Decoder, target reflect.Type, first js
 		}
 	}
 	if token == nil {
-		if !nullable {
+		if !nullable || rejectNull {
 			return ErrInvalidRequest
 		}
 		return nil
@@ -84,12 +84,22 @@ func validateAdminJSONValue(decoder *json.Decoder, target reflect.Type, first js
 		if token != json.Delim('{') {
 			return ErrInvalidRequest
 		}
-		fields := make(map[string]reflect.Type, target.NumField())
+		type fieldShape struct {
+			target     reflect.Type
+			required   bool
+			rejectNull bool
+		}
+		fields := make(map[string]fieldShape, target.NumField())
 		for index := range target.NumField() {
 			field := target.Field(index)
-			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			tagParts := strings.Split(field.Tag.Get("json"), ",")
+			name := tagParts[0]
 			if name != "" && name != "-" {
-				fields[name] = field.Type
+				optional := false
+				for _, option := range tagParts[1:] {
+					optional = optional || option == "omitempty"
+				}
+				fields[name] = fieldShape{target: field.Type, required: !optional, rejectNull: optional}
 			}
 		}
 		seen := make(map[string]bool, len(fields))
@@ -99,25 +109,30 @@ func validateAdminJSONValue(decoder *json.Decoder, target reflect.Type, first js
 				return tokenErr
 			}
 			property, ok := propertyToken.(string)
-			fieldType, known := fields[property]
+			field, known := fields[property]
 			if !ok || !known || seen[property] {
 				return ErrInvalidRequest
 			}
 			seen[property] = true
-			if err := validateAdminJSONValue(decoder, fieldType, nil, false); err != nil {
+			if err := validateAdminJSONValue(decoder, field.target, nil, false, field.rejectNull); err != nil {
 				return err
 			}
 		}
 		closing, closingErr := decoder.Token()
-		if closingErr != nil || closing != json.Delim('}') || len(seen) != len(fields) {
+		if closingErr != nil || closing != json.Delim('}') {
 			return ErrInvalidRequest
+		}
+		for name, field := range fields {
+			if field.required && !seen[name] {
+				return ErrInvalidRequest
+			}
 		}
 	case reflect.Slice, reflect.Array:
 		if token != json.Delim('[') {
 			return ErrInvalidRequest
 		}
 		for decoder.More() {
-			if err := validateAdminJSONValue(decoder, target.Elem(), nil, false); err != nil {
+			if err := validateAdminJSONValue(decoder, target.Elem(), nil, false, false); err != nil {
 				return err
 			}
 		}

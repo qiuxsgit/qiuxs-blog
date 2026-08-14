@@ -25,6 +25,7 @@ var (
 	ErrNotFound              = errors.New("not found")
 	ErrDependencyUnavailable = errors.New("dependency unavailable")
 	ErrInternalUnauthorized  = errors.New("internal unauthorized")
+	ErrPreconditionFailed    = errors.New("precondition failed")
 )
 
 // WriteProblem renders a stable, non-sensitive RFC 9457-style response.
@@ -59,7 +60,7 @@ func problemMapping(err error) (int, string, string) {
 		return http.StatusUnauthorized, "internal_unauthorized", "Internal authentication required"
 	case errors.Is(err, ErrOriginForbidden):
 		return http.StatusForbidden, "origin_forbidden", "Origin forbidden"
-	case errors.Is(err, release.ErrReconciliationRequired), errors.Is(err, builder.ErrDisabled):
+	case errors.Is(err, ErrPreconditionFailed), errors.Is(err, release.ErrReconciliationRequired), errors.Is(err, builder.ErrDisabled):
 		return http.StatusPreconditionFailed, "precondition_failed", "Precondition failed"
 	case errors.Is(err, builder.ErrCallbackReplay):
 		return http.StatusConflict, "callback_conflict", "Callback conflict"

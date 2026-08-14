@@ -808,7 +808,7 @@ describe("createAdminApi", () => {
       ["release", null],
       ["job", []],
     ], (api) => api.createRelease({ mode: "publish_settings", articleId: null })),
-    ...invalidFields("RetryReleaseResult", 200, { release: failedRelease, job: failedJob }, [
+    ...invalidFields("RetryReleaseResult", 202, { release: failedRelease, job: failedJob }, [
       ["release", []],
       ["job", null],
     ], (api) => api.retryRelease(71)),

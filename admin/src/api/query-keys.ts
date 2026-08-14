@@ -1,6 +1,6 @@
 import type { ListArticlesQuery } from "./admin-api";
 
-type ArticleState = NonNullable<ListArticlesQuery["state"]>;
+export type ArticleListState = NonNullable<ListArticlesQuery["state"]>;
 
 export const queryKeys = {
   me: ["me"] as const,
@@ -11,7 +11,7 @@ export const queryKeys = {
 
   articlesRoot: ["articles"] as const,
   articleListsRoot: ["articles", "list"] as const,
-  articleList: (state: ArticleState = "active") => ["articles", "list", state] as const,
+  articleList: (state: ArticleListState = "active") => ["articles", "list", state] as const,
   article: (id: number) => ["articles", "detail", id] as const,
   articlePreview: (id: number) => ["articles", "detail", id, "preview"] as const,
   articleVersions: (id: number) => ["articles", "detail", id, "versions"] as const,

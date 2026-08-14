@@ -1,6 +1,7 @@
 import { Navigate, Outlet, RouterProvider, createBrowserRouter, type RouteObject } from "react-router-dom";
 
 import { LoginPage } from "../auth/LoginPage";
+import { ArticleListPage } from "../articles/ArticleListPage";
 import { RequireSession } from "../auth/RequireSession";
 import { AppShell } from "../layout/AppShell";
 import { RouteErrorPage } from "./RouteErrorPage";
@@ -24,7 +25,7 @@ export const appRoutes: RouteObject[] = [
         errorElement: <ShellRouteErrorPage />,
         children: [
           { index: true, element: <Navigate to="/articles" replace /> },
-          { path: "articles", element: <h1>Articles</h1> },
+          { path: "articles", element: <ArticleListPage /> },
           { path: "articles/new", element: <h1>New article</h1> },
           { path: "articles/:articleId/edit", element: <h1>Edit article</h1> },
           { path: "articles/:articleId/preview", element: <h1>Article preview</h1> },

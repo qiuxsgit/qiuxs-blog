@@ -196,7 +196,7 @@ export class ApiProblem extends Error {
 
 ## File Map
 
-Tasks create `admin/` with focused `app`, `api`, `auth`, `components`, `layout`, `articles`, `editor`, `media`, `preview`, `versions`, `publishing`, `settings`, `styles`, `test`, and `e2e` directories. Shared Markdown CSS and fixtures live under `contracts/markdown/`. Root `.gitignore` ignores Admin dependencies/build/test artifacts, and root `README.md` links the Admin README. Each task below lists its exact files; do not change `service/`, `site/`, or `deploy/`.
+Tasks create `admin/` with focused `app`, `api`, `auth`, `components`, `layout`, `articles`, `editor`, `media`, `preview`, `versions`, `publishing`, `settings`, `styles`, and pure-test directories. Shared Markdown CSS and fixtures live under `contracts/markdown/`. Root `.gitignore` ignores Admin dependencies/build/test artifacts, and root `README.md` links the Admin README. Each task below lists its exact files; do not change `service/`, `site/`, or `deploy/`.
 
 ### Task 1: Bootstrap the Exact-Toolchain SPA and Static Artifact Contract
 
@@ -1257,6 +1257,8 @@ git commit -m "feat(admin): add hotlink settings"
 
 > **Owner decision:** cancel this automated UI/Playwright task. Do not create `admin/e2e`, install Playwright, or add browser acceptance tests. The owner will manually inspect the completed Admin UI; only deterministic pure logic and API contract tests remain in the automated gate.
 
+> **Execution note:** every historical step in this cancelled section is intentionally skipped and must not be run or implemented.
+
 **Files:**
 - Create: `admin/playwright.config.ts`
 - Create: `admin/e2e/support/mock-admin-api.ts`
@@ -1458,6 +1460,6 @@ Expected: no output; ignored dependencies, build, coverage, and Playwright artif
 
 ## Stage 4 Completion Gate
 
-Stage 4 is complete only when all sixteen task commits are independently reviewable and Task 16's clean gate passes on Node.js exactly 20.19.4. Browser acceptance proves login, whole-GFM paste, two-second autosave, revision-conflict recovery, direct upload, source/preview, version create/restore, Release create/retry/polling, and all settings without a real backend. The committed output is source, tests, shared Markdown contracts, documentation, and lockfile; Stage 6 exclusively owns Jenkins definitions, rsync, deployment directories, Nginx proxy/history fallback, atomic symlink switching, and deployed-environment smoke tests.
+Stage 4 is complete only when all sixteen task commits are independently reviewable and Task 16's clean gate passes on Node.js exactly 20.19.4. Automated verification covers pure logic, state machines, serialization, cache helpers, API contracts, and static artifacts; the owner manually accepts login, whole-GFM paste, autosave, conflict recovery, upload, source/preview, versions, Releases, and settings. The committed output is source, pure tests, shared Markdown contracts, documentation, and lockfile; Stage 6 exclusively owns Jenkins definitions, rsync, deployment directories, Nginx proxy/history fallback, atomic symlink switching, and deployed-environment smoke tests.
 
 Before implementation handoff, the plan author must mechanically compare the Stage Entry operation IDs against `contracts/openapi/admin-v1.yaml`, scan for placeholder language, inspect every generated alias/method/task name for type consistency, and run `git diff --check`. Any mismatch is fixed in this plan before Task 1 begins.

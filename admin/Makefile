@@ -12,6 +12,7 @@ generate:
 test:
 	npm run typecheck
 	npm run test:run
+	node --test scripts/require-node.test.mjs scripts/verify-dist.test.mjs
 
 build:
 	npm run check:node

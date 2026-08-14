@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
-import { StrictMode, useEffect, type ReactElement } from "react";
+import { StrictMode, useEffect, useState, type ReactElement } from "react";
 import {
   MemoryRouter,
   Navigate,
@@ -15,6 +15,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { appRoutes } from "../app/AppRouter";
+import { AppShell } from "../layout/AppShell";
 import { server } from "../test/server";
 import { AuthProvider, useAuth } from "./AuthProvider";
 import { LoginPage } from "./LoginPage";
@@ -44,7 +45,7 @@ function createQueryClient() {
   });
 }
 
-function renderApplication(route: string, strict = false) {
+function renderApplication(route: string | { pathname: string; state: unknown }, strict = false) {
   const queryClient = createQueryClient();
   const router = createMemoryRouter(appRoutes, { initialEntries: [route] });
   const tree = (
@@ -58,6 +59,36 @@ function renderApplication(route: string, strict = false) {
     router,
     user: userEvent.setup(),
   };
+}
+
+function AuthRaceProbe() {
+  const auth = useAuth();
+  const [loginSettled, setLoginSettled] = useState(false);
+  return (
+    <>
+      <p aria-label="Session state">{auth.state.kind}</p>
+      <p aria-label="Login settled">{String(loginSettled)}</p>
+      <button
+        onClick={() => {
+          void auth.login({ username: "admin", password: "race-password" })
+            .catch(() => undefined)
+            .finally(() => setLoginSettled(true));
+        }}
+        type="button"
+      >Start login</button>
+      <button onClick={() => void auth.api.listArticles().catch(() => undefined)} type="button">Expire session</button>
+    </>
+  );
+}
+
+function renderAuthRaceProbe() {
+  const queryClient = createQueryClient();
+  const result = render(
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider><AuthRaceProbe /></AuthProvider>
+    </QueryClientProvider>,
+  );
+  return { ...result, user: userEvent.setup() };
 }
 
 function renderCustomRoutes(ui: ReactElement, route: string) {
@@ -88,6 +119,7 @@ afterEach(() => {
   sessionStorage.clear();
   delete document.documentElement.dataset.editorDirty;
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("session bootstrap and protected routing", () => {
@@ -255,5 +287,73 @@ describe("session bootstrap and protected routing", () => {
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
     expect(localStorage.getItem("article:11:recovery")).toBe("local markdown recovery");
     expect(document.documentElement.dataset.editorDirty).toBe("true");
+  });
+
+  it("lets a central 401 abort and invalidate a deferred login response", async () => {
+    let loginSignal: AbortSignal | undefined;
+    let resolveLogin: (() => void) | undefined;
+    vi.stubGlobal("fetch", async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/admin/v1/me") return HttpResponse.json(adminView);
+      if (url.pathname === "/api/admin/v1/session" && request.method === "POST") {
+        loginSignal = request.signal;
+        return new Promise<Response>((resolve) => {
+          resolveLogin = () => resolve(HttpResponse.json(adminView));
+        });
+      }
+      if (url.pathname === "/api/admin/v1/articles") {
+        return problem(401, "unauthenticated", "Session expired");
+      }
+      throw new Error(`Unexpected request: ${request.method} ${url.pathname}`);
+    });
+    const { user } = renderAuthRaceProbe();
+
+    expect(await screen.findByText("authenticated", { selector: "[aria-label='Session state']" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Start login" }));
+    await waitFor(() => expect(loginSignal).toBeDefined());
+    await user.click(screen.getByRole("button", { name: "Expire session" }));
+    expect(await screen.findByText("anonymous", { selector: "[aria-label='Session state']" })).toBeInTheDocument();
+    expect(loginSignal?.aborted).toBe(true);
+
+    resolveLogin?.();
+    expect(await screen.findByText("true", { selector: "[aria-label='Login settled']" })).toBeInTheDocument();
+    expect(screen.getByText("anonymous", { selector: "[aria-label='Session state']" })).toBeInTheDocument();
+  });
+
+  it.each([
+    "/\\evil.example/path",
+    "/\n/evil.example/path",
+    "//evil.example/path",
+    "/articles?state=trashed",
+    "/articles#draft",
+    "/settings/../articles/11/edit",
+    "/articles/%0Ahidden",
+    "/login/",
+  ])("falls back instead of navigating to non-canonical intended path %j", async (from) => {
+    const { router } = renderApplication({ pathname: "/login", state: { from } });
+
+    expect(await screen.findByRole("heading", { name: "Articles" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/articles");
+    expect(router.state.location.search).toBe("");
+    expect(router.state.location.hash).toBe("");
+  });
+
+  it("hides the username and logout action while the shell session is not authenticated", async () => {
+    server.use(http.get("*/api/admin/v1/me", async ({ request }) => {
+      await new Promise<void>((resolve) => request.signal.addEventListener("abort", () => resolve(), { once: true }));
+      return HttpResponse.json(adminView);
+    }));
+    const queryClient = createQueryClient();
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <MemoryRouter><AppShell><h1>Loading shell</h1></AppShell></MemoryRouter>
+        </AuthProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.queryByText("admin")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
+    view.unmount();
   });
 });

@@ -51,7 +51,7 @@ export function AppShell({ children }: PropsWithChildren) {
   };
 
   const logout = async () => {
-    if (!auth || loggingOut) return;
+    if (auth?.state.kind !== "authenticated" || loggingOut) return;
     setLoggingOut(true);
     setLogoutError(undefined);
     try {
@@ -100,11 +100,13 @@ export function AppShell({ children }: PropsWithChildren) {
           <div className="shell-width header-content">
             <NavLink className="brand" to="/articles">QIUXS <span>ADMIN</span></NavLink>
             <div className="header-actions">
-              {auth?.state.kind === "authenticated" && <span>{auth.state.admin.username}</span>}
-              {auth && (
-                <button className="button button-secondary touch-target" disabled={loggingOut} onClick={() => void logout()} type="button">
-                  {loggingOut ? "Logging out" : "Log out"}
-                </button>
+              {auth?.state.kind === "authenticated" && (
+                <>
+                  <span>{auth.state.admin.username}</span>
+                  <button className="button button-secondary touch-target" disabled={loggingOut} onClick={() => void logout()} type="button">
+                    {loggingOut ? "Logging out" : "Log out"}
+                  </button>
+                </>
               )}
               <button
                 aria-controls="admin-navigation-drawer"

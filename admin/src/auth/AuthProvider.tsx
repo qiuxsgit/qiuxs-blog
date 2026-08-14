@@ -48,6 +48,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const expireSession = useCallback(() => {
     if (!mounted.current) return;
     bootstrapGeneration.current += 1;
+    bootstrapController.current?.abort();
+    bootstrapController.current = undefined;
+    actionController.current?.abort();
+    actionController.current = undefined;
     queryClient.clear();
     setState({ kind: "anonymous" });
   }, [queryClient]);
@@ -99,10 +103,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const login = useCallback(async (input: LoginRequest) => {
     actionController.current?.abort();
     const controller = new AbortController();
+    const generation = bootstrapGeneration.current;
     actionController.current = controller;
     try {
       const admin = await api.loginAdmin(input, controller.signal);
-      if (mounted.current && actionController.current === controller) {
+      if (
+        mounted.current
+        && actionController.current === controller
+        && generation === bootstrapGeneration.current
+      ) {
         setState({ kind: "authenticated", admin });
       }
     } finally {
@@ -113,10 +122,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const logout = useCallback(async () => {
     actionController.current?.abort();
     const controller = new AbortController();
+    const generation = bootstrapGeneration.current;
     actionController.current = controller;
     try {
       await api.logoutAdmin(controller.signal);
-      if (mounted.current && actionController.current === controller) expireSession();
+      if (
+        mounted.current
+        && actionController.current === controller
+        && generation === bootstrapGeneration.current
+      ) expireSession();
     } finally {
       if (actionController.current === controller) actionController.current = undefined;
     }

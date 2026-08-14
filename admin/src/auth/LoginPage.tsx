@@ -7,9 +7,28 @@ import { ProblemNotice } from "../components/ProblemNotice";
 import { useAuth } from "./AuthProvider";
 
 function intendedPath(state: unknown): string {
-  if (typeof state !== "object" || state === null || !("from" in state)) return "/articles";
+  const fallback = "/articles";
+  if (typeof state !== "object" || state === null || !("from" in state)) return fallback;
   const from = (state as { from?: unknown }).from;
-  return typeof from === "string" && /^\/(?!\/)/.test(from) && from !== "/login" ? from : "/articles";
+  if (
+    typeof from !== "string"
+    || /[\\\u0000-\u001f\u007f]/.test(from)
+    || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(from)
+  ) return fallback;
+  try {
+    const parsed = new URL(from, window.location.origin);
+    if (
+      parsed.origin !== window.location.origin
+      || parsed.search !== ""
+      || parsed.hash !== ""
+      || from !== parsed.pathname
+      || parsed.pathname === "/login"
+      || parsed.pathname === "/login/"
+    ) return fallback;
+    return parsed.pathname;
+  } catch {
+    return fallback;
+  }
 }
 
 export function LoginPage() {

@@ -10,9 +10,10 @@ const (
 	SiteSettings         = "site_settings"
 	HotlinkSettings      = "hotlink_settings"
 	RefererAllowlist     = "referer_allowlist"
+	BuilderConfig        = "builder_config"
 )
 
-var All = [9]string{
+var All = [10]string{
 	Articles,
 	ArticleRevisions,
 	Tags,
@@ -22,4 +23,5 @@ var All = [9]string{
 	SiteSettings,
 	HotlinkSettings,
 	RefererAllowlist,
+	BuilderConfig,
 }

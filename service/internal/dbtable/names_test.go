@@ -22,8 +22,8 @@ func (*recordingCounter) Raise(_ context.Context, _ string, floor int64) (int64,
 	return floor, nil
 }
 
-func TestAllStageTwoTablesUseAuditedIDGeneratorNames(t *testing.T) {
-	expected := [9]string{
+func TestAllPersistentTablesUseAuditedIDGeneratorNames(t *testing.T) {
+	expected := [10]string{
 		"articles",
 		"article_revisions",
 		"tags",
@@ -33,8 +33,9 @@ func TestAllStageTwoTablesUseAuditedIDGeneratorNames(t *testing.T) {
 		"site_settings",
 		"hotlink_settings",
 		"referer_allowlist",
+		"builder_config",
 	}
-	require.Equal(t, expected, [9]string{
+	require.Equal(t, expected, [10]string{
 		dbtable.Articles,
 		dbtable.ArticleRevisions,
 		dbtable.Tags,
@@ -44,6 +45,7 @@ func TestAllStageTwoTablesUseAuditedIDGeneratorNames(t *testing.T) {
 		dbtable.SiteSettings,
 		dbtable.HotlinkSettings,
 		dbtable.RefererAllowlist,
+		dbtable.BuilderConfig,
 	})
 	require.Equal(t, expected, dbtable.All)
 
@@ -67,5 +69,6 @@ func TestAllStageTwoTablesUseAuditedIDGeneratorNames(t *testing.T) {
 		"idseq:site_settings",
 		"idseq:hotlink_settings",
 		"idseq:referer_allowlist",
+		"idseq:builder_config",
 	}, counter.keys)
 }

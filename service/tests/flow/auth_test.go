@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -72,6 +73,8 @@ func TestFirstAdminThroughLogoutFlow(t *testing.T) {
 		HTTPClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
+		JenkinsHTTPClient: &http.Client{Timeout: 5 * time.Second},
+		ReleaseJSONReader: func() (io.ReadCloser, error) { return nil, fs.ErrNotExist },
 	})
 	require.NoError(t, err)
 	server := httptest.NewServer(router)

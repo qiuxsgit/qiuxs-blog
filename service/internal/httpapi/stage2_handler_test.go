@@ -185,6 +185,7 @@ func (f *stage2HotlinkFake) AllowsCurrentReferer(context.Context, string) (bool,
 
 type stage2System struct {
 	router    *gin.Engine
+	handler   *AdminHandler
 	articles  *stage2ArticleFake
 	revisions *stage2RevisionFake
 	tags      *stage2TagFake
@@ -212,8 +213,9 @@ func newStage2System(t *testing.T, authenticated bool) stage2System {
 	}
 	site := &stage2SiteFake{result: settings.Site{ID: 51, LockVersion: 2, SiteName: "qiuxs", AuthorName: "qiuxs", SocialLinks: []settings.SocialLink{{Label: "GitHub", URL: "https://github.com/qiuxs"}}, FilingName: "长安休息室", FilingNumber: "浙ICP备17057726号-1", UpdatedAt: stage2TestTime}}
 	hotlink := &stage2HotlinkFake{result: settings.HotlinkPolicy{AllowEmptyReferer: true, Entries: []settings.HotlinkEntry{{ID: 61, Hostname: "qiuxs.com", Enabled: true}}}}
+	releases := newTestReleaseHandler(t, &releaseBuilderRepository{stored: testStoredBuilder()}, &releaseReaderStub{aggregate: testReleaseAggregate(stage2TestTime)}, &releaseOperationsStub{created: testReleaseAggregate(stage2TestTime).Release, createdJob: testReleaseAggregate(stage2TestTime).Jobs[0]})
 	authHandler := NewAuthHandler(auth.Service{}, config.SessionConfig{CookieName: "qx_blog_session", CookieSecure: true, TTL: time.Hour})
-	handler, err := NewAdminHandler(authHandler, articles, revisions, tags, mediaService, site, hotlink)
+	handler, err := NewAdminHandler(authHandler, articles, revisions, tags, mediaService, site, hotlink, releases)
 	require.NoError(t, err)
 
 	gin.SetMode(gin.TestMode)
@@ -228,7 +230,7 @@ func newStage2System(t *testing.T, authenticated bool) stage2System {
 		logCapture.articleID, _ = ArticleIDFromLogContext(c)
 	})
 	RegisterAdminHandlers(router, handler)
-	return stage2System{router: router, articles: articles, revisions: revisions, tags: tags, media: mediaService, site: site, hotlink: hotlink, log: logCapture}
+	return stage2System{router: router, handler: handler, articles: articles, revisions: revisions, tags: tags, media: mediaService, site: site, hotlink: hotlink, log: logCapture}
 }
 
 func TestAdminHandlerServesEveryStage2Operation(t *testing.T) {
@@ -273,35 +275,30 @@ func TestAdminHandlerServesEveryStage2Operation(t *testing.T) {
 	require.Equal(t, []int64{22, 21}, system.revisions.saveContent.TagIDs)
 }
 
-func TestRegisterAdminHandlersDoesNotExposeReleaseContractBeforeTask7(t *testing.T) {
+func TestRegisterAdminHandlersExposesReleaseAdminContractButNotInternalRoutes(t *testing.T) {
 	system := newStage2System(t, true)
 	requests := []struct {
 		method string
 		path   string
+		body   string
+		want   int
 	}{
-		{http.MethodGet, "/api/admin/v1/builder"},
-		{http.MethodPut, "/api/admin/v1/builder"},
-		{http.MethodPost, "/api/admin/v1/builder/test"},
-		{http.MethodGet, "/api/admin/v1/releases"},
-		{http.MethodPost, "/api/admin/v1/releases"},
-		{http.MethodGet, "/api/admin/v1/releases/1"},
-		{http.MethodPost, "/api/admin/v1/releases/1/retry"},
-		{http.MethodGet, "/api/internal/v1/releases/1/bundle"},
-		{http.MethodPost, "/api/internal/v1/jenkins/callback"},
+		{http.MethodGet, "/api/admin/v1/builder", "", http.StatusOK},
+		{http.MethodPut, "/api/admin/v1/builder", `{}`, http.StatusBadRequest},
+		{http.MethodPost, "/api/admin/v1/builder/test", "", http.StatusNoContent},
+		{http.MethodGet, "/api/admin/v1/releases", "", http.StatusOK},
+		{http.MethodPost, "/api/admin/v1/releases", `{}`, http.StatusBadRequest},
+		{http.MethodGet, "/api/admin/v1/releases/7", "", http.StatusOK},
+		{http.MethodPost, "/api/admin/v1/releases/7/retry", "", http.StatusAccepted},
+		{http.MethodGet, "/api/internal/v1/releases/1/bundle", "", http.StatusNotFound},
+		{http.MethodPost, "/api/internal/v1/jenkins/callback", `{}`, http.StatusNotFound},
 	}
 	for _, request := range requests {
 		t.Run(request.method+" "+request.path, func(t *testing.T) {
-			response := performHandlerRequest(system.router, request.method, request.path, "application/json", `{}`, nil)
-			require.Equal(t, http.StatusNotFound, response.Code, response.Body.String())
+			response := performHandlerRequest(system.router, request.method, request.path, "application/json", request.body, nil)
+			require.Equal(t, request.want, response.Code, response.Body.String())
 		})
 	}
-
-	recorder := httptest.NewRecorder()
-	context, _ := gin.CreateTestContext(recorder)
-	context.Request = httptest.NewRequest(http.MethodGet, "/api/admin/v1/builder", nil)
-	context.Set(requestIDKey, "handler-request-42")
-	(&stage3ContractAdapter{}).GetBuilderConfig(context)
-	requireProblemResponse(t, recorder, http.StatusServiceUnavailable, "dependency_unavailable")
 }
 
 func TestAdminHandlerPreviewUsesArticleDetailForImmutableSlugAndDraft(t *testing.T) {
@@ -496,7 +493,7 @@ func TestAdminHandlerGeneratedBindingPrefersSessionDependencyFailure(t *testing.
 		c.Set(sessionStateKey, sessionState{err: errors.Join(auth.ErrDependencyUnavailable, errors.New("redis token secret"))})
 		c.Next()
 	})
-	handler, err := NewAdminHandler(NewAuthHandler(auth.Service{}, config.SessionConfig{CookieName: "qx_blog_session", TTL: time.Hour}), system.articles, system.revisions, system.tags, system.media, system.site, system.hotlink)
+	handler, err := NewAdminHandler(NewAuthHandler(auth.Service{}, config.SessionConfig{CookieName: "qx_blog_session", TTL: time.Hour}), system.articles, system.revisions, system.tags, system.media, system.site, system.hotlink, system.handler.releases)
 	require.NoError(t, err)
 	RegisterAdminHandlers(system.router, handler)
 
@@ -509,7 +506,7 @@ func TestAdminHandlerGeneratedBindingPrefersSessionDependencyFailure(t *testing.
 
 func TestRegisterAdminHandlersAuthenticatesBeforeGeneratedBinding(t *testing.T) {
 	system := newStage2System(t, false)
-	handler, err := NewAdminHandler(NewAuthHandler(auth.Service{}, config.SessionConfig{CookieName: "qx_blog_session", TTL: time.Hour}), system.articles, system.revisions, system.tags, system.media, system.site, system.hotlink)
+	handler, err := NewAdminHandler(NewAuthHandler(auth.Service{}, config.SessionConfig{CookieName: "qx_blog_session", TTL: time.Hour}), system.articles, system.revisions, system.tags, system.media, system.site, system.hotlink, system.handler.releases)
 	require.NoError(t, err)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -520,8 +517,18 @@ func TestRegisterAdminHandlersAuthenticatesBeforeGeneratedBinding(t *testing.T) 
 		WriteProblem(c, ErrInvalidRequest)
 	})
 
-	response := performHandlerRequest(router, http.MethodGet, "/api/admin/v1/articles/not-a-number", "", "", nil)
-	require.Equal(t, http.StatusUnauthorized, response.Code, response.Body.String())
+	for _, target := range []string{
+		"/api/admin/v1/articles/not-a-number",
+		"/api/admin/v1/releases/not-a-number",
+		"/api/admin/v1/releases/not-a-number/retry",
+		"/api/admin/v1/releases?limit=not-a-number",
+	} {
+		response := performHandlerRequest(router, http.MethodGet, target, "", "", nil)
+		if strings.HasSuffix(target, "/retry") {
+			response = performHandlerRequest(router, http.MethodPost, target, "", "", nil)
+		}
+		require.Equal(t, http.StatusUnauthorized, response.Code, response.Body.String())
+	}
 	require.Zero(t, bindingErrors, "binding must not inspect anonymous path/query values")
 }
 
@@ -561,12 +568,12 @@ func TestNewAdminHandlerRejectsNilAndTypedNilDependencies(t *testing.T) {
 	system := newStage2System(t, true)
 	validAuth := NewAuthHandler(auth.Service{}, config.SessionConfig{CookieName: "qx_blog_session", TTL: time.Hour})
 	var typedNil *stage2ArticleFake
-	_, err := NewAdminHandler(validAuth, typedNil, system.revisions, system.tags, system.media, system.site, system.hotlink)
+	_, err := NewAdminHandler(validAuth, typedNil, system.revisions, system.tags, system.media, system.site, system.hotlink, system.handler.releases)
 	require.EqualError(t, err, "article service is required")
-	_, err = NewAdminHandler(nil, system.articles, system.revisions, system.tags, system.media, system.site, system.hotlink)
+	_, err = NewAdminHandler(nil, system.articles, system.revisions, system.tags, system.media, system.site, system.hotlink, system.handler.releases)
 	require.EqualError(t, err, "auth handler is required")
 	invalidAuth := NewAuthHandler(auth.Service{}, config.SessionConfig{CookieName: "invalid;cookie", TTL: time.Hour})
-	_, err = NewAdminHandler(invalidAuth, system.articles, system.revisions, system.tags, system.media, system.site, system.hotlink)
+	_, err = NewAdminHandler(invalidAuth, system.articles, system.revisions, system.tags, system.media, system.site, system.hotlink, system.handler.releases)
 	require.EqualError(t, err, "auth handler is required")
 
 	tests := []struct {
@@ -575,25 +582,29 @@ func TestNewAdminHandlerRejectsNilAndTypedNilDependencies(t *testing.T) {
 		want string
 	}{
 		{"revision", func() error {
-			_, err := NewAdminHandler(validAuth, system.articles, nil, system.tags, system.media, system.site, system.hotlink)
+			_, err := NewAdminHandler(validAuth, system.articles, nil, system.tags, system.media, system.site, system.hotlink, system.handler.releases)
 			return err
 		}, "revision service is required"},
 		{"tag", func() error {
-			_, err := NewAdminHandler(validAuth, system.articles, system.revisions, nil, system.media, system.site, system.hotlink)
+			_, err := NewAdminHandler(validAuth, system.articles, system.revisions, nil, system.media, system.site, system.hotlink, system.handler.releases)
 			return err
 		}, "tag service is required"},
 		{"media", func() error {
-			_, err := NewAdminHandler(validAuth, system.articles, system.revisions, system.tags, nil, system.site, system.hotlink)
+			_, err := NewAdminHandler(validAuth, system.articles, system.revisions, system.tags, nil, system.site, system.hotlink, system.handler.releases)
 			return err
 		}, "media service is required"},
 		{"site", func() error {
-			_, err := NewAdminHandler(validAuth, system.articles, system.revisions, system.tags, system.media, nil, system.hotlink)
+			_, err := NewAdminHandler(validAuth, system.articles, system.revisions, system.tags, system.media, nil, system.hotlink, system.handler.releases)
 			return err
 		}, "site settings service is required"},
 		{"hotlink", func() error {
-			_, err := NewAdminHandler(validAuth, system.articles, system.revisions, system.tags, system.media, system.site, nil)
+			_, err := NewAdminHandler(validAuth, system.articles, system.revisions, system.tags, system.media, system.site, nil, system.handler.releases)
 			return err
 		}, "hotlink settings service is required"},
+		{"release", func() error {
+			_, err := NewAdminHandler(validAuth, system.articles, system.revisions, system.tags, system.media, system.site, system.hotlink, nil)
+			return err
+		}, "release handler is required"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) { require.EqualError(t, test.call(), test.want) })

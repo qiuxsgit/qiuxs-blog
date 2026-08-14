@@ -9,7 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/article"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/auth"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/builder"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/media"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/release"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/revision"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/settings"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/tag"
@@ -22,6 +24,7 @@ var (
 	ErrOriginForbidden       = errors.New("origin forbidden")
 	ErrNotFound              = errors.New("not found")
 	ErrDependencyUnavailable = errors.New("dependency unavailable")
+	ErrInternalUnauthorized  = errors.New("internal unauthorized")
 )
 
 // WriteProblem renders a stable, non-sensitive RFC 9457-style response.
@@ -52,10 +55,22 @@ func problemMapping(err error) (int, string, string) {
 		return http.StatusUnauthorized, "invalid_credentials", "Invalid credentials"
 	case errors.Is(err, auth.ErrUnauthenticated):
 		return http.StatusUnauthorized, "unauthenticated", "Unauthenticated"
+	case errors.Is(err, ErrInternalUnauthorized):
+		return http.StatusUnauthorized, "internal_unauthorized", "Internal authentication required"
 	case errors.Is(err, ErrOriginForbidden):
 		return http.StatusForbidden, "origin_forbidden", "Origin forbidden"
+	case errors.Is(err, release.ErrReconciliationRequired), errors.Is(err, builder.ErrDisabled):
+		return http.StatusPreconditionFailed, "precondition_failed", "Precondition failed"
+	case errors.Is(err, builder.ErrCallbackReplay):
+		return http.StatusConflict, "callback_conflict", "Callback conflict"
+	case errors.Is(err, builder.ErrDependencyUnavailable), errors.Is(err, release.ErrDependencyUnavailable):
+		return http.StatusServiceUnavailable, "dependency_unavailable", "Dependency unavailable"
 	case errors.Is(err, media.ErrDependencyUnavailable), errors.Is(err, ErrDependencyUnavailable):
 		return http.StatusServiceUnavailable, "dependency_unavailable", "Dependency unavailable"
+	case errors.Is(err, builder.ErrConflict):
+		return http.StatusConflict, "builder_conflict", "Builder conflict"
+	case errors.Is(err, release.ErrBusy), errors.Is(err, release.ErrConflict):
+		return http.StatusConflict, "release_conflict", "Release conflict"
 	case errors.Is(err, revision.ErrConflict):
 		return http.StatusConflict, "revision_conflict", "Revision conflict"
 	case errors.Is(err, settings.ErrConflict):
@@ -74,11 +89,15 @@ func problemMapping(err error) (int, string, string) {
 		return http.StatusUnprocessableEntity, "invalid_media", "Invalid media"
 	case errors.Is(err, settings.ErrInvalid):
 		return http.StatusUnprocessableEntity, "invalid_settings", "Invalid settings"
+	case errors.Is(err, builder.ErrInvalidConfig):
+		return http.StatusUnprocessableEntity, "invalid_builder", "Invalid builder"
+	case errors.Is(err, release.ErrInvalidSnapshot):
+		return http.StatusBadRequest, "invalid_request", "Invalid request"
 	case errors.Is(err, tag.ErrInvalidName), errors.Is(err, tag.ErrInvalidSelection):
 		return http.StatusBadRequest, "invalid_request", "Invalid request"
 	case errors.Is(err, media.ErrHotlinkForbidden):
 		return http.StatusForbidden, "hotlink_forbidden", "Hotlink forbidden"
-	case errors.Is(err, ErrNotFound), errors.Is(err, media.ErrNotFound), errors.Is(err, article.ErrNotFound), errors.Is(err, revision.ErrNotFound), errors.Is(err, tag.ErrNotFound):
+	case errors.Is(err, ErrNotFound), errors.Is(err, media.ErrNotFound), errors.Is(err, article.ErrNotFound), errors.Is(err, revision.ErrNotFound), errors.Is(err, tag.ErrNotFound), errors.Is(err, builder.ErrNotFound), errors.Is(err, release.ErrNotFound):
 		return http.StatusNotFound, "not_found", "Not found"
 	case errors.Is(err, auth.ErrRateLimited):
 		return http.StatusTooManyRequests, "login_rate_limited", "Login rate limited"

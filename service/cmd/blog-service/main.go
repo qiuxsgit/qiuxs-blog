@@ -22,20 +22,27 @@ import (
 const shutdownTimeout = 30 * time.Second
 
 type runtimeDependencies struct {
-	getenv     func(string) string
-	logger     *slog.Logger
-	random     io.Reader
-	now        func() time.Time
-	httpClient *http.Client
-	signals    <-chan os.Signal
+	getenv            func(string) string
+	logger            *slog.Logger
+	random            io.Reader
+	now               func() time.Time
+	httpClient        *http.Client
+	jenkinsHTTPClient *http.Client
+	openArtifact      func(string) (io.ReadCloser, error)
+	signals           <-chan os.Signal
 
 	openMySQL  func(config.MySQLConfig) (*sql.DB, error)
 	closeMySQL func(*sql.DB) error
 	openRedis  func(config.RedisConfig) (*redis.Client, error)
 	closeRedis func(*redis.Client) error
-	build      func(config.Config, app.Dependencies) (http.Handler, error)
+	prepare    func(config.Config, app.Dependencies) (preparedApplication, error)
 	serve      func(*http.Server) error
 	shutdown   func(*http.Server, context.Context) error
+}
+
+type preparedApplication interface {
+	Handler() http.Handler
+	Reconcile(context.Context) (bool, error)
 }
 
 func run(runtime runtimeDependencies) (resultErr error) {
@@ -64,21 +71,28 @@ func run(runtime runtimeDependencies) (resultErr error) {
 		}
 	}()
 
-	handler, err := runtime.build(cfg, app.Dependencies{
-		DB:         db,
-		Redis:      redisClient,
-		Logger:     runtime.logger,
-		Random:     runtime.random,
-		Now:        runtime.now,
-		HTTPClient: runtime.httpClient,
+	application, err := runtime.prepare(cfg, app.Dependencies{
+		DB:                db,
+		Redis:             redisClient,
+		Logger:            runtime.logger,
+		Random:            runtime.random,
+		Now:               runtime.now,
+		HTTPClient:        runtime.httpClient,
+		JenkinsHTTPClient: runtime.jenkinsHTTPClient,
+		ReleaseJSONReader: func() (io.ReadCloser, error) {
+			return runtime.openArtifact(cfg.Release.CurrentReleaseJSONPath)
+		},
 	})
 	if err != nil {
 		return errors.New("build application: operation failed")
 	}
+	if _, err := application.Reconcile(context.Background()); err != nil {
+		return errors.New("reconcile deployed release: operation failed")
+	}
 
 	server := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           handler,
+		Handler:           application.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -123,18 +137,20 @@ func main() {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 
 	runtime := runtimeDependencies{
-		getenv:     os.Getenv,
-		logger:     logger,
-		random:     rand.Reader,
-		now:        time.Now,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
-		signals:    signals,
-		openMySQL:  platform.OpenMySQL,
-		closeMySQL: func(db *sql.DB) error { return db.Close() },
-		openRedis:  platform.OpenRedis,
-		closeRedis: func(client *redis.Client) error { return client.Close() },
-		build: func(cfg config.Config, deps app.Dependencies) (http.Handler, error) {
-			return app.Build(cfg, deps)
+		getenv:            os.Getenv,
+		logger:            logger,
+		random:            rand.Reader,
+		now:               time.Now,
+		httpClient:        &http.Client{Timeout: 5 * time.Second},
+		jenkinsHTTPClient: &http.Client{Timeout: 5 * time.Second},
+		openArtifact:      func(path string) (io.ReadCloser, error) { return os.Open(path) },
+		signals:           signals,
+		openMySQL:         platform.OpenMySQL,
+		closeMySQL:        func(db *sql.DB) error { return db.Close() },
+		openRedis:         platform.OpenRedis,
+		closeRedis:        func(client *redis.Client) error { return client.Close() },
+		prepare: func(cfg config.Config, deps app.Dependencies) (preparedApplication, error) {
+			return app.Prepare(cfg, deps)
 		},
 		serve:    func(server *http.Server) error { return server.ListenAndServe() },
 		shutdown: func(server *http.Server, ctx context.Context) error { return server.Shutdown(ctx) },

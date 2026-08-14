@@ -24,6 +24,7 @@ type AdminHandler struct {
 	media     media.Service
 	site      settings.SiteService
 	hotlink   settings.HotlinkService
+	releases  *ReleaseHandler
 }
 
 func NewAdminHandler(
@@ -34,6 +35,7 @@ func NewAdminHandler(
 	mediaService media.Service,
 	site settings.SiteService,
 	hotlink settings.HotlinkService,
+	releases *ReleaseHandler,
 ) (*AdminHandler, error) {
 	switch {
 	case authHandler == nil || authHandler.initErr != nil:
@@ -50,10 +52,12 @@ func NewAdminHandler(
 		return nil, errors.New("site settings service is required")
 	case nilAdminDependency(hotlink):
 		return nil, errors.New("hotlink settings service is required")
+	case releases == nil:
+		return nil, errors.New("release handler is required")
 	}
 	return &AdminHandler{
 		auth: authHandler, articles: articles, revisions: revisions, tags: tags,
-		media: mediaService, site: site, hotlink: hotlink,
+		media: mediaService, site: site, hotlink: hotlink, releases: releases,
 	}, nil
 }
 
@@ -74,7 +78,7 @@ func RegisterAdminHandlers(router gin.IRouter, handler *AdminHandler) {
 }
 
 func registerAdminHandlersWithErrorHandler(router gin.IRouter, handler *AdminHandler, errorHandler func(*gin.Context, error, int)) {
-	wrapper := &ServerInterfaceWrapper{Handler: &stage3ContractAdapter{AdminHandler: handler}, ErrorHandler: errorHandler}
+	wrapper := &ServerInterfaceWrapper{Handler: handler, ErrorHandler: errorHandler}
 	protected := requireAdminBeforeBinding()
 
 	// Existing authentication operations retain their original behavior.
@@ -103,29 +107,22 @@ func registerAdminHandlersWithErrorHandler(router gin.IRouter, handler *AdminHan
 	router.PUT("/api/admin/v1/settings/site", protected, wrapper.PutSiteSettings)
 	router.GET("/api/admin/v1/settings/hotlink", protected, wrapper.GetHotlinkSettings)
 	router.PUT("/api/admin/v1/settings/hotlink", protected, wrapper.PutHotlinkSettings)
+	router.GET("/api/admin/v1/builder", protected, wrapper.GetBuilderConfig)
+	router.PUT("/api/admin/v1/builder", protected, wrapper.PutBuilderConfig)
+	router.POST("/api/admin/v1/builder/test", protected, wrapper.TestBuilderConfig)
+	router.GET("/api/admin/v1/releases", protected, wrapper.ListReleases)
+	router.POST("/api/admin/v1/releases", protected, wrapper.CreateRelease)
+	router.GET("/api/admin/v1/releases/:releaseId", protected, wrapper.GetRelease)
+	router.POST("/api/admin/v1/releases/:releaseId/retry", protected, wrapper.RetryRelease)
 }
 
-// stage3ContractAdapter is a temporary compile bridge for the generated release
-// contract. RegisterAdminHandlers deliberately exposes none of these routes;
-// Task 7 replaces this adapter with the real release handlers and registrars.
-type stage3ContractAdapter struct {
-	*AdminHandler
-}
-
-func (*stage3ContractAdapter) GetBuilderConfig(c *gin.Context)  { stage3Unavailable(c) }
-func (*stage3ContractAdapter) PutBuilderConfig(c *gin.Context)  { stage3Unavailable(c) }
-func (*stage3ContractAdapter) TestBuilderConfig(c *gin.Context) { stage3Unavailable(c) }
-func (*stage3ContractAdapter) ListReleases(c *gin.Context, _ ListReleasesParams) {
-	stage3Unavailable(c)
-}
-func (*stage3ContractAdapter) CreateRelease(c *gin.Context)                 { stage3Unavailable(c) }
-func (*stage3ContractAdapter) GetRelease(c *gin.Context, _ ReleaseId)       { stage3Unavailable(c) }
-func (*stage3ContractAdapter) RetryRelease(c *gin.Context, _ ReleaseId)     { stage3Unavailable(c) }
-func (*stage3ContractAdapter) AcceptJenkinsCallback(c *gin.Context)         { stage3Unavailable(c) }
-func (*stage3ContractAdapter) GetReleaseBundle(c *gin.Context, _ ReleaseId) { stage3Unavailable(c) }
-
-func stage3Unavailable(c *gin.Context) {
-	WriteProblem(c, ErrDependencyUnavailable)
+// RegisterInternalReleaseHandlers deliberately uses the root router. Bundle
+// Bearer and callback HMAC authentication are isolated from Origin and Admin
+// cookie middleware, and execute before generated path binding.
+func RegisterInternalReleaseHandlers(router gin.IRouter, handler *AdminHandler, bundleToken []byte, verifier jenkinsCallbackVerifier) {
+	wrapper := &ServerInterfaceWrapper{Handler: handler, ErrorHandler: adminGeneratedErrorHandler}
+	router.GET("/api/internal/v1/releases/:releaseId/bundle", RequireBundleToken(bundleToken), wrapper.GetReleaseBundle)
+	router.POST("/api/internal/v1/jenkins/callback", VerifyJenkinsCallback(verifier), wrapper.AcceptJenkinsCallback)
 }
 
 func requireAdminBeforeBinding() gin.HandlerFunc {
@@ -161,6 +158,78 @@ func (h *AdminHandler) GetCurrentAdmin(c *gin.Context) {
 		return
 	}
 	h.auth.GetCurrentAdmin(c)
+}
+
+func (h *AdminHandler) GetBuilderConfig(c *gin.Context) {
+	if h == nil || h.releases == nil {
+		WriteProblem(c, ErrDependencyUnavailable)
+		return
+	}
+	h.releases.GetBuilderConfig(c)
+}
+
+func (h *AdminHandler) PutBuilderConfig(c *gin.Context) {
+	if h == nil || h.releases == nil {
+		WriteProblem(c, ErrDependencyUnavailable)
+		return
+	}
+	h.releases.PutBuilderConfig(c)
+}
+
+func (h *AdminHandler) TestBuilderConfig(c *gin.Context) {
+	if h == nil || h.releases == nil {
+		WriteProblem(c, ErrDependencyUnavailable)
+		return
+	}
+	h.releases.TestBuilderConfig(c)
+}
+
+func (h *AdminHandler) ListReleases(c *gin.Context, params ListReleasesParams) {
+	if h == nil || h.releases == nil {
+		WriteProblem(c, ErrDependencyUnavailable)
+		return
+	}
+	h.releases.ListReleases(c, params)
+}
+
+func (h *AdminHandler) CreateRelease(c *gin.Context) {
+	if h == nil || h.releases == nil {
+		WriteProblem(c, ErrDependencyUnavailable)
+		return
+	}
+	h.releases.CreateRelease(c)
+}
+
+func (h *AdminHandler) GetRelease(c *gin.Context, releaseID ReleaseId) {
+	if h == nil || h.releases == nil {
+		WriteProblem(c, ErrDependencyUnavailable)
+		return
+	}
+	h.releases.GetRelease(c, releaseID)
+}
+
+func (h *AdminHandler) RetryRelease(c *gin.Context, releaseID ReleaseId) {
+	if h == nil || h.releases == nil {
+		WriteProblem(c, ErrDependencyUnavailable)
+		return
+	}
+	h.releases.RetryRelease(c, releaseID)
+}
+
+func (h *AdminHandler) AcceptJenkinsCallback(c *gin.Context) {
+	if h == nil || h.releases == nil {
+		WriteProblem(c, ErrDependencyUnavailable)
+		return
+	}
+	h.releases.AcceptJenkinsCallback(c)
+}
+
+func (h *AdminHandler) GetReleaseBundle(c *gin.Context, releaseID ReleaseId) {
+	if h == nil || h.releases == nil {
+		WriteProblem(c, ErrDependencyUnavailable)
+		return
+	}
+	h.releases.GetReleaseBundle(c, releaseID)
 }
 
 func (h *AdminHandler) authenticate(c *gin.Context) bool {
@@ -228,4 +297,4 @@ func nilAdminDependency(value any) bool {
 	}
 }
 
-var _ ServerInterface = (*stage3ContractAdapter)(nil)
+var _ ServerInterface = (*AdminHandler)(nil)

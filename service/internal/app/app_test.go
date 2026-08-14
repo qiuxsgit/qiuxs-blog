@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/httpapi"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/idgen"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/randomkey"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/release"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/settings"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -58,6 +60,15 @@ func TestBuildRegistersPublicAndAdminRoutes(t *testing.T) {
 		http.MethodPut + " /api/admin/v1/settings/site",
 		http.MethodGet + " /api/admin/v1/settings/hotlink",
 		http.MethodPut + " /api/admin/v1/settings/hotlink",
+		http.MethodGet + " /api/admin/v1/builder",
+		http.MethodPut + " /api/admin/v1/builder",
+		http.MethodPost + " /api/admin/v1/builder/test",
+		http.MethodGet + " /api/admin/v1/releases",
+		http.MethodPost + " /api/admin/v1/releases",
+		http.MethodGet + " /api/admin/v1/releases/:releaseId",
+		http.MethodPost + " /api/admin/v1/releases/:releaseId/retry",
+		http.MethodGet + " /api/internal/v1/releases/:releaseId/bundle",
+		http.MethodPost + " /api/internal/v1/jenkins/callback",
 		http.MethodGet + " /img/proxy/:publicKey",
 	}
 	got := make([]string, 0, len(router.Routes()))
@@ -133,6 +144,25 @@ func TestBuildUsesOneSharedStage2DependencyGraph(t *testing.T) {
 	_, err := Build(testConfig(), deps)
 	require.NoError(t, err)
 	require.NoError(t, observed.validateShared())
+}
+
+func TestPrepareDoesNotReadArtifactUntilExplicitStartupReconcile(t *testing.T) {
+	deps := testDependencies(t, io.Discard)
+	reads := 0
+	deps.ReleaseJSONReader = func() (io.ReadCloser, error) {
+		reads++
+		return nil, fs.ErrNotExist
+	}
+
+	application, err := Prepare(testConfig(), deps)
+	require.NoError(t, err)
+	require.NotNil(t, application.Handler())
+	require.Zero(t, reads, "composition must not read release.json")
+
+	reconciled, err := application.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.False(t, reconciled)
+	require.Equal(t, 1, reads)
 }
 
 func TestBuildObservationDetectsDistinctActualConstructorArguments(t *testing.T) {
@@ -220,6 +250,8 @@ func TestBuildRejectsInvalidDependenciesAndAuthConfig(t *testing.T) {
 		{name: "clock", mutate: func(_ *config.Config, deps *Dependencies) { deps.Now = nil }},
 		{name: "HTTP client", mutate: func(_ *config.Config, deps *Dependencies) { deps.HTTPClient = nil }},
 		{name: "HTTP client timeout", mutate: func(_ *config.Config, deps *Dependencies) { deps.HTTPClient.Timeout = time.Second }},
+		{name: "Jenkins HTTP client", mutate: func(_ *config.Config, deps *Dependencies) { deps.JenkinsHTTPClient = nil }},
+		{name: "release JSON reader", mutate: func(_ *config.Config, deps *Dependencies) { deps.ReleaseJSONReader = nil }},
 		{name: "cookie name", mutate: func(cfg *config.Config, _ *Dependencies) { cfg.Session.CookieName = "bad cookie" }},
 		{name: "session TTL", mutate: func(cfg *config.Config, _ *Dependencies) { cfg.Session.TTL = 0 }},
 	}
@@ -443,8 +475,14 @@ func testDependenciesWithResources(t *testing.T, logOutput io.Writer) (Dependenc
 		HTTPClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
+		JenkinsHTTPClient: &http.Client{Timeout: 5 * time.Second},
+		ReleaseJSONReader: func() (io.ReadCloser, error) {
+			return nil, fs.ErrNotExist
+		},
 	}, mock, miniRedis
 }
+
+var _ release.ArtifactReader = func() (io.ReadCloser, error) { return nil, fs.ErrNotExist }
 
 func testConfig() config.Config {
 	return config.Config{

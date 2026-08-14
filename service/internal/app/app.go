@@ -9,17 +9,21 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/article"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/auth"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/builder"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/config"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/health"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/httpapi"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/idgen"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/media"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/platform"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/randomkey"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/release"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/revision"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/settings"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/tag"
@@ -35,6 +39,11 @@ type Dependencies struct {
 	Random     io.Reader
 	Now        func() time.Time
 	HTTPClient *http.Client
+	// JenkinsHTTPClient is cloned by the Jenkins adapter. Build never sends a
+	// request through it.
+	JenkinsHTTPClient *http.Client
+	// ReleaseJSONReader is process-owned and is invoked only by Application.Reconcile.
+	ReleaseJSONReader release.ArtifactReader
 
 	observeBuild        func(buildObservation)
 	mutateBuildArgument func(buildRole, any) any
@@ -44,6 +53,16 @@ type applicationComponents struct {
 	auth       auth.Service
 	admin      *httpapi.AdminHandler
 	mediaProxy *httpapi.MediaProxyHandler
+	callback   *builder.CallbackVerifier
+	releases   *release.Service
+}
+
+// Application is a composed HTTP application with an explicit startup
+// reconciliation step. Prepare and Build never read the deployed artifact.
+type Application struct {
+	router   *gin.Engine
+	releases *release.Service
+	artifact release.ArtifactReader
 }
 
 // buildObservation is an internal-only wiring audit seam. It records the
@@ -62,6 +81,9 @@ const (
 	buildTagRepositoryIDs      buildRole = "tag repository ID generator"
 	buildMediaRepositoryIDs    buildRole = "media repository ID generator"
 	buildSettingsRepositoryIDs buildRole = "settings repository ID generator"
+	buildBuilderRepositoryIDs  buildRole = "builder repository ID generator"
+	buildReleaseRepositoryIDs  buildRole = "release repository ID generator"
+	buildSnapshotSourceIDs     buildRole = "release snapshot source ID generator"
 	buildGFSSignerKeys         buildRole = "GFS signer random key generator"
 	buildArticleServiceKeys    buildRole = "article service random key generator"
 	buildTagServiceKeys        buildRole = "tag service random key generator"
@@ -73,6 +95,10 @@ const (
 	buildSiteServiceClock      buildRole = "site settings service clock"
 	buildHotlinkServiceClock   buildRole = "hotlink settings service clock"
 	buildMediaProxyClock       buildRole = "media proxy clock"
+	buildSnapshotSourceClock   buildRole = "release snapshot source clock"
+	buildReleaseServiceClock   buildRole = "release orchestrator clock"
+	buildAuthRandom            buildRole = "auth random source"
+	buildSecretBoxRandom       buildRole = "secret box random source"
 	buildAdminHotlink          buildRole = "Admin hotlink service"
 	buildMediaProxyHotlink     buildRole = "media proxy hotlink service"
 )
@@ -87,8 +113,29 @@ type buildClock struct {
 	now func() time.Time
 }
 
+type synchronizedReader struct {
+	mu     sync.Mutex
+	reader io.Reader
+}
+
+func (r *synchronizedReader) Read(buffer []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reader.Read(buffer)
+}
+
 // Build composes the service's shared repositories and HTTP middleware.
 func Build(cfg config.Config, deps Dependencies) (*gin.Engine, error) {
+	application, err := Prepare(cfg, deps)
+	if err != nil {
+		return nil, err
+	}
+	return application.router, nil
+}
+
+// Prepare composes the application without reading the deployed release
+// artifact or probing SQL, Redis, GFS, or Jenkins.
+func Prepare(cfg config.Config, deps Dependencies) (*Application, error) {
 	if err := validate(cfg, deps); err != nil {
 		return nil, err
 	}
@@ -112,6 +159,7 @@ func Build(cfg config.Config, deps Dependencies) (*gin.Engine, error) {
 		health.CheckFunc(func(ctx context.Context) error { return deps.Redis.Ping(ctx).Err() }),
 	)
 	httpapi.RegisterMediaProxy(router, components.mediaProxy)
+	httpapi.RegisterInternalReleaseHandlers(router, components.admin, cfg.Release.BundleToken, components.callback)
 
 	adminRoutes := router.Group("")
 	adminRoutes.Use(httpapi.OriginGuard(cfg.HTTP.AdminOrigin), httpapi.LoadAdminSession(components.auth, cfg.Session.CookieName))
@@ -120,7 +168,24 @@ func Build(cfg config.Config, deps Dependencies) (*gin.Engine, error) {
 	router.NoRoute(func(c *gin.Context) {
 		httpapi.WriteProblem(c, httpapi.ErrNotFound)
 	})
-	return router, nil
+	return &Application{router: router, releases: components.releases, artifact: deps.ReleaseJSONReader}, nil
+}
+
+// Handler returns the composed HTTP handler.
+func (a *Application) Handler() http.Handler {
+	if a == nil {
+		return nil
+	}
+	return a.router
+}
+
+// Reconcile compares the deployed artifact with persisted release state. A
+// missing artifact is a valid first-deployment state.
+func (a *Application) Reconcile(ctx context.Context) (bool, error) {
+	if a == nil || a.releases == nil || a.artifact == nil {
+		return false, errors.New("application reconciliation is not configured")
+	}
+	return a.releases.Reconcile(ctx, a.artifact)
 }
 
 func buildComponents(cfg config.Config, deps Dependencies) (applicationComponents, buildObservation, error) {
@@ -129,12 +194,13 @@ func buildComponents(cfg config.Config, deps Dependencies) (applicationComponent
 		mutate:      deps.mutateBuildArgument,
 	}
 	clock := &buildClock{now: deps.Now}
+	random := &synchronizedReader{reader: deps.Random}
 	counter := idgen.NewRedisCounter(deps.Redis)
 	ids, err := idgen.New(counter, deps.DB, cfg.IDGen.Offset, cfg.IDGen.Step, cfg.IDGen.Heal)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct ID generator: %w", err)
 	}
-	keys, err := randomkey.New(deps.Random)
+	keys, err := randomkey.New(random)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct random key generator: %w", err)
 	}
@@ -158,6 +224,44 @@ func buildComponents(cfg config.Config, deps Dependencies) (applicationComponent
 	revisionRepository := revision.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildRevisionRepositoryIDs, ids))
 	articleRepository := article.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildArticleRepositoryIDs, ids))
 	settingsRepository := settings.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildSettingsRepositoryIDs, ids))
+	box, err := platform.NewSecretBox(
+		cfg.Release.BuilderMasterKey,
+		captureBuildArgument(capture, buildSecretBoxRandom, random),
+	)
+	if err != nil {
+		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct builder secret box: %w", err)
+	}
+	builderRepository := builder.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildBuilderRepositoryIDs, ids), &box)
+	jenkinsClient, err := builder.NewClient(deps.JenkinsHTTPClient)
+	if err != nil {
+		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct Jenkins client: %w", err)
+	}
+	snapshotSource := release.NewMySQLSnapshotSource(
+		captureBuildArgument(capture, buildSnapshotSourceIDs, ids),
+		captureBuildClock(capture, buildSnapshotSourceClock, clock),
+	)
+	releaseRepository := release.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildReleaseRepositoryIDs, ids), snapshotSource)
+	releaseService, err := release.NewService(releaseRepository)
+	if err != nil {
+		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct release service: %w", err)
+	}
+	targetProvider, err := builder.NewJenkinsTargetProvider(builderRepository, jenkinsClient, &box)
+	if err != nil {
+		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct Jenkins target provider: %w", err)
+	}
+	orchestrator, err := release.NewOrchestrator(
+		releaseService,
+		targetProvider,
+		deps.ReleaseJSONReader,
+		captureBuildClock(capture, buildReleaseServiceClock, clock),
+	)
+	if err != nil {
+		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct release orchestrator: %w", err)
+	}
+	callbackVerifier, err := builder.NewCallbackVerifier(cfg.Release.CallbackHMACKey, deps.Redis, deps.Now)
+	if err != nil {
+		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct Jenkins callback verifier: %w", err)
+	}
 
 	tagService, err := tag.NewService(
 		tagRepository,
@@ -226,10 +330,16 @@ func buildComponents(cfg config.Config, deps Dependencies) (applicationComponent
 
 	authRepository := auth.NewMySQLRepository(deps.DB, captureBuildArgument(capture, buildAuthRepositoryIDs, ids))
 	store := auth.NewRedisSessionStore(deps.Redis, deps.Now)
-	sessions := auth.NewSessionManager(store, cfg.Session.TTL, deps.Random, deps.Now)
+	sessions := auth.NewSessionManager(store, cfg.Session.TTL, captureBuildArgument(capture, buildAuthRandom, random), deps.Now)
 	limiter := auth.NewRedisLoginLimiter(deps.Redis, deps.Now)
 	authService := auth.NewServiceWithLogger(authRepository, auth.DefaultPasswordHasher(), sessions, limiter, deps.Now, deps.Logger)
 	authHandler := httpapi.NewAuthHandler(authService, cfg.Session)
+	releaseHandler, err := httpapi.NewReleaseHandler(
+		builderRepository, jenkinsClient, &box, releaseRepository, releaseService, orchestrator,
+	)
+	if err != nil {
+		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct release handler: %w", err)
+	}
 	adminHandler, err := httpapi.NewAdminHandler(
 		authHandler,
 		articleService,
@@ -238,6 +348,7 @@ func buildComponents(cfg config.Config, deps Dependencies) (applicationComponent
 		mediaService,
 		siteService,
 		captureBuildArgument(capture, buildAdminHotlink, hotlinkService),
+		releaseHandler,
 	)
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct Admin handler: %w", err)
@@ -246,7 +357,10 @@ func buildComponents(cfg config.Config, deps Dependencies) (applicationComponent
 	if capture.err != nil {
 		return applicationComponents{}, capture.observation, capture.err
 	}
-	return applicationComponents{auth: authService, admin: adminHandler, mediaProxy: mediaProxyHandler}, capture.observation, nil
+	return applicationComponents{
+		auth: authService, admin: adminHandler, mediaProxy: mediaProxyHandler,
+		callback: callbackVerifier, releases: releaseService,
+	}, capture.observation, nil
 }
 
 func captureBuildArgument[T any](capture *buildCapture, role buildRole, value T) T {
@@ -281,6 +395,7 @@ func (o buildObservation) validateShared() error {
 		{"ID generator", []buildRole{
 			buildAuthRepositoryIDs, buildArticleRepositoryIDs, buildRevisionRepositoryIDs,
 			buildTagRepositoryIDs, buildMediaRepositoryIDs, buildSettingsRepositoryIDs,
+			buildBuilderRepositoryIDs, buildReleaseRepositoryIDs, buildSnapshotSourceIDs,
 		}},
 		{"random key generator", []buildRole{
 			buildGFSSignerKeys, buildArticleServiceKeys, buildTagServiceKeys, buildMediaServiceKeys,
@@ -288,7 +403,9 @@ func (o buildObservation) validateShared() error {
 		{"clock", []buildRole{
 			buildArticleServiceClock, buildRevisionServiceClock, buildTagServiceClock,
 			buildMediaServiceClock, buildSiteServiceClock, buildHotlinkServiceClock, buildMediaProxyClock,
+			buildSnapshotSourceClock, buildReleaseServiceClock,
 		}},
+		{"random source", []buildRole{buildAuthRandom, buildSecretBoxRandom}},
 		{"hotlink service", []buildRole{buildAdminHotlink, buildMediaProxyHotlink}},
 	}
 	for _, group := range groups {
@@ -336,6 +453,10 @@ func validate(cfg config.Config, deps Dependencies) error {
 		return errors.New("clock dependency is required")
 	case deps.HTTPClient == nil:
 		return errors.New("HTTP client dependency is required")
+	case deps.JenkinsHTTPClient == nil:
+		return errors.New("Jenkins HTTP client dependency is required")
+	case deps.ReleaseJSONReader == nil:
+		return errors.New("release JSON reader dependency is required")
 	}
 	return nil
 }

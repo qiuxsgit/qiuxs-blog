@@ -25,10 +25,13 @@ func TestRunConfiguresServerAndShutsDownGracefully(t *testing.T) {
 	runtime, closes := validRuntime(t)
 	probeTransport := &countingRoundTripper{}
 	runtime.httpClient = &http.Client{Timeout: 5 * time.Second, Transport: probeTransport}
+	jenkinsProbeTransport := &countingRoundTripper{}
+	runtime.jenkinsHTTPClient = &http.Client{Timeout: 5 * time.Second, Transport: jenkinsProbeTransport}
 	var buildDependencies app.Dependencies
-	runtime.build = func(_ config.Config, dependencies app.Dependencies) (http.Handler, error) {
+	prepared := &preparedApplicationFake{handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})}
+	runtime.prepare = func(_ config.Config, dependencies app.Dependencies) (preparedApplication, error) {
 		buildDependencies = dependencies
-		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
+		return prepared, nil
 	}
 	serveDone := make(chan struct{})
 	var served *http.Server
@@ -61,7 +64,11 @@ func TestRunConfiguresServerAndShutsDownGracefully(t *testing.T) {
 	require.Equal(t, 60*time.Second, served.IdleTimeout)
 	require.Same(t, runtime.httpClient, buildDependencies.HTTPClient)
 	require.Equal(t, 5*time.Second, buildDependencies.HTTPClient.Timeout)
+	require.Same(t, runtime.jenkinsHTTPClient, buildDependencies.JenkinsHTTPClient)
+	require.NotNil(t, buildDependencies.ReleaseJSONReader)
+	require.Equal(t, 1, prepared.reconciles)
 	require.Zero(t, probeTransport.calls, "startup must not probe GFS")
+	require.Zero(t, jenkinsProbeTransport.calls, "startup must not probe Jenkins")
 	require.Greater(t, shutdownRemaining, 29*time.Second)
 	require.LessOrEqual(t, shutdownRemaining, 30*time.Second)
 	require.Equal(t, 1, closes.mysql)
@@ -113,7 +120,17 @@ func TestExecuteReturnsFailureAndClosesOnlyOpenedResources(t *testing.T) {
 		{
 			name: "application build",
 			mutate: func(runtime *runtimeDependencies) {
-				runtime.build = func(config.Config, app.Dependencies) (http.Handler, error) { return nil, failure }
+				runtime.prepare = func(config.Config, app.Dependencies) (preparedApplication, error) { return nil, failure }
+			},
+			wantMySQL: 1,
+			wantRedis: 1,
+		},
+		{
+			name: "release reconciliation",
+			mutate: func(runtime *runtimeDependencies) {
+				runtime.prepare = func(config.Config, app.Dependencies) (preparedApplication, error) {
+					return &preparedApplicationFake{handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), reconcileErr: failure}, nil
+				}
 			},
 			wantMySQL: 1,
 			wantRedis: 1,
@@ -174,6 +191,19 @@ func (t *countingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) 
 	return nil, errors.New("unexpected HTTP dependency call")
 }
 
+type preparedApplicationFake struct {
+	handler      http.Handler
+	reconcileErr error
+	reconciles   int
+}
+
+func (a *preparedApplicationFake) Handler() http.Handler { return a.handler }
+
+func (a *preparedApplicationFake) Reconcile(context.Context) (bool, error) {
+	a.reconciles++
+	return false, a.reconcileErr
+}
+
 func validRuntime(t *testing.T) (runtimeDependencies, *closeCounts) {
 	t.Helper()
 	db, _, err := sqlmock.New()
@@ -205,6 +235,10 @@ func validRuntime(t *testing.T) (runtimeDependencies, *closeCounts) {
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
+		jenkinsHTTPClient: &http.Client{Timeout: 5 * time.Second},
+		openArtifact: func(string) (io.ReadCloser, error) {
+			return nil, os.ErrNotExist
+		},
 		signals: make(chan os.Signal),
 		openMySQL: func(config.MySQLConfig) (*sql.DB, error) {
 			return db, nil
@@ -220,8 +254,8 @@ func validRuntime(t *testing.T) (runtimeDependencies, *closeCounts) {
 			closes.redis++
 			return nil
 		},
-		build: func(config.Config, app.Dependencies) (http.Handler, error) {
-			return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
+		prepare: func(config.Config, app.Dependencies) (preparedApplication, error) {
+			return &preparedApplicationFake{handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})}, nil
 		},
 		serve:    func(*http.Server) error { return errors.New("unexpected serve") },
 		shutdown: func(*http.Server, context.Context) error { return errors.New("unexpected shutdown") },

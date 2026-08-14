@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -523,7 +524,9 @@ func newContentMediaFlow(t *testing.T) *contentMediaFlow {
 	router, err := app.Build(flow.cfg, app.Dependencies{
 		DB: db, Redis: redisClient, Logger: slog.New(slog.NewJSONHandler(&flow.logs, nil)),
 		Random: bytes.NewReader(bytes.Repeat([]byte{0}, 4096)), Now: func() time.Time { return flow.now },
-		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+		HTTPClient:        &http.Client{Timeout: 5 * time.Second},
+		JenkinsHTTPClient: &http.Client{Timeout: 5 * time.Second},
+		ReleaseJSONReader: func() (io.ReadCloser, error) { return nil, fs.ErrNotExist },
 	})
 	require.NoError(t, err)
 	server := httptest.NewServer(router)

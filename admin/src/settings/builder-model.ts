@@ -9,7 +9,7 @@ export const defaults: BuilderDraft = {
   username: "",
   jobName: "",
   token: "",
-  enabled: true,
+  enabled: false,
 };
 
 const runeCount = (value: string) => Array.from(value).length;
@@ -43,8 +43,10 @@ export function isValidBuilderJobName(value: string): boolean {
 
 export function validateBuilderDraft(draft: BuilderDraft, tokenConfigured = Boolean(draft.tokenConfigured)): string[] {
   const errors: string[] = [];
-  if (!draft.name || draft.name !== draft.name.trim() || runeCount(draft.name) > 100) errors.push("name");
-  if (!draft.username || draft.username !== draft.username.trim() || draft.username.includes(":" ) || runeCount(draft.username) > 255) errors.push("username");
+  const name = draft.name.trim();
+  const username = draft.username.trim();
+  if (!name || runeCount(name) > 100) errors.push("name");
+  if (!username || username.includes(":") || runeCount(username) > 255) errors.push("username");
   if (!isCanonicalBuilderBaseUrl(draft.baseUrl)) errors.push("baseUrl");
   if (!isValidBuilderJobName(draft.jobName)) errors.push("jobName");
   if (!tokenConfigured && !draft.token) errors.push("token");
@@ -55,7 +57,7 @@ export function validateBuilderDraft(draft: BuilderDraft, tokenConfigured = Bool
 export function buildBuilderPutRequest(draft: BuilderDraft): PutBuilderConfigRequest {
   const errors = validateBuilderDraft(draft);
   if (errors.length > 0) throw new Error(`Invalid builder settings: ${errors.join(", ")}`);
-  const request: PutBuilderConfigRequest = { name: draft.name, baseUrl: draft.baseUrl, username: draft.username, jobName: draft.jobName, enabled: draft.enabled };
+  const request: PutBuilderConfigRequest = { name: draft.name.trim(), baseUrl: draft.baseUrl, username: draft.username.trim(), jobName: draft.jobName, enabled: draft.enabled };
   if (draft.token !== "") request.token = draft.token;
   return request;
 }
@@ -65,7 +67,10 @@ export function builderDraftFromView(view: BuilderConfigView): BuilderDraft {
 }
 
 export function clearBuilderToken(draft: BuilderDraft): BuilderDraft { return { ...draft, token: "" }; }
-export function isBuilderTestEligible(draft: BuilderDraft, saved: boolean): boolean { return saved && draft.enabled && (Boolean(draft.tokenConfigured) || draft.token !== ""); }
+export function canTestBuilder(savedView: BuilderConfigView | null | undefined, draft: BuilderDraft, tokenConfigured: boolean): boolean {
+  if (!savedView || !savedView.enabled || !draft.enabled || !tokenConfigured || !savedView.tokenConfigured || draft.token !== "") return false;
+  return draft.name === savedView.name && draft.baseUrl === savedView.baseUrl && draft.username === savedView.username && draft.jobName === savedView.jobName;
+}
 
 export function builderProblemMessage(error: unknown): string {
   if (!(error instanceof ApiProblem)) return "Builder operation failed";

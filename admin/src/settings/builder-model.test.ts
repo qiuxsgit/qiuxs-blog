@@ -7,7 +7,7 @@ import {
   clearBuilderToken,
   builderProblemMessage,
   defaults,
-  isBuilderTestEligible,
+  canTestBuilder,
   validateBuilderDraft,
   type BuilderDraft,
 } from "./builder-model";
@@ -35,7 +35,9 @@ describe("builder settings pure model", () => {
   });
 
   it("enforces trimmed rune limits and token requirement for first configuration", () => {
-    expect(validateBuilderDraft({ ...valid, name: " 😀 " })).toContain("name");
+    expect(validateBuilderDraft({ ...valid, name: " Production " })).toEqual([]);
+    expect(validateBuilderDraft({ ...valid, username: " ci " })).toEqual([]);
+    expect(buildBuilderPutRequest({ ...valid, name: " Production ", username: " ci " })).toMatchObject({ name: "Production", username: "ci" });
     expect(validateBuilderDraft({ ...valid, name: "😀".repeat(101) })).toContain("name");
     expect(validateBuilderDraft({ ...valid, username: "ci:bot" })).toContain("username");
     expect(validateBuilderDraft({ ...valid, token: "" }, false)).toContain("token");
@@ -52,6 +54,7 @@ describe("builder settings pure model", () => {
   });
 
   it("treats GET 404 as an empty editable configuration without fabricating cache data", () => {
+    expect(defaults.enabled).toBe(false);
     expect(builderLoadState(new ApiProblem(404, "not_found", "r1", "Not found"))).toEqual({ kind: "empty" });
     expect(builderLoadState(new ApiProblem(503, "dependency_unavailable", "r2", "Unavailable"))).toEqual({ kind: "error", error: expect.any(ApiProblem) });
     expect(builderLoadState(undefined)).toEqual({ kind: "configured" });
@@ -59,9 +62,13 @@ describe("builder settings pure model", () => {
 
   it("clears the token after successful save and only enables test for saved enabled config", () => {
     expect(clearBuilderToken(valid)).toEqual({ ...valid, token: "" });
-    expect(isBuilderTestEligible(valid, true)).toBe(true);
-    expect(isBuilderTestEligible({ ...valid, enabled: false }, true)).toBe(false);
-    expect(isBuilderTestEligible(valid, false)).toBe(false);
+    const savedView = { id: 1, name: "Production", baseUrl: "https://jenkins.example.com", username: "ci", jobName: "blog/site", enabled: true, tokenConfigured: true };
+    expect(canTestBuilder(savedView, { ...valid, token: "" }, true)).toBe(true);
+    expect(canTestBuilder(savedView, { ...valid, token: "secret-token" }, true)).toBe(false);
+    expect(canTestBuilder(savedView, { ...valid, name: "Changed", token: "" }, true)).toBe(false);
+    expect(canTestBuilder(savedView, { ...valid, enabled: false, token: "" }, true)).toBe(false);
+    expect(canTestBuilder(savedView, { ...valid, token: "" }, false)).toBe(false);
+    expect(canTestBuilder(null, { ...valid, token: "" }, true)).toBe(false);
   });
 
   it("maps only safe problem metadata and never echoes a token", () => {

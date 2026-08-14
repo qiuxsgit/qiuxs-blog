@@ -4,25 +4,26 @@ import { queryKeys } from "../api/query-keys";
 import { ApiProblem } from "../api/problem";
 import { useAuth } from "../auth/AuthProvider";
 import { ProblemNotice } from "../components/ProblemNotice";
-import { builderDraftFromView, builderLoadState, buildBuilderPutRequest, clearBuilderToken, defaults, isBuilderTestEligible, validateBuilderDraft, type BuilderDraft } from "./builder-model";
+import { builderDraftFromView, builderLoadState, buildBuilderPutRequest, canTestBuilder, clearBuilderToken, defaults, validateBuilderDraft, type BuilderDraft } from "./builder-model";
+import type { BuilderConfigView } from "../api/admin-api";
 
 export function BuilderSettingsPage() {
   const { api } = useAuth();
   const queryClient = useQueryClient();
   const builder = useQuery({ queryKey: queryKeys.builder, queryFn: ({ signal }) => api.getBuilderConfig(signal), retry: false });
   const [draft, setDraft] = useState<BuilderDraft>(defaults);
-  const [saved, setSaved] = useState(false);
+  const [savedView, setSavedView] = useState<BuilderConfigView | null>(null);
   const [notice, setNotice] = useState<string>();
   const [problem, setProblem] = useState<unknown>();
   const load = builderLoadState(builder.error);
   useEffect(() => {
-    if (builder.data) { setDraft(builderDraftFromView(builder.data)); setSaved(true); }
-    else if (load.kind === "empty") { setDraft(defaults); setSaved(false); }
+    if (builder.data) { setDraft(builderDraftFromView(builder.data)); setSavedView(builder.data); }
+    else if (load.kind === "empty") { setDraft(defaults); setSavedView(null); }
   }, [builder.data, load.kind]);
-  const errors = validateBuilderDraft(draft, saved && Boolean(draft.tokenConfigured));
+  const errors = validateBuilderDraft(draft, Boolean(savedView?.tokenConfigured));
   const save = useMutation({
     mutationFn: () => api.putBuilderConfig(buildBuilderPutRequest(draft)),
-    onSuccess: (view) => { const next = builderDraftFromView(view); setDraft(clearBuilderToken(next)); setSaved(true); setNotice("Builder settings saved."); setProblem(undefined); queryClient.setQueryData(queryKeys.builder, view); },
+    onSuccess: (view) => { const next = builderDraftFromView(view); setDraft(clearBuilderToken(next)); setSavedView(view); setNotice("Builder settings saved."); setProblem(undefined); queryClient.setQueryData(queryKeys.builder, view); },
     onError: setProblem,
   });
   const test = useMutation({
@@ -34,7 +35,7 @@ export function BuilderSettingsPage() {
   if (builder.isPending) return <p role="status">Loading builder settings</p>;
   if (load.kind === "error") return problem instanceof ApiProblem ? <ProblemNotice problem={problem} /> : <p role="alert">Unable to load builder settings</p>;
   return <section aria-labelledby="builder-settings-heading">
-    <div className="page-heading"><div><h1 id="builder-settings-heading">Builder settings</h1><p>Configure the Jenkins job used for static releases. Tokens are write-only.</p></div><button className="button button-secondary touch-target" disabled={!isBuilderTestEligible(draft, saved) || test.isPending} onClick={() => test.mutate()} type="button">{test.isPending ? "Testing connection" : "Test connection"}</button></div>
+    <div className="page-heading"><div><h1 id="builder-settings-heading">Builder settings</h1><p>Configure the Jenkins job used for static releases. Tokens are write-only.</p></div><button className="button button-secondary touch-target" disabled={!canTestBuilder(savedView, draft, Boolean(draft.tokenConfigured)) || test.isPending} onClick={() => test.mutate()} type="button">{test.isPending ? "Testing connection" : "Test connection"}</button></div>
     {problem instanceof ApiProblem && <ProblemNotice problem={problem} />}
     {notice && <p role="status">{notice}</p>}
     <form onSubmit={(event) => { event.preventDefault(); if (errors.length === 0 && !save.isPending) save.mutate(); }}>

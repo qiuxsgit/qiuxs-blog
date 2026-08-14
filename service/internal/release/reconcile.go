@@ -89,9 +89,22 @@ func decodeArtifact(raw []byte) (Artifact, error) {
 }
 
 func decodeArtifactID(decoder *json.Decoder) (int64, error) {
-	var number json.Number
-	if err := decoder.Decode(&number); err != nil {
+	token, err := decoder.Token()
+	if err != nil {
 		return 0, err
 	}
-	return strconv.ParseInt(number.String(), 10, 64)
+	number, ok := token.(json.Number)
+	if !ok {
+		return 0, errors.New("artifact ID must be a JSON number")
+	}
+	encoded := number.String()
+	if len(encoded) == 0 || encoded[0] < '1' || encoded[0] > '9' {
+		return 0, errors.New("artifact ID must be a positive canonical integer")
+	}
+	for index := 1; index < len(encoded); index++ {
+		if encoded[index] < '0' || encoded[index] > '9' {
+			return 0, errors.New("artifact ID must be a positive canonical integer")
+		}
+	}
+	return strconv.ParseInt(encoded, 10, 64)
 }

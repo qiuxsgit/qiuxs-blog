@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiProblem } from "../api/problem";
 import { articleDetail, draftView } from "../test/fixtures";
-import { autosaveInitialKey, createAutosaveState, autosaveReducer, copyLocalMarkdown, conflictReloadDecision, isRevisionConflict, nextAutosaveDelay, shouldBlockNavigation, type SaveState } from "./useAutosave";
+import { autosaveInitialKey, createAutosaveState, autosaveReducer, copyLocalMarkdown, conflictReloadDecision, isCurrentAutosaveEpoch, isRevisionConflict, nextAutosaveDelay, reduceForAutosaveEpoch, shouldBlockNavigation, type SaveState } from "./useAutosave";
 import type { EditorDocument } from "./editor-document";
 
 const local: EditorDocument = { title: "Draft", summary: "", coverMediaId: null, contentMd: "# local\n", tagIds: [31] };
@@ -47,6 +47,16 @@ describe("autosave state machine", () => {
     const newer = autosaveReducer(saving, { type: "edit", document: { ...local, contentMd: "newer" } });
     const settled = autosaveReducer(newer, { type: "success", generation: 1, draft: { ...draftView, lockVersion: 8 }, savedAt: new Date() });
     expect(nextAutosaveDelay(settled.state, 0, 2000)).toBe(0);
+  });
+
+  it("ignores old article save callbacks after switching articles", () => {
+    const oldState = createAutosaveState(local, 7);
+    const newDocument = { ...local, title: "New article", contentMd: "# new" };
+    const newState = createAutosaveState(newDocument, 3);
+    expect(isCurrentAutosaveEpoch(1, 2)).toBe(false);
+    expect(reduceForAutosaveEpoch(newState, 1, 2, { type: "success", generation: 1, draft: { ...draftView, title: "OLD", contentMd: "old", lockVersion: 99 }, savedAt: new Date() })).toEqual(newState);
+    expect(reduceForAutosaveEpoch(newState, 1, 2, { type: "failure", generation: 1, problem: new ApiProblem(503, "old", "old", "old") })).toEqual(newState);
+    expect(oldState.document.title).toBe("Draft");
   });
 
   it("serializes a response and adopts its lock version", () => {

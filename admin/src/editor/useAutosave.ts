@@ -48,6 +48,14 @@ export function conflictReloadDecision(confirmed: boolean): "stay" | "reload" {
   return confirmed ? "reload" : "stay";
 }
 
+export function isCurrentAutosaveEpoch(expected: number, actual: number): boolean {
+  return expected === actual;
+}
+
+export function reduceForAutosaveEpoch(current: AutosaveState, expectedEpoch: number, actualEpoch: number, action: AutosaveAction): AutosaveState {
+  return isCurrentAutosaveEpoch(expectedEpoch, actualEpoch) ? autosaveReducer(current, action) : current;
+}
+
 function documentFromDraft(current: EditorDocument, draft: DraftView): EditorDocument {
   const seen = new Set<number>();
   const tagIds = [...draft.tags].sort((a, b) => a.position - b.position).flatMap((tag) => {
@@ -112,6 +120,7 @@ export function useAutosave(options: AutosaveOptions) {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const inFlight = useRef(false);
   const abort = useRef<AbortController | undefined>(undefined);
+  const epoch = useRef(0);
   const initialKey = autosaveInitialKey(options.articleId, options.initialLockVersion, options.initial);
   usePrompt({ when: shouldBlockNavigation(machine.state), message: "You have unsaved changes. Leave this page?" });
 
@@ -124,6 +133,11 @@ export function useAutosave(options: AutosaveOptions) {
   }, []);
 
   useEffect(() => {
+    epoch.current += 1;
+    if (timer.current) clearTimeout(timer.current);
+    abort.current?.abort();
+    abort.current = undefined;
+    inFlight.current = false;
     machineRef.current = createAutosaveState(options.initial, options.initialLockVersion);
     setMachine(machineRef.current);
   // Initial data changes only when navigating to another article.
@@ -141,18 +155,20 @@ export function useAutosave(options: AutosaveOptions) {
     }
     const generation = current.generation;
     const lockVersion = current.state.lockVersion;
+    const requestEpoch = epoch.current;
     const controller = new AbortController();
     abort.current = controller;
     inFlight.current = true;
     update({ type: "start", generation, lockVersion });
     void options.save(toSaveRequest(current.document, lockVersion), controller.signal).then((draft) => {
-      if (!mounted.current) return;
+      if (!mounted.current || !isCurrentAutosaveEpoch(requestEpoch, epoch.current)) return;
       update({ type: "success", generation, draft, savedAt: new Date() });
     }).catch((error: unknown) => {
-      if (!mounted.current || error instanceof DOMException && error.name === "AbortError") return;
+      if (!mounted.current || !isCurrentAutosaveEpoch(requestEpoch, epoch.current) || error instanceof DOMException && error.name === "AbortError") return;
       if (isRevisionConflict(error)) update({ type: "conflict", generation });
       else update({ type: "failure", generation, problem: operationProblem(error, "Unable to save draft", "save_draft_failed") });
     }).finally(() => {
+      if (!isCurrentAutosaveEpoch(requestEpoch, epoch.current)) return;
       inFlight.current = false;
       abort.current = undefined;
       if (!mounted.current) return;

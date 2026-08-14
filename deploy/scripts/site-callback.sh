@@ -8,7 +8,7 @@ command -v curl >/dev/null || { echo 'curl required' >&2; exit 1; }
 command -v openssl >/dev/null || { echo 'openssl required' >&2; exit 1; }
 timestamp_epoch=$(date +%s); timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ); nonce=$(openssl rand -hex 16)
 case "$status" in
-  queued) stage=queue; error_summary;;
+  queued) stage=queue; error_summary=;;
   building) stage=build; error_summary=;;
   deploying|success) stage=deploy; error_summary=;;
   failed) stage=${7:-deploy}; [[ "$stage" =~ ^(queue|build|deploy)$ ]] || { echo 'invalid failed stage' >&2; exit 1; }; error_summary='Jenkins pipeline failed';;

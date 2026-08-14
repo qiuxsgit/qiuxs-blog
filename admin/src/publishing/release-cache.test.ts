@@ -1,4 +1,4 @@
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ReleaseList, ReleaseView } from "../api/admin-api";
@@ -42,18 +42,32 @@ describe("syncReleaseCache", () => {
   it("does not refetch cached release lists during repeated detail polling", async () => {
     const client = createClient();
     let listRequests = 0;
-    await client.fetchQuery({
+    const observer = new QueryObserver(client, {
       queryKey: queryKeys.releaseList(20, 0),
       queryFn: async () => {
         listRequests += 1;
         return releaseList;
       },
     });
+    let firstSuccess = false;
+    let resolveFirst!: () => void;
+    const firstResult = new Promise<void>((resolve) => { resolveFirst = resolve; });
+    const subscription = observer.subscribe((result) => {
+      if (result.status === "success") {
+        firstSuccess = true;
+        resolveFirst();
+      }
+    });
+    await firstResult;
+    expect(firstSuccess).toBe(true);
+    expect(observer.getCurrentResult().fetchStatus).toBe("idle");
 
     await syncReleaseCache(client, { ...failedRelease, status: "queued", completedAt: null }, "poll");
     await syncReleaseCache(client, failedRelease, "poll");
 
     expect(listRequests).toBe(1);
+    expect(observer.getCurrentResult().fetchStatus).toBe("idle");
+    subscription();
   });
 
   it.each(["create", "retry", "poll"] as const)("invalidates the complete article cache after a successful %s result", async (source) => {

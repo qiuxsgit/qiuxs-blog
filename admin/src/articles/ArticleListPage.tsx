@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import type { ArticleSummary } from "../api/admin-api";
@@ -29,7 +29,7 @@ function currentState(search: string): ArticleListState {
 }
 
 function draftTitle(article: ArticleSummary): string {
-  return article.draftTitle.trim() || "Untitled draft";
+  return article.draftTitle.trim().length === 0 ? "Untitled draft" : article.draftTitle;
 }
 
 function actionCopy(action: DialogAction): { confirmLabel: string; description: string; title: string } {
@@ -65,10 +65,20 @@ export function ArticleListPage() {
   const [actionProblem, setActionProblem] = useState<ReturnType<typeof articleActionProblem>>();
   const [openActionsFor, setOpenActionsFor] = useState<number>();
   const creating = useRef(false);
+  const confirmingAction = useRef(false);
+  const newArticleButton = useRef<HTMLButtonElement>(null);
+  const focusNewArticleOnDialogClose = useRef(false);
+
+  useEffect(() => {
+    if (!pendingDialog && focusNewArticleOnDialogClose.current) {
+      newArticleButton.current?.focus();
+      focusNewArticleOnDialogClose.current = false;
+    }
+  }, [pendingDialog]);
 
   const articles = useQuery({
     queryKey: queryKeys.articleList(state),
-    queryFn: () => api.listArticles({ state }),
+    queryFn: ({ signal }) => api.listArticles({ state }, signal),
   });
   const create = useMutation({
     mutationFn: () => createArticleAndGetId(api),
@@ -83,9 +93,11 @@ export function ArticleListPage() {
     },
     onSuccess: async (articleId) => {
       await invalidateArticleCache(queryClient, articleId);
+      focusNewArticleOnDialogClose.current = true;
       setPendingDialog(undefined);
     },
     onError: (error) => setActionProblem(articleActionProblem(error, "Unable to update article")),
+    onSettled: () => { confirmingAction.current = false; },
   });
   const unpublish = useMutation({
     mutationFn: async (pending: PendingDialog) => {
@@ -98,10 +110,12 @@ export function ArticleListPage() {
       navigate(`/publishing?release=${releaseId}`);
     },
     onError: (error) => setActionProblem(articleActionProblem(error, "Unable to start unpublish release")),
+    onSettled: () => { confirmingAction.current = false; },
   });
 
   const confirmAction = () => {
-    if (!pendingDialog || lifecycle.isPending || unpublish.isPending) return;
+    if (!pendingDialog || confirmingAction.current) return;
+    confirmingAction.current = true;
     setActionProblem(undefined);
     if (pendingDialog.action === "unpublish") {
       unpublish.mutate(pendingDialog);
@@ -112,6 +126,7 @@ export function ArticleListPage() {
 
   const dialogCopy = pendingDialog ? actionCopy(pendingDialog.action) : undefined;
   const emptyMessage = state === "trashed" ? "No trashed articles." : "No active articles yet.";
+  const actionPending = lifecycle.isPending || unpublish.isPending;
 
   return (
     <section aria-labelledby="articles-heading">
@@ -126,7 +141,7 @@ export function ArticleListPage() {
           creating.current = true;
           setActionProblem(undefined);
           create.mutate();
-        }} type="button">
+        }} ref={newArticleButton} type="button">
           {create.isPending ? "Creating article" : "New article"}
         </button>
       </div>
@@ -158,7 +173,7 @@ export function ArticleListPage() {
               return (
                 <li className="article-list-item" key={article.id}>
                   <div>
-                    <h2><Link to={`/articles/${article.id}/edit`}>{title}</Link></h2>
+                    <h2><Link aria-label={title} to={`/articles/${article.id}/edit`}>{title}</Link></h2>
                     <p>Draft updated: {article.draftUpdatedAt}</p>
                     <p>Created: {article.createdAt}</p>
                     <p>State: {article.state}</p>
@@ -168,20 +183,21 @@ export function ArticleListPage() {
                     <button
                       aria-expanded={openActionsFor === article.id}
                       aria-label={`Actions for ${title}`}
+                      className="touch-target"
                       onClick={() => setOpenActionsFor((current) => current === article.id ? undefined : article.id)}
                       type="button"
                     >
                       Actions
                     </button>
                     {openActionsFor === article.id && <div>
-                      <Link to={`/articles/${article.id}/edit`}>Edit</Link>
+                      <Link className="touch-target" to={`/articles/${article.id}/edit`}>Edit</Link>
                       {article.state === "trashed" ? (
-                        <button onClick={() => setPendingDialog({ action: "restore", article })} type="button">Restore</button>
+                        <button className="touch-target" onClick={() => setPendingDialog({ action: "restore", article })} type="button">Restore</button>
                       ) : (
                         <>
-                          <button disabled={published} onClick={() => setPendingDialog({ action: "trash", article })} type="button">Trash</button>
+                          <button className="touch-target" disabled={published} onClick={() => setPendingDialog({ action: "trash", article })} type="button">Trash</button>
                           {published && <p>Unpublish before trashing this article.</p>}
-                          {published && <button onClick={() => setPendingDialog({ action: "unpublish", article })} type="button">Unpublish</button>}
+                          {published && <button className="touch-target" onClick={() => setPendingDialog({ action: "unpublish", article })} type="button">Unpublish</button>}
                         </>
                       )}
                     </div>}
@@ -195,6 +211,7 @@ export function ArticleListPage() {
 
       {pendingDialog && dialogCopy && (
         <ConfirmDialog
+          confirmDisabled={actionPending}
           confirmLabel={dialogCopy.confirmLabel}
           onCancel={() => setPendingDialog(undefined)}
           onConfirm={confirmAction}

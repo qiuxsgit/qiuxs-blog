@@ -1,2 +1,6 @@
 .superpowers/
 /service/build/
+/admin/node_modules/
+/admin/dist/
+/admin/playwright-report/
+/admin/test-results/

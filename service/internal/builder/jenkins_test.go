@@ -73,6 +73,37 @@ func TestJenkinsClientDoesNotUseOrMutateInjectedCookieJar(t *testing.T) {
 	require.Equal(t, []*http.Cookie{{Name: "caller_session", Value: "private-cookie"}}, jar.Cookies(origin))
 }
 
+func TestNewJenkinsClientRejectsTypedNilTransportWithoutMutationOrPanic(t *testing.T) {
+	var typedNil *panicTransport
+	injected := &http.Client{Transport: typedNil, Timeout: 3 * time.Second}
+	var client *Client
+	var err error
+	require.NotPanics(t, func() { client, err = NewClient(injected) })
+	require.Nil(t, client)
+	require.EqualError(t, err, "Jenkins HTTP client transport is not configured")
+	require.Equal(t, 3*time.Second, injected.Timeout)
+	require.Same(t, typedNil, injected.Transport)
+
+	defaultTransportClient, err := NewClient(&http.Client{})
+	require.NoError(t, err)
+	require.NotNil(t, defaultTransportClient)
+	require.Nil(t, defaultTransportClient.httpClient.Transport)
+	require.Same(t, typedNil, injected.Transport)
+}
+
+func TestJenkinsClientPublicMethodsRejectTypedNilTransportWithoutPanic(t *testing.T) {
+	var typedNil *panicTransport
+	injected := &http.Client{Transport: typedNil, Timeout: 3 * time.Second}
+	unsafeClient := &Client{httpClient: injected}
+	cfg, box := storedClientConfig(t, "https://jenkins.example.com", "site/build", true)
+	var err error
+	require.NotPanics(t, func() { err = unsafeClient.Test(context.Background(), cfg, box) })
+	require.EqualError(t, err, "Jenkins HTTP client transport is not configured")
+	require.NotPanics(t, func() { _, err = unsafeClient.Trigger(context.Background(), cfg, box, 9, 12) })
+	require.EqualError(t, err, "Jenkins HTTP client transport is not configured")
+	require.Same(t, typedNil, injected.Transport)
+}
+
 func TestJenkinsClientTriggerEscapesSegmentsAndSendsOnlyCorrelatedIDs(t *testing.T) {
 	var observedPath string
 	var observedForm url.Values
@@ -296,6 +327,12 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
+}
+
+type panicTransport struct{}
+
+func (*panicTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	panic("typed-nil transport must not be used")
 }
 
 type trackingBody struct {

@@ -166,6 +166,9 @@ func (r *MySQLRepository) update(ctx context.Context, tx *sql.Tx, current Stored
 
 func reloadExpectedBuilder(ctx context.Context, tx *sql.Tx, expected StoredConfig, operation string) (StoredConfig, error) {
 	stored, err := scanStoredBuilder(tx.QueryRowContext(ctx, selectBuilderForUpdate))
+	if errors.Is(err, sql.ErrNoRows) {
+		return StoredConfig{}, builderDependency(operation, errors.New("stored builder configuration is missing"))
+	}
 	if err != nil {
 		return StoredConfig{}, err
 	}

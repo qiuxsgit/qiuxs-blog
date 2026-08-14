@@ -19,6 +19,8 @@ const (
 	jenkinsQueueHeader      = "X-Jenkins-Queue-Id"
 )
 
+var errJenkinsTransportNotConfigured = errors.New("Jenkins HTTP client transport is not configured")
+
 type Client struct {
 	httpClient *http.Client
 }
@@ -26,6 +28,9 @@ type Client struct {
 func NewClient(httpClient *http.Client) (*Client, error) {
 	if httpClient == nil {
 		return nil, errors.New("Jenkins HTTP client is required")
+	}
+	if httpClient.Transport != nil && nilBuilderInterface(httpClient.Transport) {
+		return nil, errJenkinsTransportNotConfigured
 	}
 	clone := *httpClient
 	clone.Timeout = 0
@@ -107,6 +112,9 @@ func (c *Client) Trigger(ctx context.Context, config StoredConfig, box *platform
 func (c *Client) validate(ctx context.Context, config StoredConfig, box *platform.SecretBox) error {
 	if c == nil || c.httpClient == nil {
 		return errors.New("Jenkins client is not configured")
+	}
+	if c.httpClient.Transport != nil && nilBuilderInterface(c.httpClient.Transport) {
+		return errJenkinsTransportNotConfigured
 	}
 	if nilBuilderInterface(ctx) {
 		return builderDomain("use Jenkins client", ErrInvalidConfig)

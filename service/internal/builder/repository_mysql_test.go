@@ -153,6 +153,43 @@ func TestBuilderRepositoryEncryptionAndDependencyFailuresRollbackSanitized(t *te
 	})
 }
 
+func TestBuilderRepositoryMissingReloadRowsRollbackAsDependency(t *testing.T) {
+	t.Run("after insert", func(t *testing.T) {
+		repo, mock, _, _ := newBuilderRepositoryTest(t, 6)
+		input := validBuilderInput()
+		ciphertext := sealWithNonce(t, 6, input.Token)
+		mock.ExpectBegin()
+		mock.ExpectQuery(testSelectBuilderForUpdateSQL).WillReturnError(sql.ErrNoRows)
+		mock.ExpectExec(testInsertBuilderSQL).WithArgs(int64(1), input.Name, input.BaseURL, input.Username, ciphertext, input.JobName, true).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(testSelectBuilderForUpdateSQL).WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+
+		_, err := repo.Save(context.Background(), input)
+		require.ErrorIs(t, err, ErrDependencyUnavailable)
+		assertSanitizedBuilderWriteError(t, err, input)
+	})
+
+	t.Run("after update", func(t *testing.T) {
+		repo, mock, _, _ := newBuilderRepositoryTest(t, 7)
+		stored := validBuilderInput()
+		ciphertext := sealWithNonce(t, 7, stored.Token)
+		updated := stored
+		updated.Name = "Updated"
+		updated.Token = ""
+		mock.ExpectBegin()
+		mock.ExpectQuery(testSelectBuilderForUpdateSQL).WillReturnRows(builderRows(7, stored, ciphertext))
+		mock.ExpectExec(testUpdateBuilderSQL).WithArgs(updated.Name, updated.BaseURL, updated.Username, ciphertext, updated.JobName, true, int64(7)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(testSelectBuilderForUpdateSQL).WillReturnError(sql.ErrNoRows)
+		mock.ExpectRollback()
+
+		_, err := repo.Save(context.Background(), updated)
+		require.ErrorIs(t, err, ErrDependencyUnavailable)
+		assertSanitizedBuilderWriteError(t, err, stored)
+	})
+}
+
 func TestBuilderRepositoryNilSafetyAndNotFound(t *testing.T) {
 	var nilBox *platform.SecretBox
 	require.NotPanics(t, func() {
@@ -217,6 +254,13 @@ func sealWithNonce(t *testing.T, nonce byte, token string) string {
 func builderRows(id int64, input ConfigInput, ciphertext string) *sqlmock.Rows {
 	return sqlmock.NewRows([]string{"id", "name", "base_url", "username", "token_ciphertext", "job_name", "enabled"}).
 		AddRow(id, input.Name, input.BaseURL, input.Username, ciphertext, input.JobName, input.Enabled)
+}
+
+func assertSanitizedBuilderWriteError(t *testing.T, err error, input ConfigInput) {
+	t.Helper()
+	for _, forbidden := range []string{"builder_config", input.Name, input.BaseURL, input.Username, input.Token, input.JobName} {
+		require.NotContains(t, err.Error(), forbidden)
+	}
 }
 
 type builderCounter struct {

@@ -6,6 +6,7 @@ import { RequireSession } from "../auth/RequireSession";
 import { AppShell } from "../layout/AppShell";
 import { ArticleEditorPage } from "../editor/ArticleEditorPage";
 import { RouteErrorPage } from "./RouteErrorPage";
+import { ArticlePreviewPage } from "../preview/ArticlePreviewPage";
 
 function ShellLayout() {
   return <AppShell><Outlet /></AppShell>;
@@ -29,7 +30,7 @@ export const appRoutes: RouteObject[] = [
           { path: "articles", element: <ArticleListPage /> },
           { path: "articles/new", element: <ArticleEditorPage /> },
           { path: "articles/:articleId/edit", element: <ArticleEditorPage /> },
-          { path: "articles/:articleId/preview", element: <h1>Article preview</h1> },
+          { path: "articles/:articleId/preview", element: <ArticlePreviewPage /> },
           { path: "articles/:articleId/versions", element: <h1>Article versions</h1> },
           { path: "publishing", element: <h1>Publishing</h1> },
           { path: "settings/site", element: <h1>Site</h1> },

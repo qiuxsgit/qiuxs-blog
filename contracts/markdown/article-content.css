@@ -1,0 +1,8 @@
+.article-content { color: var(--paper-50, #f4f1ea); line-height: 1.8; max-width: 78ch; }
+.article-content h2, .article-content h3 { scroll-margin-top: 5rem; line-height: 1.25; }
+.article-content pre { overflow-x: auto; padding: 1rem; background: var(--ink-950, #0b1020); border: 1px solid var(--line, #29344b); }
+.article-content code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.article-content :not(pre) > code { padding: .1rem .3rem; background: var(--ink-900, #151d31); }
+.article-content img { display: block; height: auto; max-width: 100%; }
+.article-content table { border-collapse: collapse; width: 100%; }
+.article-content th, .article-content td { border: 1px solid var(--line, #29344b); padding: .5rem .75rem; text-align: left; }

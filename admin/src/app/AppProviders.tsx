@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PropsWithChildren } from "react";
 
 import { ApiProblem } from "../api/problem";
+import { AuthProvider } from "../auth/AuthProvider";
 
 export function editorRouteIsDirty(): boolean {
   return /^\/articles\/[^/]+\/edit\/?$/.test(window.location.pathname)
@@ -23,5 +24,9 @@ export function createAppQueryClient(): QueryClient {
 const queryClient = createAppQueryClient();
 
 export function AppProviders({ children }: PropsWithChildren) {
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>{children}</AuthProvider>
+    </QueryClientProvider>
+  );
 }

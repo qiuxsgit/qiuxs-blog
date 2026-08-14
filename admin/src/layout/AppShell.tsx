@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type PropsWithChildren } from "react";
 import { NavLink } from "react-router-dom";
 
+import { ApiProblem } from "../api/problem";
+import { useOptionalAuth } from "../auth/AuthProvider";
+
 const navigation = [
   ["Articles", "/articles"],
   ["Publishing", "/publishing"],
@@ -29,7 +32,10 @@ function NavigationLinks({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 export function AppShell({ children }: PropsWithChildren) {
+  const auth = useOptionalAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState<string>();
   const menuButton = useRef<HTMLButtonElement>(null);
   const drawer = useRef<HTMLDivElement>(null);
   const drawerCloseButton = useRef<HTMLButtonElement>(null);
@@ -42,6 +48,18 @@ export function AppShell({ children }: PropsWithChildren) {
   const openDrawer = () => {
     drawerOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : menuButton.current;
     setDrawerOpen(true);
+  };
+
+  const logout = async () => {
+    if (!auth || loggingOut) return;
+    setLoggingOut(true);
+    setLogoutError(undefined);
+    try {
+      await auth.logout();
+    } catch (error) {
+      setLogoutError(error instanceof ApiProblem ? error.title : "Unable to log out");
+      setLoggingOut(false);
+    }
   };
 
   useEffect(() => {
@@ -81,24 +99,35 @@ export function AppShell({ children }: PropsWithChildren) {
         <header className="app-header">
           <div className="shell-width header-content">
             <NavLink className="brand" to="/articles">QIUXS <span>ADMIN</span></NavLink>
-            <button
-              aria-controls="admin-navigation-drawer"
-              aria-expanded={drawerOpen}
-              aria-label="Open navigation"
-              className="touch-target menu-button"
-              onClick={openDrawer}
-              ref={menuButton}
-              type="button"
-            >
-              <span aria-hidden="true">☰</span><span className="sr-only">Open navigation</span>
-            </button>
+            <div className="header-actions">
+              {auth?.state.kind === "authenticated" && <span>{auth.state.admin.username}</span>}
+              {auth && (
+                <button className="button button-secondary touch-target" disabled={loggingOut} onClick={() => void logout()} type="button">
+                  {loggingOut ? "Logging out" : "Log out"}
+                </button>
+              )}
+              <button
+                aria-controls="admin-navigation-drawer"
+                aria-expanded={drawerOpen}
+                aria-label="Open navigation"
+                className="touch-target menu-button"
+                onClick={openDrawer}
+                ref={menuButton}
+                type="button"
+              >
+                <span aria-hidden="true">☰</span><span className="sr-only">Open navigation</span>
+              </button>
+            </div>
           </div>
         </header>
         <div className="shell-width shell-grid">
           <aside className="desktop-sidebar">
             <nav aria-label="Admin"><NavigationLinks /></nav>
           </aside>
-          <main id="main-content" tabIndex={-1}>{children}</main>
+          <main id="main-content" tabIndex={-1}>
+            {logoutError && <p role="alert">{logoutError}</p>}
+            {children}
+          </main>
         </div>
       </div>
       {drawerOpen && (

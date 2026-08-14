@@ -50,6 +50,12 @@ interface PlannedResponse {
   contentType?: string;
 }
 
+interface InvalidResponseShapeCase {
+  name: string;
+  response: PlannedResponse;
+  invoke: (api: AdminApi) => Promise<unknown>;
+}
+
 function createRecordingFetch(planned: PlannedResponse[]) {
   const records: RequestRecord[] = [];
   const signals: AbortSignal[] = [];
@@ -83,6 +89,21 @@ function createRecordingFetch(planned: PlannedResponse[]) {
 
 const json = (status: number, body: unknown): PlannedResponse => ({ status, body });
 const empty = (status: number): PlannedResponse => ({ status });
+
+function invalidFields(
+  family: string,
+  status: number,
+  value: Record<string, unknown>,
+  fields: ReadonlyArray<readonly [string, unknown]>,
+  invoke: (api: AdminApi) => Promise<unknown>,
+  wrap: (invalid: Record<string, unknown>) => unknown = (invalid) => invalid,
+): InvalidResponseShapeCase[] {
+  return fields.map(([field, invalid]) => ({
+    name: `${family}.${field}`,
+    response: json(status, wrap({ ...value, [field]: invalid })),
+    invoke,
+  }));
+}
 
 describe("createAdminApi", () => {
   it("maps every AdminApi operation to the exact wire method, path, query, body, and success status", async () => {
@@ -562,6 +583,275 @@ describe("createAdminApi", () => {
       code: "invalid_api_response",
       requestId: "client",
       title: "Invalid API response",
+    });
+  });
+
+  const mediaReference = {
+    mediaId: 51,
+    publicKey: "m_abcdefghijklmnopqrstuv",
+    purpose: "content",
+    position: 0,
+  };
+  const draftWithMedia = { ...draftView, media: [mediaReference] };
+  const responseShapeCases: InvalidResponseShapeCase[] = [
+    ...invalidFields("Admin", 200, { id: 1, username: "admin" }, [
+      ["id", 0],
+      ["username", 42],
+    ], (api) => api.getCurrentAdmin()),
+    ...invalidFields("ArticleSummary", 200, articleSummary, [
+      ["id", 0],
+      ["slug", null],
+      ["draftRevisionId", 0],
+      ["publishedRevisionId", false],
+      ["state", "archived"],
+      ["draftTitle", 42],
+      ["draftUpdatedAt", false],
+      ["createdAt", 42],
+      ["updatedAt", undefined],
+    ], (api) => api.listArticles(), (invalid) => ({ items: [invalid] })),
+    ...invalidFields("ArticleList", 200, articleList, [
+      ["items", null],
+    ], (api) => api.listArticles()),
+    ...invalidFields("ArticleDetail", 200, articleDetail, [
+      ["id", 0],
+      ["slug", 42],
+      ["draftRevisionId", 0],
+      ["publishedRevisionId", false],
+      ["state", "archived"],
+      ["createdAt", null],
+      ["updatedAt", undefined],
+      ["draft", []],
+    ], (api) => api.getArticle(11)),
+    ...invalidFields("DraftView", 200, draftWithMedia, [
+      ["id", 0],
+      ["articleId", 0],
+      ["revisionNo", 0],
+      ["lockVersion", 0],
+      ["status", "frozen"],
+      ["reason", "manual_version"],
+      ["title", 42],
+      ["summary", null],
+      ["coverMediaId", false],
+      ["contentMd", false],
+      ["contentHash", undefined],
+      ["tags", {}],
+      ["media", null],
+      ["createdAt", 42],
+      ["updatedAt", false],
+    ], (api) => api.saveArticleDraft(11, validSaveDraft)),
+    ...invalidFields("TagSnapshot", 200, draftView.tags[0] as Record<string, unknown>, [
+      ["tagId", 0],
+      ["name", 42],
+      ["slug", null],
+      ["position", 1.5],
+    ], (api) => api.saveArticleDraft(11, validSaveDraft), (invalid) => ({
+      ...draftView,
+      tags: [invalid],
+    })),
+    ...invalidFields("MediaReference", 200, mediaReference, [
+      ["mediaId", 0],
+      ["publicKey", 42],
+      ["purpose", "thumbnail"],
+      ["position", -1],
+    ], (api) => api.saveArticleDraft(11, validSaveDraft), (invalid) => ({
+      ...draftView,
+      media: [invalid],
+    })),
+    ...invalidFields("PreviewView", 200, previewView, [
+      ["slug", null],
+      ["draft", "draft"],
+    ], (api) => api.getArticlePreview(11)),
+    ...invalidFields("RevisionView", 200, revisionList.items[0] as Record<string, unknown>, [
+      ["id", 0],
+      ["articleId", 0],
+      ["revisionNo", 0],
+      ["lockVersion", 0],
+      ["status", "editing"],
+      ["reason", "draft"],
+      ["title", 42],
+      ["summary", null],
+      ["coverMediaId", false],
+      ["contentMd", false],
+      ["contentHash", undefined],
+      ["tags", {}],
+      ["media", null],
+      ["createdAt", 42],
+      ["updatedAt", false],
+    ], (api) => api.listArticleVersions(11), (invalid) => ({ items: [invalid] })),
+    ...invalidFields("RevisionList", 200, revisionList, [
+      ["items", {}],
+    ], (api) => api.listArticleVersions(11)),
+    ...invalidFields("VersionResult", 201, versionResult, [
+      ["version", null],
+      ["draft", []],
+    ], (api) => api.createArticleVersion(11, { lockVersion: 7 })),
+    ...invalidFields("TagView", 201, tagView, [
+      ["id", 0],
+      ["name", 42],
+      ["slug", null],
+      ["createdAt", false],
+      ["updatedAt", undefined],
+    ], (api) => api.createTag({ name: "Go" })),
+    ...invalidFields("TagList", 200, tagList, [
+      ["items", null],
+    ], (api) => api.listTags()),
+    ...invalidFields("MediaUploadPolicy", 200, mediaPolicy, [
+      ["uploadUrl", 42],
+      ["appId", null],
+      ["policy", false],
+      ["signature", undefined],
+      ["timestamp", 42],
+      ["expire", null],
+      ["nonce", false],
+      ["fileField", 42],
+    ], (api) => api.createMediaUploadPolicy()),
+    ...invalidFields("MediaView", 201, mediaView, [
+      ["id", 0],
+      ["publicKey", 42],
+      ["gfsFileId", 0],
+      ["originalName", null],
+      ["mimeType", "image/svg+xml"],
+      ["fileSize", 0],
+      ["width", 1.5],
+      ["height", 0],
+      ["state", "deleted"],
+      ["url", false],
+      ["createdAt", 42],
+      ["updatedAt", undefined],
+    ], (api) => api.registerMedia({ gfsFileId: 41, originalName: "photo.png" })),
+    ...invalidFields("SiteSettingsView", 200, {
+      ...siteSettings,
+      socialLinks: [{ label: "GitHub", url: "https://github.com/qiuxs" }],
+    }, [
+      ["id", false],
+      ["lockVersion", -1],
+      ["siteName", 42],
+      ["authorName", null],
+      ["authorBio", false],
+      ["homeStatus", undefined],
+      ["aboutMd", 42],
+      ["socialLinks", null],
+      ["seoDefaultTitle", false],
+      ["seoDefaultDescription", 42],
+      ["seoDefaultImageMediaId", false],
+      ["filingName", null],
+      ["filingNumber", false],
+      ["filingUrl", 42],
+      ["updatedAt", {}],
+    ], (api) => api.getSiteSettings()),
+    ...invalidFields("SocialLink", 200, { label: "GitHub", url: "https://github.com/qiuxs" }, [
+      ["label", 42],
+      ["url", null],
+    ], (api) => api.getSiteSettings(), (invalid) => ({
+      ...siteSettings,
+      socialLinks: [invalid],
+    })),
+    ...invalidFields("HotlinkSettingsView", 200, hotlinkSettings, [
+      ["allowEmptyReferer", "yes"],
+      ["entries", null],
+    ], (api) => api.getHotlinkSettings()),
+    ...invalidFields("HotlinkEntry", 200, hotlinkSettings.entries[0] as Record<string, unknown>, [
+      ["hostname", 42],
+      ["enabled", "yes"],
+    ], (api) => api.getHotlinkSettings(), (invalid) => ({
+      ...hotlinkSettings,
+      entries: [invalid],
+    })),
+    ...invalidFields("BuilderConfigView", 200, builderConfig, [
+      ["id", 0],
+      ["name", 42],
+      ["baseUrl", null],
+      ["username", false],
+      ["jobName", undefined],
+      ["enabled", "yes"],
+      ["tokenConfigured", 1],
+    ], (api) => api.getBuilderConfig()),
+    ...invalidFields("ReleaseView", 200, failedRelease, [
+      ["id", 0],
+      ["status", "cancelled"],
+      ["checksum", 42],
+      ["createdAt", null],
+      ["completedAt", {}],
+      ["latestJob", []],
+      ["jobs", null],
+      ["jobs", []],
+    ], (api) => api.getRelease(71)),
+    ...invalidFields("PublishJobView", 200, failedJob, [
+      ["id", 0],
+      ["releaseId", 0],
+      ["builderId", 0],
+      ["builderTarget", null],
+      ["status", "cancelled"],
+      ["stage", 42],
+      ["buildNumber", false],
+      ["errorSummary", null],
+      ["createdAt", false],
+      ["finishedAt", {}],
+    ], (api) => api.getRelease(71), (invalid) => ({
+      ...failedRelease,
+      latestJob: invalid,
+      jobs: [invalid],
+    })),
+    ...invalidFields("BuilderTargetView", 200, failedJob.builderTarget, [
+      ["name", 42],
+      ["baseUrl", null],
+      ["username", false],
+      ["jobName", undefined],
+    ], (api) => api.getRelease(71), (invalid) => {
+      const job = { ...failedJob, builderTarget: invalid };
+      return { ...failedRelease, latestJob: job, jobs: [job] };
+    }),
+    ...invalidFields("ReleaseList", 200, releaseList, [
+      ["items", {}],
+    ], (api) => api.listReleases()),
+    ...invalidFields("CreateReleaseResult", 202, { release: failedRelease, job: failedJob }, [
+      ["release", null],
+      ["job", []],
+    ], (api) => api.createRelease({ mode: "publish_settings", articleId: null })),
+    ...invalidFields("RetryReleaseResult", 200, { release: failedRelease, job: failedJob }, [
+      ["release", []],
+      ["job", null],
+    ], (api) => api.retryRelease(71)),
+  ];
+
+  it.each(responseShapeCases)("rejects invalid documented response shape: $name", async ({ response, invoke }) => {
+    const recording = createRecordingFetch([response]);
+    const api = createAdminApi({ fetch: recording.fetch });
+
+    const error = await invoke(api).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(ApiProblem);
+    expect(error).toMatchObject({
+      status: 502,
+      code: "invalid_api_response",
+      requestId: "client",
+      title: "Invalid API response",
+    });
+    expect(JSON.stringify(error)).not.toContain("archived");
+    expect(JSON.stringify(error)).not.toContain("cancelled");
+  });
+
+  it("accepts null only for documented nullable response fields", async () => {
+    const nullableRelease = {
+      ...failedRelease,
+      completedAt: null,
+      latestJob: { ...failedJob, buildNumber: null, finishedAt: null },
+      jobs: [{ ...failedJob, buildNumber: null, finishedAt: null }],
+    };
+    const recording = createRecordingFetch([
+      json(200, { items: [{ ...articleSummary, publishedRevisionId: null }] }),
+      json(200, { ...draftView, coverMediaId: null }),
+      json(200, { ...siteSettings, id: null, seoDefaultImageMediaId: null, updatedAt: null }),
+      json(200, nullableRelease),
+    ]);
+    const api = createAdminApi({ fetch: recording.fetch });
+
+    await expect(api.listArticles()).resolves.toEqual({ items: [{ ...articleSummary, publishedRevisionId: null }] });
+    await expect(api.saveArticleDraft(11, validSaveDraft)).resolves.toMatchObject({ coverMediaId: null });
+    await expect(api.getSiteSettings()).resolves.toMatchObject({ id: null, seoDefaultImageMediaId: null, updatedAt: null });
+    await expect(api.getRelease(71)).resolves.toMatchObject({
+      completedAt: null,
+      latestJob: { buildNumber: null, finishedAt: null },
     });
   });
 

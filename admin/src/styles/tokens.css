@@ -1,0 +1,16 @@
+:root {
+  color-scheme: dark;
+  --ink-950: #0d1117;
+  --ink-900: #131a23;
+  --paper-50: #eef4fb;
+  --steel-400: #9eacbd;
+  --blue-400: #2f9cff;
+  --blue-300: #76bcff;
+  --line: #2b3746;
+  --danger: #ff7272;
+  --success: #4ed8a2;
+  --warning: #ffd166;
+  --shell-max: 72rem;
+  --radius: 0.375rem;
+  --shadow: 0 1rem 3rem rgb(0 0 0 / 35%);
+}

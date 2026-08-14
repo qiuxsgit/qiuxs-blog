@@ -85,7 +85,7 @@ export function validateEditorDocument(
   if (utf8.encode(JSON.stringify(unsafeSaveRequest(document, lockVersion))).byteLength >= MAX_DOCUMENT_BYTES) {
     errors.push("Draft request must be smaller than 2 MiB.");
   }
-  if (options.rejectBlobUrls && /(?:^|[('"\s])blob:/iu.test(document.contentMd)) {
+  if (options.rejectBlobUrls && /blob:/iu.test(document.contentMd)) {
     errors.push("Upload local images before versioning or publishing.");
   }
   return errors;

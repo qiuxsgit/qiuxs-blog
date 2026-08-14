@@ -17,4 +17,8 @@
 .markdown-canvas, .markdown-source { background: var(--ink-900); border: 1px solid var(--line); min-height: 32rem; padding: 1rem; }
 .markdown-canvas .ProseMirror { min-height: 30rem; outline: 0; }
 .markdown-source { resize: vertical; }
-@media (max-width: 48rem) { .tag-row { grid-template-columns: 1fr; }.tag-create { grid-template-columns: 1fr; } }
+@media (max-width: 48rem) {
+  .editor-touch-target { min-height: 44px; min-width: 44px; }
+  .tag-row { grid-template-columns: 1fr; }
+  .tag-create { grid-template-columns: 1fr; }
+}

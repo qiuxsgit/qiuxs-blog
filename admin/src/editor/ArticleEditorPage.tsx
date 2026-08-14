@@ -3,9 +3,11 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import type { ArticleDetail, TagView } from "../api/admin-api";
+import { ApiProblem } from "../api/problem";
 import { queryKeys } from "../api/query-keys";
 import { requireEntityId } from "../api/ids";
 import { useAuth } from "../auth/AuthProvider";
+import { ProblemNotice } from "../components/ProblemNotice";
 import { MarkdownEditor } from "./MarkdownEditor";
 import {
   MAX_SELECTED_TAGS,
@@ -36,6 +38,10 @@ function sanitizeProblem(title: string) {
   return <div role="alert"><p>{title}</p></div>;
 }
 
+function operationProblem(error: unknown, title: string, code: string): ApiProblem {
+  return error instanceof ApiProblem ? error : new ApiProblem(503, code, "client", title);
+}
+
 export function ArticleEditorPage() {
   const { api } = useAuth();
   const { articleId: rawArticleId } = useParams();
@@ -44,6 +50,9 @@ export function ArticleEditorPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const creating = useRef(false);
+  const saving = useRef(false);
+  const creatingTag = useRef(false);
+  const renamingTag = useRef(false);
   const [createError, setCreateError] = useState(false);
   const [createdArticle, setCreatedArticle] = useState<ArticleDetail>();
   const [document, setDocument] = useState<EditorDocument>();
@@ -101,6 +110,7 @@ export function ArticleEditorPage() {
       }) } : current);
       queryClient.setQueryData<ArticleDetail>(queryKeys.article(draft.articleId), (current) => current ? { ...current, draft } : current);
     },
+    onSettled: () => { saving.current = false; },
   });
   const createTag = useMutation({
     mutationFn: (name: string) => api.createTag({ name }),
@@ -109,6 +119,7 @@ export function ArticleEditorPage() {
       setDocument((current) => current ? { ...current, tagIds: toggleTagId(current.tagIds, returned.id, true) } : current);
       setNewTagName("");
     },
+    onSettled: () => { creatingTag.current = false; },
   });
   const renameTag = useMutation({
     mutationFn: ({ id, name }: { id: number; name: string }) => api.renameTag(id, { name }),
@@ -116,6 +127,7 @@ export function ArticleEditorPage() {
       queryClient.setQueryData(queryKeys.tags, (current: { items: TagView[] } | undefined) => ({ items: replaceTag(current?.items ?? [], returned) }));
       setRenameNames((current) => ({ ...current, [returned.id]: returned.name }));
     },
+    onSettled: () => { renamingTag.current = false; },
   });
 
   if (isNew) {
@@ -135,19 +147,24 @@ export function ArticleEditorPage() {
   const submitSave = () => {
     const errors = validateEditorDocument(document, lockVersion);
     setSaveErrors(errors);
-    if (errors.length > 0 || save.isPending) return;
+    if (errors.length > 0 || saving.current) return;
+    saving.current = true;
     save.mutate({ articleId, document, lockVersion });
   };
   const submitCreateTag = () => {
     const error = validateTagName(newTagName);
     setTagNameError(error);
-    if (!error) createTag.mutate(newTagName);
+    if (error || creatingTag.current) return;
+    creatingTag.current = true;
+    createTag.mutate(newTagName);
   };
   const submitRename = (tag: TagView) => {
     const name = renameNames[tag.id] ?? tag.name;
     const error = validateTagName(name);
     setTagNameError(error);
-    if (!error) renameTag.mutate({ id: tag.id, name });
+    if (error || renamingTag.current) return;
+    renamingTag.current = true;
+    renameTag.mutate({ id: tag.id, name });
   };
 
   return (
@@ -158,9 +175,8 @@ export function ArticleEditorPage() {
           {save.isPending ? "Saving draft" : "Save draft"}
         </button>
       </div>
-      {(saveErrors.length > 0 || save.isError) && <div role="alert">
-        {saveErrors.length > 0 ? <ul>{saveErrors.map((error) => <li key={error}>{error}</li>)}</ul> : <p>Unable to save draft</p>}
-      </div>}
+      {saveErrors.length > 0 && <div role="alert"><ul>{saveErrors.map((error) => <li key={error}>{error}</li>)}</ul></div>}
+      {save.isError && <ProblemNotice problem={operationProblem(save.error, "Unable to save draft", "save_draft_failed")} />}
 
       <label className="editor-title">Title<input aria-label="Title" onChange={(event) => setField("title", event.currentTarget.value)} value={document.title} /></label>
 
@@ -170,34 +186,42 @@ export function ArticleEditorPage() {
         <label>Cover media ID<input aria-label="Cover media ID" inputMode="numeric" onChange={(event) => setField("coverMediaId", event.currentTarget.value === "" ? null : Number(event.currentTarget.value))} value={document.coverMediaId ?? ""} /></label>
         <fieldset>
           <legend>Tags</legend>
-          {tags.isError && sanitizeProblem("Unable to load tags")}
+          {tags.isPending && <p aria-label="Loading tags" role="status">Loading tags</p>}
+          {tags.isError && <>
+            <ProblemNotice problem={operationProblem(tags.error, "Unable to load tags", "load_tags_failed")} />
+            <button className="editor-touch-target" onClick={() => void tags.refetch()} type="button">Retry tags</button>
+          </>}
+          {tags.data?.items.length === 0 && <p>No tags yet.</p>}
           {tags.data?.items.map((tag) => {
             const checked = document.tagIds.includes(tag.id);
             return <div className="tag-row" key={tag.id}>
               <label><input
                 checked={checked}
+                className="editor-touch-target"
                 disabled={!checked && document.tagIds.length >= MAX_SELECTED_TAGS}
                 onChange={(event) => setField("tagIds", toggleTagId(document.tagIds, tag.id, event.currentTarget.checked))}
                 type="checkbox"
               />{tag.name}</label>
-              <input aria-label={`Rename ${tag.name}`} onChange={(event) => {
+              <input aria-label={`Rename ${tag.name}`} className="editor-touch-target" onChange={(event) => {
                 const name = event.currentTarget.value;
                 setRenameNames((current) => ({ ...current, [tag.id]: name }));
               }} value={renameNames[tag.id] ?? tag.name} />
-              <button disabled={renameTag.isPending} onClick={() => submitRename(tag)} type="button">Save rename {tag.name}</button>
+              <button className="editor-touch-target" disabled={renameTag.isPending} onClick={() => submitRename(tag)} type="button">Save rename {tag.name}</button>
             </div>;
           })}
+          {createTag.isError && <ProblemNotice problem={operationProblem(createTag.error, "Unable to create tag", "create_tag_failed")} />}
+          {renameTag.isError && <ProblemNotice problem={operationProblem(renameTag.error, "Unable to rename tag", "rename_tag_failed")} />}
           <div className="tag-create">
-            <label>New tag name<input aria-label="New tag name" onChange={(event) => setNewTagName(event.currentTarget.value)} value={newTagName} /></label>
-            <button disabled={createTag.isPending} onClick={submitCreateTag} type="button">Create tag</button>
+            <label>New tag name<input aria-label="New tag name" className="editor-touch-target" onChange={(event) => setNewTagName(event.currentTarget.value)} value={newTagName} /></label>
+            <button className="editor-touch-target" disabled={createTag.isPending} onClick={submitCreateTag} type="button">Create tag</button>
           </div>
           {tagNameError && <p role="alert">{tagNameError}</p>}
         </fieldset>
       </details>
 
       <div aria-label="Editing mode" className="editor-mode" role="group">
-        <button aria-pressed={mode === "visual"} onClick={() => setMode("visual")} type="button">Visual</button>
-        <button aria-pressed={mode === "source"} onClick={() => setMode("source")} type="button">Source</button>
+        <button aria-pressed={mode === "visual"} className="editor-touch-target" onClick={() => setMode("visual")} type="button">Visual</button>
+        <button aria-pressed={mode === "source"} className="editor-touch-target" onClick={() => setMode("source")} type="button">Source</button>
       </div>
       {mode === "visual" ? (
         <MarkdownEditor onChange={(value) => setField("contentMd", value)} value={document.contentMd} />

@@ -89,6 +89,17 @@ describe("editor document", () => {
     expect(local.contentMd).toBe("![local](blob:https://admin.test/image)\n");
   });
 
+  it.each([
+    "![image](<blob:https://admin.test/image>)",
+    "[link](<BLOB:https://admin.test/link>)",
+    "<blob:https://admin.test/literal>",
+    "prefix BLoB:https://admin.test/conservative-gate",
+  ])("conservatively gates literal blob content without changing source: %s", (contentMd) => {
+    const local = { ...document, contentMd };
+    expect(validateEditorDocument(local, 7, { rejectBlobUrls: true })).toContain("Upload local images before versioning or publishing.");
+    expect(local.contentMd).toBe(contentMd);
+  });
+
   it("refuses to construct a request from invalid local input", () => {
     expect(() => toSaveRequest({ ...document, title: "x".repeat(201) }, 7)).toThrow("Title must be at most 200 characters.");
   });

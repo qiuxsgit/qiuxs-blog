@@ -9,9 +9,11 @@ import {
   buildUploadForm,
   boundedProgress,
   insertMarkdownImage,
+  isValidMediaProxyUrl,
   parseGfsResponse,
   uploadImage,
   validateImageFile,
+  validateMediaUploadPolicy,
 } from "./image-upload";
 
 const policy: MediaUploadPolicy = {
@@ -19,17 +21,23 @@ const policy: MediaUploadPolicy = {
   appId: "app",
   policy: "secret-policy",
   signature: "secret-signature",
-  timestamp: "1",
-  expire: "2",
+  timestamp: String(Math.floor(Date.now() / 1000)),
+  expire: "60",
   nonce: "n",
   fileField: "file",
 };
 
-const media = { id: 1, publicKey: "key", gfsFileId: 7, originalName: "a.png", mimeType: "image/png", fileSize: 1, width: 1, height: 1, state: "active", url: "https://blog.invalid/img/proxy/1", createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z" } as MediaView;
+const media = { id: 1, publicKey: "key", gfsFileId: 7, originalName: "a.png", mimeType: "image/png", fileSize: 1, width: 1, height: 1, state: "active", url: "/img/proxy/key", createdAt: "2025-01-01T00:00:00Z", updatedAt: "2025-01-01T00:00:00Z" } as MediaView;
 const file = (name = "a.png", type = "image/png", size = 1) => new File([new Uint8Array(size)], name, { type });
 const response = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 
 describe("direct image upload protocol", () => {
+  it("rejects unsafe or expired policies before transport", () => {
+    expect(validateMediaUploadPolicy({ ...policy, uploadUrl: "http://gfs.invalid/upload" })).toMatchObject({ code: "policy_failed" });
+    expect(validateMediaUploadPolicy({ ...policy, fileField: "other" })).toMatchObject({ code: "policy_failed" });
+    expect(validateMediaUploadPolicy({ ...policy, timestamp: "1" })).toMatchObject({ code: "policy_failed" });
+    expect(validateMediaUploadPolicy({ ...policy, expire: "61" })).toMatchObject({ code: "policy_failed" });
+  });
   it("accepts only matching supported extensions, names, and size boundaries", () => {
     expect(validateImageFile(file()).ok).toBe(true);
     expect(validateImageFile(file("a.jpg", "image/png")).ok).toBe(false);
@@ -92,6 +100,15 @@ describe("direct image upload protocol", () => {
     expect(boundedProgress(-1)).toBe(0);
     expect(boundedProgress(101)).toBe(100);
     expect(insertMarkdownImage("# title", "https://example.test/a b.png?x=<y>")).toBe("# title\n![image](<https://example.test/a b.png?x=\\<y\\>>)");
+    expect(insertMarkdownImage("abCD", "/img/proxy/key_1", 2)).toBe("ab\n![image](</img/proxy/key_1>)\nCD");
+    expect(isValidMediaProxyUrl("/img/proxy/key_1")).toBe(true);
+    expect(isValidMediaProxyUrl("https://oss.invalid/key")).toBe(false);
+    expect(isValidMediaProxyUrl("/img/proxy/key?signature=x")).toBe(false);
+  });
+
+  it("rejects a registered URL outside the stable proxy path", async () => {
+    const transport = vi.fn(async () => response({ code: 0, data: { val: 7 } }));
+    await expect(uploadImage({ file: file(), api: { createMediaUploadPolicy: async () => policy, registerMedia: async () => ({ ...media, url: "https://oss.invalid/signed" }) }, transport })).rejects.toMatchObject({ code: "registration_failed" });
   });
 
   it("does not expose secret-bearing transport failures", async () => {

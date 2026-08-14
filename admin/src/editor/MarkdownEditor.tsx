@@ -17,7 +17,9 @@ export function MarkdownEditor({ onChange, value }: MarkdownEditorProps) {
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
   const imageUpload = useEditorImageUpload({
-    onInsert: (markdown) => onChangeRef.current(`${visualValueRef.current}${visualValueRef.current.length > 0 ? "\n" : ""}${markdown}`),
+    getMarkdown: () => visualValueRef.current,
+    getInsertionOffset: () => visualValueRef.current.length,
+    onInsert: (markdown) => onChangeRef.current(markdown),
   });
 
   useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
@@ -58,7 +60,13 @@ export function MarkdownEditor({ onChange, value }: MarkdownEditorProps) {
       <p>Unable to open visual editor. Switch to source mode or retry.</p>
       <button className="editor-touch-target" onClick={() => setAttempt((current) => current + 1)} type="button">Retry visual editor</button>
     </div>}
-    <div aria-label="Markdown canvas" className="markdown-canvas" ref={root} />
+    <div aria-label="Markdown canvas" className="markdown-canvas" ref={root} onPaste={(event) => {
+      const file = [...event.clipboardData.files].find((candidate) => candidate.type.startsWith("image/"));
+      if (file) { event.preventDefault(); void imageUpload.upload(file); }
+    }} onDrop={(event) => {
+      const file = [...event.dataTransfer.files].find((candidate) => candidate.type.startsWith("image/"));
+      if (file) { event.preventDefault(); void imageUpload.upload(file); }
+    }} onDragOver={(event) => event.preventDefault()} />
     <label className="editor-touch-target">Add image<input accept="image/jpeg,image/png,image/webp,image/gif" hidden type="file" onChange={(event) => {
       const file = event.currentTarget.files?.[0];
       event.currentTarget.value = "";

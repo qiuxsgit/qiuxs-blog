@@ -5,11 +5,12 @@ import { useAuth } from "../auth/AuthProvider";
 
 export interface EditorImageUploadOptions {
   onInsert(markdown: string): void;
+  getMarkdown?(): string;
   getInsertionOffset?(): number;
   transport?: UploadTransport;
 }
 
-export function useEditorImageUpload({ onInsert, getInsertionOffset, transport }: EditorImageUploadOptions) {
+export function useEditorImageUpload({ onInsert, getMarkdown = () => "", getInsertionOffset = () => getMarkdown().length, transport }: EditorImageUploadOptions) {
   const { api } = useAuth();
   const controller = useRef<AbortController | undefined>(undefined);
   const [progress, setProgress] = useState(0);
@@ -32,7 +33,7 @@ export function useEditorImageUpload({ onInsert, getInsertionOffset, transport }
         ...(transport ? { transport } : {}),
       };
       const media = await uploadImage(uploadOptions);
-      if (!next.signal.aborted) onInsert(insertMarkdownImage("", media.url, 0, media.originalName));
+      if (!next.signal.aborted) onInsert(insertMarkdownImage(getMarkdown(), media.url, getInsertionOffset(), media.originalName));
       return media;
     } catch (reason) {
       if (!next.signal.aborted) setError(reason instanceof Error ? reason.message : "Unable to upload image.");
@@ -43,7 +44,7 @@ export function useEditorImageUpload({ onInsert, getInsertionOffset, transport }
         setUploading(false);
       }
     }
-  }, [api, onInsert, transport]);
+  }, [api, getInsertionOffset, getMarkdown, onInsert, transport]);
 
   const cancel = useCallback(() => controller.current?.abort(), []);
   return { upload, cancel, progress, uploading, error };

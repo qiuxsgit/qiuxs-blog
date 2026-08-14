@@ -3,12 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import type { ArticleDetail, TagView } from "../api/admin-api";
-import { ApiProblem } from "../api/problem";
 import { queryKeys } from "../api/query-keys";
 import { requireEntityId } from "../api/ids";
 import { useAuth } from "../auth/AuthProvider";
 import { ProblemNotice } from "../components/ProblemNotice";
 import { MarkdownEditor } from "./MarkdownEditor";
+import { operationProblem } from "./operation-problem";
 import {
   MAX_SELECTED_TAGS,
   fromArticleDetail,
@@ -38,10 +38,6 @@ function sanitizeProblem(title: string) {
   return <div role="alert"><p>{title}</p></div>;
 }
 
-function operationProblem(error: unknown, title: string, code: string): ApiProblem {
-  return error instanceof ApiProblem ? error : new ApiProblem(503, code, "client", title);
-}
-
 export function ArticleEditorPage() {
   const { api } = useAuth();
   const { articleId: rawArticleId } = useParams();
@@ -53,7 +49,7 @@ export function ArticleEditorPage() {
   const saving = useRef(false);
   const creatingTag = useRef(false);
   const renamingTag = useRef(false);
-  const [createError, setCreateError] = useState(false);
+  const [createError, setCreateError] = useState<unknown>();
   const [createdArticle, setCreatedArticle] = useState<ArticleDetail>();
   const [document, setDocument] = useState<EditorDocument>();
   const [lockVersion, setLockVersion] = useState<number>();
@@ -66,15 +62,15 @@ export function ArticleEditorPage() {
   const createNewArticle = () => {
     if (creating.current) return;
     creating.current = true;
-    setCreateError(false);
+    setCreateError(undefined);
     void api.createArticle().then((article) => {
       const id = requireEntityId(article.id, "article.id");
       setCreatedArticle(article);
       queryClient.setQueryData(queryKeys.article(id), article);
       navigate(`/articles/${id}/edit`, { replace: true });
-    }).catch(() => {
+    }).catch((error: unknown) => {
       creating.current = false;
-      setCreateError(true);
+      setCreateError(error);
     });
   };
 
@@ -131,11 +127,18 @@ export function ArticleEditorPage() {
   });
 
   if (isNew) {
-    if (createError) return <section><h1>New article</h1>{sanitizeProblem("Unable to create article")}<button onClick={createNewArticle} type="button">Retry</button></section>;
+    if (createError) return <section>
+      <h1>New article</h1>
+      <ProblemNotice problem={operationProblem(createError, "Unable to create article", "create_article_failed")} />
+      <button className="editor-touch-target" onClick={createNewArticle} type="button">Retry creating article</button>
+    </section>;
     return <section aria-busy="true" aria-label="Creating article"><h1>New article</h1><p aria-label="Creating article" role="status">Creating article</p></section>;
   }
   if (articleId === undefined) return sanitizeProblem("Invalid article ID");
-  if (article.isError) return <section>{sanitizeProblem("Unable to load article")}<button onClick={() => void article.refetch()} type="button">Retry</button></section>;
+  if (article.isError) return <section>
+    <ProblemNotice problem={operationProblem(article.error, "Unable to load article", "load_article_failed")} />
+    <button className="editor-touch-target" onClick={() => void article.refetch()} type="button">Retry loading article</button>
+  </section>;
   if (article.isPending || !document || lockVersion === undefined) {
     return <section aria-busy="true" aria-label="Loading article"><p aria-label="Loading article" role="status">Loading article</p></section>;
   }
@@ -181,7 +184,7 @@ export function ArticleEditorPage() {
       <label className="editor-title">Title<input aria-label="Title" onChange={(event) => setField("title", event.currentTarget.value)} value={document.title} /></label>
 
       <details className="editor-metadata">
-        <summary>Metadata</summary>
+        <summary className="editor-touch-target">Metadata</summary>
         <label>Summary<textarea aria-label="Summary" onChange={(event) => setField("summary", event.currentTarget.value)} value={document.summary} /></label>
         <label>Cover media ID<input aria-label="Cover media ID" inputMode="numeric" onChange={(event) => setField("coverMediaId", event.currentTarget.value === "" ? null : Number(event.currentTarget.value))} value={document.coverMediaId ?? ""} /></label>
         <fieldset>

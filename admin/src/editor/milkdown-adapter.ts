@@ -94,6 +94,13 @@ import { gfmTable } from "micromark-extension-gfm-table";
 import { gfmTaskListItem } from "micromark-extension-gfm-task-list-item";
 import type { Plugin as UnifiedPlugin } from "unified";
 
+import {
+  initialMarkdownUpdateState,
+  markExactPasteDocument,
+  reconcileMarkdownUpdate,
+  stopMarkdownUpdates,
+} from "./markdown-update-state";
+
 export interface WholeDocumentPasteInput {
   currentMarkdown: string;
   html: string;
@@ -195,7 +202,9 @@ export const articleMarkdownPlugins: MilkdownPlugin[] = [
   tableEditingPlugin,
 ].flat();
 
-function wholeDocumentPastePlugin(onExactPaste: (markdown: string) => void) {
+function wholeDocumentPastePlugin(
+  onExactPaste: (markdown: string, serializedMarkdown: string) => void,
+) {
   return $prose((ctx) => new Plugin({
     props: {
       handlePaste: (view, event) => {
@@ -211,7 +220,7 @@ function wholeDocumentPastePlugin(onExactPaste: (markdown: string) => void) {
         const parsed = ctx.get(parserCtx)(markdown);
         if (!parsed || typeof parsed === "string") return false;
         view.dispatch(view.state.tr.replace(0, view.state.doc.content.size, new Slice(parsed.content, 0, 0)));
-        onExactPaste(markdown);
+        onExactPaste(markdown, serializer(view.state.doc));
         return true;
       },
     },
@@ -223,7 +232,7 @@ export function createMilkdownEditor(
   markdown: string,
   onMarkdownChange: (markdown: string) => void,
 ): MilkdownEditor {
-  let exactPaste: string | undefined;
+  let updateState = initialMarkdownUpdateState;
   return Editor.make()
     .config((ctx) => {
       ctx.set(rootCtx, root);
@@ -232,18 +241,22 @@ export function createMilkdownEditor(
         ...current,
         attributes: { "aria-label": "Article Markdown" },
       }));
-      ctx.get(listenerCtx).markdownUpdated((_ctx, nextMarkdown) => {
-        if (exactPaste !== undefined) {
-          exactPaste = undefined;
-          return;
-        }
-        onMarkdownChange(nextMarkdown);
+      const listeners = ctx.get(listenerCtx);
+      listeners.destroy(() => { updateState = stopMarkdownUpdates(); });
+      listeners.updated((listenerContext, nextDocument) => {
+        if (updateState.stopped) return;
+        const serializer = listenerContext.get(serializerCtx);
+        const nextMarkdown = serializer(nextDocument);
+        const currentMarkdown = serializer(listenerContext.get(editorViewCtx).state.doc);
+        const decision = reconcileMarkdownUpdate(updateState, nextMarkdown, currentMarkdown);
+        updateState = decision.state;
+        if (decision.markdown !== undefined) onMarkdownChange(decision.markdown);
       });
     })
     .use(articleMarkdownPlugins)
     .use(listener)
-    .use(wholeDocumentPastePlugin((pasted) => {
-      exactPaste = pasted;
+    .use(wholeDocumentPastePlugin((pasted, serializedMarkdown) => {
+      updateState = markExactPasteDocument(updateState, serializedMarkdown);
       onMarkdownChange(pasted);
     }));
 }

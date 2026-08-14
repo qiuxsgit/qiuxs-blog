@@ -378,7 +378,7 @@ function buildAdminApi(client: Client<paths>, options: AdminApiOptions): AdminAp
 export function createAdminApi(options: AdminApiOptions = {}): AdminApi {
   const fetch = tagFetchFailures(options.fetch ?? globalThis.fetch);
   const client = createClient<paths>({
-    baseUrl: window.location.origin,
+    baseUrl: globalThis.location?.origin ?? "http://localhost",
     credentials: "include",
     fetch,
     headers: { Accept: "application/json, application/problem+json" },

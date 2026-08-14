@@ -14,7 +14,6 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:e2e": "playwright test",
     "build": "npm run check:node && npm run typecheck && vite build",
     "verify:dist": "node scripts/verify-dist.mjs"
   },
@@ -42,19 +41,11 @@
     "unified": "^11.0.5"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.13.0",
-    "@playwright/test": "^1.62.1",
-    "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.4",
     "@types/mdast": "4.0.4",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",
-    "jest-axe": "^11.0.0",
-    "jsdom": "^29.1.1",
-    "msw": "^2.15.0",
     "openapi-typescript": "^7.13.0",
     "typescript": "5.9.3",
     "vite": "^8.2.1",

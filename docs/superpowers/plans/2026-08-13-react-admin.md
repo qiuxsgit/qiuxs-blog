@@ -2,11 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Frontend verification policy:** Do not write React/DOM/UI unit tests and do not run Playwright or another automated UI acceptance gate. Frontend tests are limited to pure functions, deterministic state machines, serialization/validation, cache helpers, and API contract adapters. The owner will manually accept the completed Admin UI. Historical UI-test entries below are not release gates and must be omitted or removed during implementation.
+
 **Goal:** Build the protected React Admin SPA for article editing, safe preview, direct GFS image upload, immutable versions and Releases, and site, builder, and hotlink settings.
 
-**Architecture:** `admin/` is a same-origin Vite SPA. OpenAPI generates every wire type; an `openapi-fetch` adapter exposes operationId-named methods, TanStack Query owns server state, and editor-local state owns unsaved Markdown plus the two-second optimistic-lock autosave state machine. Milkdown is the default canvas, source and preview are explicit modes/routes, and MSW/Playwright mocks use only contract-backed endpoints.
+**Architecture:** `admin/` is a same-origin Vite SPA. OpenAPI generates every wire type; an `openapi-fetch` adapter exposes operationId-named methods, TanStack Query owns server state, and editor-local state owns unsaved Markdown plus the two-second optimistic-lock autosave state machine. Milkdown is the default canvas, source and preview are explicit modes/routes. UI behavior is manually accepted; deterministic pure logic and API contract adapters are unit-tested.
 
-**Tech Stack:** Node.js 20.19.4, npm lockfile, React, TypeScript strict mode, Vite, React Router, TanStack Query, `openapi-typescript`, `openapi-fetch`, Milkdown Kit, unified/remark/rehype with Shiki, Vitest, React Testing Library, MSW, jest-axe, and Playwright with `@axe-core/playwright`.
+**Tech Stack:** Node.js 20.19.4, npm lockfile, React, TypeScript strict mode, Vite, React Router, TanStack Query, `openapi-typescript`, `openapi-fetch`, Milkdown Kit, unified/remark/rehype with Shiki, Vitest, and API contract fixtures.
 
 ## Global Constraints
 
@@ -248,18 +250,17 @@ Set `.nvmrc` and `engines.node` to `20.19.4`; configure strict TypeScript with `
   "typecheck": "tsc --noEmit",
   "test": "vitest",
   "test:run": "vitest run",
-  "test:e2e": "playwright test",
   "build": "npm run check:node && npm run typecheck && vite build",
   "verify:dist": "node scripts/verify-dist.mjs"
 }
 ```
 
-Install and lock React, React Router, TanStack Query, openapi-fetch/typescript, Milkdown, unified/remark/rehype/Shiki, Vitest/RTL/MSW/jest-axe, and Playwright/axe dependencies named in Tech Stack. Disable source maps and proxy `/api` to `http://127.0.0.1:8080` in development without rewriting Host or Origin.
+Install and lock React, React Router, TanStack Query, openapi-fetch/typescript, Milkdown, unified/remark/rehype/Shiki, and Vitest dependencies. Do not add React Testing Library, jest-axe, MSW, or Playwright solely for UI verification. Disable source maps and proxy `/api` to `http://127.0.0.1:8080` in development without rewriting Host or Origin.
 
 ```bash
 cd admin
 npm install react react-dom react-router-dom @tanstack/react-query openapi-fetch @milkdown/kit @milkdown/react unified remark-parse remark-gfm remark-rehype rehype-sanitize rehype-stringify @shikijs/rehype github-slugger
-npm install --save-dev typescript vite @vitejs/plugin-react openapi-typescript vitest jsdom @testing-library/react @testing-library/user-event @testing-library/jest-dom msw jest-axe @types/react @types/react-dom @types/node @playwright/test @axe-core/playwright
+npm install --save-dev typescript vite @vitejs/plugin-react openapi-typescript vitest @types/react @types/react-dom @types/node
 ```
 
 - [ ] **Step 4: Verify green and artifact shape**
@@ -1254,6 +1255,8 @@ git commit -m "feat(admin): add hotlink settings"
 
 ### Task 15: Prove Browser Flows with a Strict Contract Mock
 
+> **Owner decision:** cancel this automated UI/Playwright task. Do not create `admin/e2e`, install Playwright, or add browser acceptance tests. The owner will manually inspect the completed Admin UI; only deterministic pure logic and API contract tests remain in the automated gate.
+
 **Files:**
 - Create: `admin/playwright.config.ts`
 - Create: `admin/e2e/support/mock-admin-api.ts`
@@ -1390,7 +1393,7 @@ Expected: FAIL because the reusable verifier checks required by the tests are ab
 Export the reusable verifier entry used by `verify-dist.test.mjs`, implement each red assertion from Step 1, then keep the CLI wrapper for `npm run verify:dist`. Add these Make targets:
 
 ```make
-.PHONY: version-check install generate test e2e build
+.PHONY: version-check install generate test build
 
 version-check:
 	@test "$$(node --version)" = "v20.19.4" || (echo "Node 20.19.4 required, got $$(node --version)" && exit 1)
@@ -1404,10 +1407,6 @@ generate: version-check
 test: version-check
 	npm run typecheck
 	npm run test:run
-
-e2e: version-check
-	npx playwright install chromium
-	npm run test:e2e
 
 build: version-check test
 	npm run generate:api
@@ -1433,14 +1432,10 @@ npm run typecheck
 npm run test:run
 npm run build
 npm run verify:dist
-npx playwright install chromium
-npm run test:e2e
 git diff --check
 ```
 
-`npx playwright install chromium` is intentionally idempotent in both `make e2e` and this clean gate. Do not rely on a browser binary left in a shared cache by Task 15 or another workspace.
-
-Expected: PASS with no real service dependency or application request to the external network; generated types remain clean and `dist/` is a reproducible ignored artifact.
+Expected: PASS with no real service dependency or application request to the external network; generated types remain clean and `dist/` is a reproducible ignored artifact. UI acceptance is manual and is not part of this command.
 
 - [ ] **Step 6: Perform manual responsive/accessibility smoke**
 

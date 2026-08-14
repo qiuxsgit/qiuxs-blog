@@ -1,7 +1,12 @@
 import type { CreateReleaseRequest } from "../api/admin-api";
 import type { SiteDraft } from "./site-model";
+import { ApiProblem } from "../api/problem";
 
 export function conflictLocalDraft(local: SiteDraft, _confirmed: SiteDraft): SiteDraft { return { ...local, socialLinks: local.socialLinks.map((link) => ({ ...link })) }; }
+
+export function isSettingsConflict(error: unknown): boolean {
+  return error instanceof ApiProblem && error.status === 409 && error.code === "settings_conflict";
+}
 
 /** Copies only fields that can be sent in the PUT body; readonly metadata never enters a conflict draft. */
 export function confirmedPutFields(confirmed: SiteDraft): SiteDraft {

@@ -7,7 +7,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { ProblemNotice } from "../components/ProblemNotice";
 import { syncReleaseCache } from "../publishing/release-cache";
 import { buildPutRequest, defaults, siteDraftFromView, validateSiteDraft, type SiteDraft } from "./site-model";
-import { confirmedPutFields, conflictLocalDraft, publishSettingsRequest } from "./site-release";
+import { confirmedPutFields, conflictLocalDraft, isSettingsConflict, publishSettingsRequest } from "./site-release";
 
 export function SiteSettingsPage() {
   const { api } = useAuth();
@@ -22,7 +22,12 @@ export function SiteSettingsPage() {
   const save = useMutation({
     mutationFn: () => api.putSiteSettings(buildPutRequest(draft)),
     onSuccess: (saved) => { setDraft(siteDraftFromView(saved)); setConflict(false); setNotice("Saved settings — pending publication."); setProblem(undefined); queryClient.setQueryData(queryKeys.site, saved); },
-    onError: (error) => { setProblem(error); if (error instanceof ApiProblem && error.status === 409 && error.code === "settings_conflict") setConflict(true); },
+    onError: (error) => { setProblem(error); if (isSettingsConflict(error)) setConflict(true); },
+  });
+  const reloadConfirmed = useMutation({
+    mutationFn: () => api.getSiteSettings(),
+    onSuccess: (confirmed) => { queryClient.setQueryData(queryKeys.site, confirmed); setDraft(confirmedPutFields(siteDraftFromView(confirmed))); setConflict(false); setProblem(undefined); setNotice("Reloaded confirmed settings."); },
+    onError: (error) => { setProblem(error); },
   });
   const publish = useMutation({
     mutationFn: async () => { const result = await api.createRelease(publishSettingsRequest()); await syncReleaseCache(queryClient, result.release, "create"); return result.release.id; },
@@ -37,7 +42,7 @@ export function SiteSettingsPage() {
     <div className="page-heading"><div><h1 id="site-settings-heading">Site settings</h1><p>Public identity, SEO, about content, and filing information.</p></div><button className="button touch-target" disabled={publish.isPending} onClick={() => publish.mutate()} type="button">{publish.isPending ? "Starting release" : "Publish saved settings"}</button></div>
     {problem instanceof ApiProblem && <ProblemNotice problem={problem} />}
     {notice && <p role="status">{notice}</p>}
-    {conflict && site.data && <div className="async-page"><p>These settings changed on the server. Your local fields are preserved.</p><button className="button touch-target" onClick={() => { setDraft(conflictLocalDraft(draft, siteDraftFromView(site.data!))); setConflict(false); }} type="button">Keep my changes</button><button className="button button-secondary touch-target" onClick={() => { setDraft(confirmedPutFields(siteDraftFromView(site.data!))); setConflict(false); }} type="button">Reload confirmed settings</button></div>}
+    {conflict && site.data && <div className="async-page"><p>These settings changed on the server. Your local fields are preserved.</p><button className="button touch-target" onClick={() => { setDraft(conflictLocalDraft(draft, siteDraftFromView(site.data!))); setConflict(false); }} type="button">Keep my changes</button><button className="button button-secondary touch-target" disabled={reloadConfirmed.isPending} onClick={() => reloadConfirmed.mutate()} type="button">{reloadConfirmed.isPending ? "Reloading confirmed settings" : "Reload confirmed settings"}</button></div>}
     <form onSubmit={(event) => { event.preventDefault(); if (errors.length === 0 && !save.isPending) save.mutate(); }}>
       <div className="settings-grid">
         <label>Site name<input className="touch-target" maxLength={100} value={draft.siteName} onChange={(event) => update("siteName", event.target.value)} /></label>

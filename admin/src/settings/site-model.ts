@@ -25,6 +25,61 @@ const limits = { siteName: 100, authorName: 100, authorBio: 1000, homeStatus: 50
 const bytes = (value: string) => new TextEncoder().encode(value).byteLength;
 const runes = (value: string) => Array.from(value).length;
 
+function canonicalComponent(raw: string): string | undefined {
+  let result = "";
+  for (let index = 0; index < raw.length; index += 1) {
+    const current = raw[index] ?? "";
+    if (current === "%") {
+      const encoded = raw.slice(index + 1, index + 3);
+      if (!/^[0-9A-Fa-f]{2}$/u.test(encoded)) return undefined;
+      const value = Number.parseInt(encoded, 16);
+      if (value >= 0x21 && value <= 0x7e && /[A-Za-z0-9\-._~]/u.test(String.fromCharCode(value))) result += String.fromCharCode(value);
+      else result += `%${encoded.toUpperCase()}`;
+      index += 2;
+      continue;
+    }
+    if (current.charCodeAt(0) < 0x21 || current.charCodeAt(0) > 0x7e) return undefined;
+    result += current;
+  }
+  return result;
+}
+
+/** Mirrors service/internal/settings canonicalSocialURL. */
+export function isCanonicalSocialUrl(raw: string): boolean {
+  if (!raw || raw !== raw.trim() || !raw.startsWith("https://")) return false;
+  let parsed: URL;
+  try { parsed = new URL(raw); } catch { return false; }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hostname === "") return false;
+  const authority = raw.slice("https://".length).split(/[/?#]/u, 1)[0];
+  if (authority !== parsed.host || authority.includes("@")) return false;
+  const port = authority.match(/:(\d+)$/u)?.[1];
+  if (port !== undefined && (port === "443" || Number.parseInt(port, 10).toString() !== port)) return false;
+  const hostname = parsed.hostname;
+  if (hostname.endsWith(".") || /^(?:[0-9]+\.)*[0-9]+$/u.test(hostname)) return false;
+  if (hostname.includes(":")) {
+    if (authority !== parsed.host) return false;
+  } else if (hostname !== hostname.toLowerCase() || /[^a-z0-9.-]/u.test(hostname)) return false;
+  const path = raw.slice("https://".length + authority.length).split(/[?#]/u, 1)[0] ?? "";
+  if (path && path !== parsed.pathname) return false;
+  if (path.split("/").some((segment) => segment === "." || segment === "..")) return false;
+  const queryStart = raw.indexOf("?");
+  const fragmentStart = raw.indexOf("#");
+  const query = queryStart >= 0 ? raw.slice(queryStart + 1, fragmentStart >= 0 ? fragmentStart : undefined) : "";
+  const fragment = fragmentStart >= 0 ? raw.slice(fragmentStart + 1) : "";
+  if (queryStart >= 0 && (!query || canonicalComponent(query) !== query)) return false;
+  if (fragmentStart >= 0 && (!fragment || canonicalComponent(fragment) !== fragment)) return false;
+  return true;
+}
+
+function putRequestFromDraft(draft: SiteDraft): PutSiteSettingsRequest {
+  return {
+    lockVersion: draft.lockVersion, siteName: draft.siteName, authorName: draft.authorName, authorBio: draft.authorBio,
+    homeStatus: draft.homeStatus, aboutMd: draft.aboutMd, socialLinks: draft.socialLinks.map((link) => ({ ...link })),
+    seoDefaultTitle: draft.seoDefaultTitle, seoDefaultDescription: draft.seoDefaultDescription,
+    seoDefaultImageMediaId: draft.seoDefaultImageMediaId, filingName: draft.filingName, filingNumber: draft.filingNumber,
+  };
+}
+
 export function validateSiteDraft(draft: SiteDraft): string[] {
   const errors: string[] = [];
   for (const [field, limit] of Object.entries(limits) as [keyof typeof limits, number][]) {
@@ -41,33 +96,18 @@ export function validateSiteDraft(draft: SiteDraft): string[] {
     labels.add(label);
     try {
       const url = new URL(link.url);
-      if (url.protocol !== "https:" || url.username || url.password || url.port || /\s/u.test(link.url) || url.hostname.length === 0) errors.push("socialLinks");
+      if (!isCanonicalSocialUrl(link.url)) errors.push("socialLinks");
     } catch { errors.push("socialLinks"); }
   }
   if (draft.seoDefaultImageMediaId !== null && (!Number.isSafeInteger(draft.seoDefaultImageMediaId) || draft.seoDefaultImageMediaId < 1)) errors.push("seoDefaultImageMediaId");
-  const request = { ...draft } as Record<string, unknown>;
-  delete request.id; delete request.updatedAt; delete request.filingUrl;
-  if (bytes(JSON.stringify(request)) > MiB) errors.push("request");
+  if (bytes(JSON.stringify(putRequestFromDraft(draft))) > MiB) errors.push("request");
   return [...new Set(errors)];
 }
 
 export function buildPutRequest(draft: SiteDraft): PutSiteSettingsRequest {
   const errors = validateSiteDraft(draft);
   if (errors.length > 0) throw new Error(`Invalid site settings: ${errors.join(", ")}`);
-  return {
-    lockVersion: draft.lockVersion,
-    siteName: draft.siteName,
-    authorName: draft.authorName,
-    authorBio: draft.authorBio,
-    homeStatus: draft.homeStatus,
-    aboutMd: draft.aboutMd,
-    socialLinks: draft.socialLinks.map((link) => ({ ...link })),
-    seoDefaultTitle: draft.seoDefaultTitle,
-    seoDefaultDescription: draft.seoDefaultDescription,
-    seoDefaultImageMediaId: draft.seoDefaultImageMediaId,
-    filingName: draft.filingName,
-    filingNumber: draft.filingNumber,
-  };
+  return putRequestFromDraft(draft);
 }
 
 export function siteDraftFromView(view: SiteSettingsView): SiteDraft {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaults, buildPutRequest, validateSiteDraft, type SiteDraft } from "./site-model";
+import { defaults, buildPutRequest, isCanonicalSocialUrl, validateSiteDraft, type SiteDraft } from "./site-model";
 
 const valid: SiteDraft = {
   ...defaults,
@@ -40,5 +40,17 @@ describe("site settings pure model", () => {
     expect(validateSiteDraft({ ...valid, aboutMd: "a".repeat(2 * 1024 * 1024 + 1) })).toContain("aboutMd");
     expect(validateSiteDraft({ ...valid, socialLinks: [{ label: "GitHub", url: "http://github.com" }] })).toContain("socialLinks");
     expect(validateSiteDraft({ ...valid, socialLinks: [{ label: "GitHub", url: "https://github.com" }, { label: "github", url: "https://example.com" }] })).toContain("socialLinks");
+  });
+
+  it("matches the service canonical absolute HTTPS social URL rules", () => {
+    const accepted = ["https://github.com", "https://github.com/path?q=1#part", "https://[2001:db8::1]/docs", "https://example.com:8443/a"];
+    const rejected = ["HTTPS://github.com", "https://EXAMPLE.com", "https://user:pass@example.com", "https://example.com:443", "https://example.com.", "https://192.168.001.1", "https://123", "https://[2001:0db8::1]", "https://example.com/a/../b", "https://example.com/?q=%7e"];
+    for (const url of accepted) expect(isCanonicalSocialUrl(url), url).toBe(true);
+    for (const url of rejected) expect(isCanonicalSocialUrl(url), url).toBe(false);
+  });
+
+  it("measures the final PUT JSON envelope rather than the draft object", () => {
+    const nearLimit = "a".repeat(2 * 1024 * 1024 - 400);
+    expect(validateSiteDraft({ ...valid, aboutMd: nearLimit })).not.toContain("request");
   });
 });

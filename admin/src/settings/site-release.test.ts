@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { confirmedPutFields, conflictLocalDraft, publishSettingsRequest } from "./site-release";
+import { confirmedPutFields, conflictLocalDraft, isSettingsConflict, publishSettingsRequest } from "./site-release";
+import { ApiProblem } from "../api/problem";
 import { defaults, type SiteDraft } from "./site-model";
 
 describe("site settings release helpers", () => {
@@ -19,5 +20,11 @@ describe("site settings release helpers", () => {
     expect(confirmedPutFields(confirmed)).not.toHaveProperty("updatedAt");
     expect(confirmedPutFields(confirmed)).not.toHaveProperty("filingUrl");
     expect(confirmedPutFields(confirmed)).toMatchObject({ lockVersion: 0, siteName: "qiuxs" });
+  });
+
+  it("recognizes only the documented settings conflict", () => {
+    expect(isSettingsConflict(new ApiProblem(409, "settings_conflict", "r1", "Conflict"))).toBe(true);
+    expect(isSettingsConflict(new ApiProblem(409, "release_conflict", "r2", "Conflict"))).toBe(false);
+    expect(isSettingsConflict(new ApiProblem(503, "settings_conflict", "r3", "Conflict"))).toBe(false);
   });
 });

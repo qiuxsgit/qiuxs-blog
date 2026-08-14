@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiProblem } from "../api/problem";
 import { articleDetail, draftView } from "../test/fixtures";
-import { autosaveInitialKey, createAutosaveState, autosaveReducer, copyLocalMarkdown, conflictReloadDecision, isCurrentAutosaveEpoch, isRevisionConflict, nextAutosaveDelay, reduceForAutosaveEpoch, shouldBlockNavigation, type SaveState } from "./useAutosave";
+import { autosaveInitialKey, createAutosaveState, autosaveReducer, copyLocalMarkdown, conflictReloadDecision, isCurrentAutosaveEpoch, isRevisionConflict, nextAutosaveDelay, reduceForAutosaveEpoch, reduceReloadForAutosaveEpoch, shouldBlockNavigation, type SaveState } from "./useAutosave";
 import type { EditorDocument } from "./editor-document";
 
 const local: EditorDocument = { title: "Draft", summary: "", coverMediaId: null, contentMd: "# local\n", tagIds: [31] };
@@ -56,6 +56,16 @@ describe("autosave state machine", () => {
     expect(isCurrentAutosaveEpoch(1, 2)).toBe(false);
     expect(reduceForAutosaveEpoch(newState, 1, 2, { type: "success", generation: 1, draft: { ...draftView, title: "OLD", contentMd: "old", lockVersion: 99 }, savedAt: new Date() })).toEqual(newState);
     expect(reduceForAutosaveEpoch(newState, 1, 2, { type: "failure", generation: 1, problem: new ApiProblem(503, "old", "old", "old") })).toEqual(newState);
+    expect(oldState.document.title).toBe("Draft");
+  });
+
+  it("ignores old reload success/failure after switching articles but accepts the new reload", () => {
+    const oldState = createAutosaveState(local, 7);
+    const newState = createAutosaveState({ ...local, title: "New article" }, 3);
+    expect(reduceReloadForAutosaveEpoch(newState, 1, 2, { type: "reload", detail: articleDetail, savedAt: new Date() })).toEqual(newState);
+    expect(reduceReloadForAutosaveEpoch(newState, 1, 2, { type: "reload_failure", problem: new ApiProblem(503, "old", "old", "old") })).toEqual(newState);
+    const accepted = reduceReloadForAutosaveEpoch(newState, 2, 2, { type: "reload", detail: { ...articleDetail, draft: { ...articleDetail.draft, title: "Fresh" } }, savedAt: new Date() });
+    expect(accepted.document.title).toBe("Fresh");
     expect(oldState.document.title).toBe("Draft");
   });
 

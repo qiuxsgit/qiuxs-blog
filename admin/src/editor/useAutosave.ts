@@ -56,6 +56,10 @@ export function reduceForAutosaveEpoch(current: AutosaveState, expectedEpoch: nu
   return isCurrentAutosaveEpoch(expectedEpoch, actualEpoch) ? autosaveReducer(current, action) : current;
 }
 
+export function reduceReloadForAutosaveEpoch(current: AutosaveState, expectedEpoch: number, actualEpoch: number, action: Extract<AutosaveAction, { type: "reload" | "reload_failure" }>): AutosaveState {
+  return isCurrentAutosaveEpoch(expectedEpoch, actualEpoch) ? autosaveReducer(current, action) : current;
+}
+
 function documentFromDraft(current: EditorDocument, draft: DraftView): EditorDocument {
   const seen = new Set<number>();
   const tagIds = [...draft.tags].sort((a, b) => a.position - b.position).flatMap((tag) => {
@@ -120,6 +124,7 @@ export function useAutosave(options: AutosaveOptions) {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const inFlight = useRef(false);
   const abort = useRef<AbortController | undefined>(undefined);
+  const reloadAbort = useRef<AbortController | undefined>(undefined);
   const epoch = useRef(0);
   const initialKey = autosaveInitialKey(options.articleId, options.initialLockVersion, options.initial);
   usePrompt({ when: shouldBlockNavigation(machine.state), message: "You have unsaved changes. Leave this page?" });
@@ -136,7 +141,9 @@ export function useAutosave(options: AutosaveOptions) {
     epoch.current += 1;
     if (timer.current) clearTimeout(timer.current);
     abort.current?.abort();
+    reloadAbort.current?.abort();
     abort.current = undefined;
+    reloadAbort.current = undefined;
     inFlight.current = false;
     machineRef.current = createAutosaveState(options.initial, options.initialLockVersion);
     setMachine(machineRef.current);
@@ -193,13 +200,19 @@ export function useAutosave(options: AutosaveOptions) {
 
   const reload = useCallback(async (confirmed = false) => {
     if (conflictReloadDecision(confirmed) !== "reload") return undefined;
+    const requestEpoch = epoch.current;
+    const controller = new AbortController();
+    reloadAbort.current?.abort();
+    reloadAbort.current = controller;
     try {
-      const detail = await options.reload(abort.current?.signal);
-      if (mounted.current) update({ type: "reload", detail, savedAt: new Date() });
+      const detail = await options.reload(controller.signal);
+      if (mounted.current && isCurrentAutosaveEpoch(requestEpoch, epoch.current)) update({ type: "reload", detail, savedAt: new Date() });
       return detail;
     } catch (error) {
-      if (mounted.current) update({ type: "reload_failure", problem: operationProblem(error, "Unable to reload article", "reload_article_failed") });
+      if (mounted.current && isCurrentAutosaveEpoch(requestEpoch, epoch.current) && !(error instanceof DOMException && error.name === "AbortError")) update({ type: "reload_failure", problem: operationProblem(error, "Unable to reload article", "reload_article_failed") });
       throw error;
+    } finally {
+      if (isCurrentAutosaveEpoch(requestEpoch, epoch.current)) reloadAbort.current = undefined;
     }
   }, [options, update]);
 
@@ -215,6 +228,7 @@ export function useAutosave(options: AutosaveOptions) {
       mounted.current = false;
       if (timer.current) clearTimeout(timer.current);
       abort.current?.abort();
+      reloadAbort.current?.abort();
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
   }, []);

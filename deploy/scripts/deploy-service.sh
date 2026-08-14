@@ -11,6 +11,6 @@ remote_sh "$host" "set -eu; mkdir -p $qroot/releases $qroot/.staging $qroot/shar
 cleanup() { ssh -o BatchMode=yes "$host" -- rm -rf -- "$stage" 2>/dev/null || true; }
 trap cleanup EXIT
 rsync -az "$binary" "$host:$stage/blog-service"
-remote_sh "$host" "set -eu; test -x $qstage/blog-service || chmod 0755 $qstage/blog-service; test -s $qstage/blog-service; mv -- $qstage $qtarget; ln -sfn -- $qrelease $qroot/.current-new; mv -Tf -- $qroot/.current-new $qroot/current; systemctl restart $qunit; systemctl is-active --quiet $qunit; ls -1dt $qroot/releases/* 2>/dev/null | tail -n +$((retain + 1)) | xargs -r rm -rf"
+remote_sh "$host" "set -eu; test -x $qstage/blog-service || chmod 0755 $qstage/blog-service; test -s $qstage/blog-service; previous=; test ! -L $qroot/current || previous=\$(readlink $qroot/current); mv -- $qstage $qtarget; ln -sfn -- $qrelease $qroot/.current-new; mv -Tf -- $qroot/.current-new $qroot/current; if ! systemctl restart $qunit || ! systemctl is-active --quiet $qunit; then if test -n \"\$previous\"; then ln -sfn -- \"\$previous\" $qroot/.rollback-new; mv -Tf -- $qroot/.rollback-new $qroot/current; systemctl restart $qunit || true; fi; exit 1; fi; ls -1dt $qroot/releases/* 2>/dev/null | tail -n +$((retain + 1)) | xargs -r rm -rf"
 trap - EXIT
 printf 'deployed %s:%s and restarted %s\n' "$host" "$target" "$unit"

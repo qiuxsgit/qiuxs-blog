@@ -72,9 +72,10 @@ export function isCanonicalSocialUrl(raw: string): boolean {
   if (canonicalComponent(path, pathAllowed) !== path || path.split("/").some((segment) => segment === "." || segment === "..")) return false;
   const queryStart = raw.indexOf("?");
   const fragmentStart = raw.indexOf("#");
-  const query = queryStart >= 0 ? raw.slice(queryStart + 1, fragmentStart >= 0 ? fragmentStart : undefined) : "";
+  const hasQuery = queryStart >= 0 && (fragmentStart < 0 || queryStart < fragmentStart);
+  const query = hasQuery ? raw.slice(queryStart + 1, fragmentStart >= 0 ? fragmentStart : undefined) : "";
   const fragment = fragmentStart >= 0 ? raw.slice(fragmentStart + 1) : "";
-  if (queryStart >= 0 && (!query || canonicalComponent(query, queryAllowed) !== query)) return false;
+  if (hasQuery && (!query || canonicalComponent(query, queryAllowed) !== query)) return false;
   if (fragmentStart >= 0 && (!fragment || canonicalComponent(fragment, queryAllowed) !== fragment)) return false;
   return true;
 }

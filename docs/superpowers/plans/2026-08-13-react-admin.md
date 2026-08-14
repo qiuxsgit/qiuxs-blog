@@ -140,7 +140,7 @@ Fixtures and feature logic preserve these facts:
 - `PublishJobView.builderTarget` is a read-only non-secret snapshot containing name, HTTPS base URL, username, and job name.
 - `PublishJobView.errorSummary` is a required, non-null string capped at 512 characters; `buildNumber` and `finishedAt` are nullable. Never reinterpret an empty error summary as missing contract data.
 - Release responses contain no creation mode or article ID. A reloaded history view displays only contract-backed Release/job data and does not reconstruct intent.
-- `Problem.code` is an unconstrained string. Preserve it; recognize stable service values `unauthenticated`, `revision_conflict`, `settings_conflict`, `release_conflict`, and `precondition_failed` only together with documented HTTP statuses, with a generic fallback.
+- `Problem.code` is an unconstrained string, so the recognized set is deliberately non-exhaustive. Preserve it; recognize stable service values `unauthenticated`, `revision_conflict`, `settings_conflict`, `builder_conflict`, `release_conflict`, and `precondition_failed` only together with documented HTTP statuses. Every unknown code uses the generic sanitized Problem fallback.
 
 ## Shared Frontend Interfaces
 
@@ -276,7 +276,7 @@ npm run build
 npm run verify:dist
 ```
 
-Expected: PASS; `dist/index.html` and hashed JS/CSS exist, no `.map` or secret-name match exists, and output stays ignored.
+Expected: PASS; `dist/index.html` and hashed JS/CSS exist, no `.map` or exact protected identifier from Task 16 exists, and output stays ignored. The identifier scan is deliberately limited to the seven concrete deployment names; it does not reject ordinary UI/source text merely because it contains `token`, `password`, or `secret`.
 
 - [ ] **Step 5: Commit**
 
@@ -325,7 +325,7 @@ await api.createMediaUploadPolicy();
 await api.testBuilderConfig();
 ```
 
-Assert those three calls send no JSON body, each 204 operation resolves `undefined`, a `401 application/problem+json` becomes `ApiProblem`, unsafe/invalid returned IDs are rejected, and submitted password/token values never appear in errors.
+Assert those three calls send no JSON body, each 204 operation resolves `undefined`, a `401 application/problem+json` becomes `ApiProblem`, unsafe/invalid returned IDs are rejected, and submitted password/token values never appear in errors. Preserve `builder_conflict` and an arbitrary `future_service_code` verbatim in `ApiProblem`; neither transport mapping nor presentation may treat the known-code list as exhaustive.
 
 - [ ] **Step 2: Verify red**
 
@@ -450,7 +450,7 @@ export const dependencyProblem = {
 } satisfies Problem;
 ```
 
-Define keys for me, articles by optional state, article, preview, versions, tags, site, hotlink, builder, releases by limit/offset, and release ID. MSW throws on every unhandled request.
+Define hierarchical keys with `queryKeys.articlesRoot = ["articles"]` and article-list/detail/preview/version keys below that root. Define `queryKeys.releasesRoot = ["releases"]`, `queryKeys.releaseListsRoot = ["releases", "list"]`, every limit/offset list below `releaseListsRoot`, and `queryKeys.release(id) = ["releases", "detail", id]`. Also define me, tags, site, hotlink, and builder keys. Invalidating `articlesRoot` covers every article list and detail; invalidating `releaseListsRoot` covers every Release list without making a freshly seeded Release detail stale. MSW throws on every unhandled request.
 
 - [ ] **Step 5: Verify generation and complete operation coverage**
 
@@ -504,7 +504,7 @@ it("exposes one keyboard-navigable shell", async () => {
 });
 ```
 
-Cover desktop links Articles/Publishing/Site/Builder/Hotlink, mobile `aria-expanded`, focus return, announced loading/save states, sanitized Problem/request ID, confirmation focus trap, and 44px narrow-screen targets.
+Cover desktop links Articles/Publishing/Site/Builder/Hotlink, mobile `aria-expanded`, focus return, announced loading/save states, sanitized Problem/request ID, confirmation focus trap, and 44px narrow-screen targets. Add one `builder_conflict` presentation case and one `future_service_code` case; the latter must render the generic title/code/request ID without an empty state, exception, or specialized claim.
 
 - [ ] **Step 2: Verify red**
 
@@ -597,14 +597,18 @@ git commit -m "feat(admin): add session protected routing"
 - Create: `admin/src/articles/ArticleListPage.tsx`
 - Create: `admin/src/articles/ArticleListPage.test.tsx`
 - Create: `admin/src/articles/article-actions.ts`
+- Create: `admin/src/publishing/release-cache.ts`
+- Create: `admin/src/publishing/release-cache.test.ts`
 - Modify: `admin/src/app/AppRouter.tsx`
 - Modify: `admin/src/api/query-keys.ts`
 
-**Interfaces:** Consumes `listArticles`, bodyless `createArticle`, void `trashArticle`/`untrashArticle`, `createRelease`, and `ArticleSummary`. Produces active/trash views and safe lifecycle actions.
+**Interfaces:** Consumes `listArticles`, bodyless `createArticle`, void `trashArticle`/`untrashArticle`, `createRelease`, `ArticleSummary`, and hierarchical query keys. Produces active/trash views, safe lifecycle actions, and `syncReleaseCache(queryClient, release): Promise<void>` for every later Release caller.
 
 - [ ] **Step 1: Write failing list/lifecycle tests**
 
 Cover loading, empty, retryable failure, exact `draftTitle`/timestamps/state, active and trashed URL filters, bodyless creation, edit navigation, unpublished trash, published trash blocked, untrash 204, unpublish Release creation, duplicate-action disabling, and narrow action menu.
+
+In `release-cache.test.ts`, prove every Release result seeds `queryKeys.release(release.id)` and invalidates all queries under `queryKeys.releaseListsRoot` without invalidating the seeded detail; a result with `status === "success"` additionally invalidates the whole `queryKeys.articlesRoot`, covering all article lists and details without needing an article ID or Release mode.
 
 ```tsx
 await user.click(screen.getByRole("button", { name: "Confirm unpublish" }));
@@ -623,7 +627,21 @@ Accept only `?state=active` or `?state=trashed`; invalid/missing becomes active.
 
 - [ ] **Step 4: Implement bodyless lifecycle calls**
 
-`createArticle()` validates `detail.id` and navigates to edit. Confirm trash/untrash, call the void operations, then invalidate list/detail queries. Block trash when `publishedRevisionId` is non-null. Unpublish calls `createRelease({ mode: "unpublish_article", articleId })`, then navigates to `/publishing?release=<release.id>` without claiming the article is offline before Release success.
+`createArticle()` validates `detail.id` and navigates to edit. Confirm trash/untrash, call the void operations, then invalidate list/detail queries. Block trash when `publishedRevisionId` is non-null. Implement the shared cache rule exactly:
+
+```ts
+export async function syncReleaseCache(queryClient: QueryClient, release: ReleaseView): Promise<void> {
+  const releaseId = requireEntityId(release.id, "release.id");
+  queryClient.setQueryData(queryKeys.release(releaseId), release);
+  const invalidations = [queryClient.invalidateQueries({ queryKey: queryKeys.releaseListsRoot })];
+  if (release.status === "success") {
+    invalidations.push(queryClient.invalidateQueries({ queryKey: queryKeys.articlesRoot }));
+  }
+  await Promise.all(invalidations);
+}
+```
+
+Unpublish calls `createRelease({ mode: "unpublish_article", articleId })`, awaits `syncReleaseCache(queryClient, result.release)`, then navigates to `/publishing?release=<release.id>` without claiming the article is offline before Release success.
 
 - [ ] **Step 5: Verify green**
 
@@ -638,7 +656,7 @@ Expected: PASS for both real filters, exact bodyless/void mutations, published-s
 - [ ] **Step 6: Commit**
 
 ```bash
-git add admin/src/articles admin/src/app/AppRouter.tsx admin/src/api/query-keys.ts
+git add admin/src/articles admin/src/publishing/release-cache.ts admin/src/publishing/release-cache.test.ts admin/src/app/AppRouter.tsx admin/src/api/query-keys.ts
 git commit -m "feat(admin): add article lifecycle list"
 ```
 
@@ -805,9 +823,9 @@ export interface UploadImageDependencies {
 
 - [ ] **Step 1: Write failing chain tests**
 
-Reject unsupported MIME/extension pairs, zero bytes, and over 10 MiB. Assert policy call has no body; multipart uses `uploadUrl`, fields `appId`, `policy`, `signature`, `timestamp`, `expire`, `nonce`, then file under `fileField`; `code:0` and positive numeric `data.val` yield a GFS ID; registration body is exactly `{ gfsFileId, originalName }`; abort skips registration; errors omit URL/policy/signature; insertion uses returned `media.url` only.
+Reject unsupported MIME/extension pairs, zero bytes, and over 10 MiB. Reject `file.name` before any policy request when it contains `/`, `\\`, or NUL, equals `.` or `..`, or exceeds 255 UTF-8 bytes; assert `createMediaUploadPolicy` is not called for every such case. Assert policy call has no body; multipart uses `uploadUrl`, fields `appId`, `policy`, `signature`, `timestamp`, `expire`, `nonce`, then file under `fileField`; `code:0` and positive numeric `data.val` yield a GFS ID; registration body is exactly `{ gfsFileId, originalName }`; abort skips registration; errors omit URL/policy/signature; insertion uses returned `media.url` only.
 
-Also reject basenames over 255 UTF-8 bytes. Treat upload-envelope width/height strings as diagnostic only: the Admin does not send them to registration, and the service metadata lookup authoritatively enforces positive dimensions no greater than 12,000 pixels.
+Treat upload-envelope width/height strings as diagnostic only: the Admin does not send them to registration, and the service metadata lookup authoritatively enforces positive dimensions no greater than 12,000 pixels.
 
 ```ts
 expect(registerMedia).toHaveBeenCalledWith({ gfsFileId: 41, originalName: "photo.png" });
@@ -826,7 +844,7 @@ Use XMLHttpRequest for progress, FormData boundary set by the browser, and abort
 
 - [ ] **Step 4: Implement registration and editor integration**
 
-Call `createMediaUploadPolicy()`, upload, then `registerMedia({ gfsFileId, originalName: file.name })`. Validate returned ID/public key and `url` against `^/img/proxy/[a-z0-9_-]+$`. Paste/drop/picker and cover share the hook; body inserts escaped alt plus `media.url`, cover stores `media.id`; failure leaves document unchanged.
+Run the filename/MIME/size preflight synchronously before `createMediaUploadPolicy()`. Only after it passes, request the policy, upload, then call `registerMedia({ gfsFileId, originalName: file.name })`. Validate returned ID/public key and `url` against `^/img/proxy/[a-z0-9_-]+$`. Paste/drop/picker and cover share the hook; body inserts escaped alt plus `media.url`, cover stores `media.id`; preflight or upload failure leaves the document unchanged.
 
 - [ ] **Step 5: Verify green**
 
@@ -836,7 +854,7 @@ npm test -- --run src/media/image-upload.test.ts src/editor/ArticleEditorPage.te
 npm run typecheck
 ```
 
-Expected: PASS for MIME/extension/size preflight, exact policy multipart, GFS ID parsing, registration, abort, and stable URL insertion.
+Expected: PASS for filename/MIME/extension/size preflight before the policy call, exact policy multipart, GFS ID parsing, registration, abort, and stable URL insertion.
 
 - [ ] **Step 6: Commit**
 
@@ -861,7 +879,7 @@ git commit -m "feat(admin): add direct image upload"
 
 - [ ] **Step 1: Write failing renderer and route tests**
 
-The fixture contains every supported syntax, duplicate h2 headings, fenced Go, external HTTPS link, `/img/proxy/m_fixturepublickey`, raw script/event content, and a JavaScript URL. Assert safe GFM, stable duplicate IDs, safe external attributes, public-origin image rewrite, Shiki output, immutable source input, loading/failure, and rendering from `PreviewView.draft`.
+The fixture contains every supported syntax, duplicate h2 headings, fenced Go, external HTTPS link, `/img/proxy/m_fixturepublickey`, raw script/event content, and a JavaScript URL. Assert safe GFM, stable duplicate IDs, safe external attributes, public-origin image rewrite, Shiki output, immutable source input, loading/failure, and rendering from `PreviewView.draft`. Add negative image cases for an empty key and valid-looking paths followed by a suffix, query, or fragment; none may be rewritten or retained as an image source.
 
 - [ ] **Step 2: Verify red**
 
@@ -871,7 +889,7 @@ Expected: FAIL because preview files are absent.
 
 - [ ] **Step 3: Implement the safe pipeline**
 
-Use remark parse/GFM/rehype without dangerous HTML, explicit sanitize schema, deterministic slugger, external-link transform, exact `/img/proxy/[a-z0-9_-]+` image rewrite to `https://qiuxs.com`, Shiki allowlisted grammars, and stringify. Do not use raw-HTML parsing. Extract h2/h3 table-of-contents entries.
+Use remark parse/GFM/rehype without dangerous HTML, explicit sanitize schema, deterministic slugger, external-link transform, and an exact `^/img/proxy/[a-z0-9_-]+$` image-source match before rewriting to `https://qiuxs.com`. Reject `/img/proxy/`, `/img/proxy/key/suffix`, `/img/proxy/key?x=1`, and `/img/proxy/key#fragment`; remove their image sources rather than partially matching. Use Shiki allowlisted grammars and stringify. Do not use raw-HTML parsing. Extract h2/h3 table-of-contents entries.
 
 - [ ] **Step 4: Implement the protected route**
 
@@ -949,12 +967,14 @@ git commit -m "feat(admin): add article version history"
 - Create: `admin/src/publishing/release-status.ts`
 - Create: `admin/src/publishing/PublishingPage.tsx`
 - Create: `admin/src/publishing/PublishingPage.test.tsx`
+- Modify: `admin/src/publishing/release-cache.ts`
+- Modify: `admin/src/publishing/release-cache.test.ts`
 - Modify: `admin/src/editor/ArticleEditorPage.tsx`
 - Modify: `admin/src/articles/ArticleListPage.tsx`
 - Modify: `admin/src/app/AppRouter.tsx`
 - Modify: `admin/src/api/query-keys.ts`
 
-**Interfaces:** Consumes `createRelease`, `listReleases`, `getRelease`, `retryRelease`, `ReleaseView`, `PublishJobView`, and autosave state. Produces article/settings Release actions, offset history, latest-job polling, and retry history.
+**Interfaces:** Consumes `createRelease`, `listReleases`, `getRelease`, `retryRelease`, `ReleaseView`, `PublishJobView`, autosave state, and `syncReleaseCache`. Produces article/settings Release actions, offset history, latest-job polling, retry history, and consistent Release/article cache invalidation.
 
 ```ts
 export function isActiveJobStatus(status: PublishJobView["status"]): boolean {
@@ -977,6 +997,8 @@ expect(retryRelease).toHaveBeenCalledWith(71);
 
 Assert retry result keeps `release.id === 71`, returns a different `job.id`, makes returned `release.latestJob` equal the new job, and retains older jobs. Assert the UI has no control for an unsupported active-job mutation.
 
+For create, assert the returned Release is immediately readable from its detail key and every Release-list key is invalidated. For retry and each poll response, assert detail replacement plus all-list invalidation. For any returned successful Release, assert broad `articlesRoot` invalidation; assert no cache path reads mode/article ID from ReleaseView.
+
 - [ ] **Step 2: Verify red**
 
 Run: `cd admin && npm test -- --run src/publishing/PublishingPage.test.tsx`
@@ -985,7 +1007,7 @@ Expected: FAIL because Release UI and status functions are absent.
 
 - [ ] **Step 3: Implement list, selection, and polling**
 
-Call `listReleases({ limit, offset })`; render only `ReleaseList.items`. Enable Previous when offset is positive and Next only when the current item count equals limit. Selection uses `/publishing?release=<positive id>`. Poll `getRelease(id)` every 3,000 ms while `isActiveJobStatus(release.latestJob.status)`, replace the cached aggregate on every response, and stop for success/failed latest jobs. The list query itself never polls.
+Call `listReleases({ limit, offset })`; render only `ReleaseList.items`. Enable Previous when offset is positive and Next only when the current item count equals limit. Selection uses `/publishing?release=<positive id>`. Poll `getRelease(id)` every 3,000 ms while `isActiveJobStatus(release.latestJob.status)`, await `syncReleaseCache(queryClient, polledRelease)` on every response, and stop for success/failed latest jobs. The list query itself never polls.
 
 Render Release ID, Release status, checksum, created/completed timestamps, then latest Job and all retry attempts. Keep `release.id`, `job.id`, and `job.releaseId` visibly distinct. Show `builderTarget.name/baseUrl/username/jobName` as non-editable text/link and never infer a token. Since ReleaseView exposes no creation mode or article ID, a reloaded row is labelled only by its Release-backed data.
 
@@ -993,9 +1015,9 @@ Use exact non-color labels: Release `queued` → “Release queued”, `success`
 
 - [ ] **Step 4: Implement creation and retry actions**
 
-Editor Publish is enabled only for a saved draft with a nonblank title and no `blob:`. It calls `createRelease({ mode: "publish_article", articleId })`; unpublish continues to use the matching request from Task 5; the Publishing page's “Publish saved site settings” calls `createRelease({ mode: "publish_settings", articleId: null })`. Select `result.release.id`, validate both returned IDs, and do not claim public success until Release/Job success is returned.
+Editor Publish is enabled only for a saved draft with a nonblank title and no `blob:`. It calls `createRelease({ mode: "publish_article", articleId })`; unpublish continues to use the matching request from Task 5; the Publishing page's “Publish saved site settings” calls `createRelease({ mode: "publish_settings", articleId: null })`. Every caller awaits `syncReleaseCache(queryClient, result.release)` before selecting the validated Release ID. Do not claim public success until Release/Job success is returned.
 
-Retry is available for a failed aggregate/latest job and calls `retryRelease(release.id)`. Replace the aggregate with `result.release` and focus `result.job`. On `409 release_conflict`, show the generic global-serialization notice and keep the current selection; on `412 precondition_failed`, state that service reconciliation or saved builder prerequisites require operator action. Every other code uses the generic Problem display.
+Retry is available for a failed aggregate/latest job and calls `retryRelease(release.id)`. Await `syncReleaseCache(queryClient, result.release)` and focus `result.job`. On `409 release_conflict`, show the generic global-serialization notice and keep the current selection; on `412 precondition_failed`, state that service reconciliation or saved builder prerequisites require operator action. Every other code uses the generic Problem display. Article invalidation comes only from observing `release.status === "success"`; never infer an article ID or mode.
 
 - [ ] **Step 5: Verify green**
 
@@ -1023,7 +1045,7 @@ git commit -m "feat(admin): add release publishing controls"
 - Modify: `admin/src/app/AppRouter.tsx`
 - Modify: `admin/src/api/query-keys.ts`
 
-**Interfaces:** Consumes `getSiteSettings`, `putSiteSettings`, `createRelease`, `SiteSettingsView`, and `PutSiteSettingsRequest`. Produces `/settings/site`, optimistic save, and separate settings Release creation.
+**Interfaces:** Consumes `getSiteSettings`, `putSiteSettings`, `createRelease`, `syncReleaseCache`, `SiteSettingsView`, and `PutSiteSettingsRequest`. Produces `/settings/site`, optimistic save, and separate settings Release creation.
 
 - [ ] **Step 1: Write failing exact-field tests**
 
@@ -1060,7 +1082,7 @@ const request: PutSiteSettingsRequest = {
 
 - [ ] **Step 4: Implement save/publication separation**
 
-Use an accessible form with ordered add/remove/reorder social controls, upload-selected default media ID, duplicate-submit blocking, and query cache replaced only by server response. Render `filingUrl` as fixed read-only link. After save announce “Saved settings — pending publication.” A separate confirmed action calls the generic Release request and navigates by Release ID. Conflict offers copy of only PUT fields and confirmed reload.
+Use an accessible form with ordered add/remove/reorder social controls, upload-selected default media ID, duplicate-submit blocking, and query cache replaced only by server response. Render `filingUrl` as fixed read-only link. After save announce “Saved settings — pending publication.” A separate confirmed action calls the generic Release request, awaits `syncReleaseCache(queryClient, result.release)`, and navigates by validated Release ID. It does not special-case article caches by request mode; only a returned successful Release triggers the helper's broad article invalidation. Conflict offers copy of only PUT fields and confirmed reload.
 
 - [ ] **Step 5: Verify green**
 
@@ -1087,13 +1109,13 @@ git commit -m "feat(admin): add site settings"
 - Modify: `admin/src/settings/settings-validation.ts`
 - Modify: `admin/src/app/AppRouter.tsx`
 
-**Interfaces:** Consumes `getBuilderConfig`, `putBuilderConfig`, `testBuilderConfig`, `BuilderConfigView`, and `PutBuilderConfigRequest`. Produces `/settings/builder`, blank-token preservation, and empty-body connection-test success.
+**Interfaces:** Consumes `getBuilderConfig`, `putBuilderConfig`, `testBuilderConfig`, `BuilderConfigView`, and `PutBuilderConfigRequest`. Produces `/settings/builder`, editable GET-404 first-config state, conditional token preservation, and empty-body connection-test success.
 
 - [ ] **Step 1: Write failing builder contract/security tests**
 
-Cover returned `id`, `name`, `baseUrl`, `username`, `jobName`, `enabled`, and `tokenConfigured`; no lock version; token absence on reads; exact `/api/admin/v1/builder` and `/builder/test` paths; blank token omitted from PUT; nonblank token sent once then removed from state/DOM; and no token in Query cache, storage, URL, exceptions, or MSW diagnostics.
+Cover returned `id`, `name`, `baseUrl`, `username`, `jobName`, `enabled`, and `tokenConfigured`; no lock version; token absence on reads; and exact `/api/admin/v1/builder` and `/builder/test` paths. A GET 404 renders an editable empty first-configuration form rather than the route error state. First save requires a token of 1–4096 Unicode code points; a configured view may omit a blank token to preserve the stored value. A nonblank token is sent once then removed from state/DOM, and never appears in Query cache, storage, URL, exceptions, or MSW diagnostics.
 
-Cover HTTPS-only base URL without userinfo/query/fragment/non-root path, name max 100, base URL max 2048, username max 255, job name max 128, token 1–4096, connection test disabled while form differs from saved config, test 204 showing a local generic success announcement, and Problem-only test failure.
+Trim name/username before validation and PUT; reject blank values, name over 100 runes, username over 255 runes, and any username containing `:`. Require a canonical HTTPS root origin of at most 2048 characters: lowercase ASCII DNS or canonical IPv4 host, no trailing dot, userinfo, path (including `/`), query, fragment, IPv6, default `:443`, zero-padded/zero/out-of-range port, uppercase scheme/host, or noncanonical IPv4. Job Name is 1–128 ASCII bytes, matches `^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`, and every slash-delimited segment is nonempty and neither `.` nor `..`. Cover connection test disabled for the 404 state or while the form differs from saved config, test 204 showing a local generic success announcement, and Problem-only test failure.
 
 - [ ] **Step 2: Verify red**
 
@@ -1104,21 +1126,26 @@ Expected: FAIL because the builder page is absent.
 - [ ] **Step 3: Implement exact PUT construction**
 
 ```ts
+const normalizedName = name.trim();
+const normalizedUsername = username.trim();
+if (!hasStoredConfig && [...token].length === 0) {
+  throw new Error("API Token is required for the first builder configuration");
+}
 const request: PutBuilderConfigRequest = {
-  name,
+  name: normalizedName,
   baseUrl: normalizeBuilderUrl(baseUrl),
-  username,
+  username: normalizedUsername,
   jobName,
   enabled,
   ...(token === "" ? {} : { token }),
 };
 ```
 
-There is no optimistic-lock field. Validate returned ID and render `tokenConfigured` as “Stored token configured” without synthesizing token text. A 409 `builder_conflict` is a sanitized save conflict, not a stale form-version conflict.
+`normalizeBuilderUrl` returns the input only when it is already the canonical root origin described in Step 1; it does not silently rewrite a slash, case, host, or port. Validate Job Name by the exact regex and segment rules before PUT. Count token length by Unicode code points, retain its bytes verbatim, and reject explicit empty input on first save before calling the API. There is no optimistic-lock field. Validate returned ID and render `tokenConfigured` as “Stored token configured” without synthesizing token text. A 409 `builder_conflict` is a sanitized save conflict, not a stale form-version conflict.
 
 - [ ] **Step 4: Implement save/test UX**
 
-Use a password input with `autocomplete="new-password"` and “Leave blank to keep the stored token.” On successful PUT replace cached `BuilderConfigView` and synchronously clear the token input. Enable connection test only for an enabled, unchanged saved view with `tokenConfigured === true`; call `testBuilderConfig()` and treat resolved `undefined` as success. Do not expect or display a result body/message.
+On GET 404 initialize empty name/base URL/username/token/job name with enabled false and announce “No builder configured”; do not cache a fabricated `BuilderConfigView`. Use a password input with `autocomplete="new-password"`; show “Token required for first save” in the 404 state and “Leave blank to keep the stored token” only for an existing view. On successful PUT replace cached `BuilderConfigView`, switch to existing state, and synchronously clear the token input. Enable connection test only for an enabled, unchanged saved view with `tokenConfigured === true`; call `testBuilderConfig()` and treat resolved `undefined` as success. Do not expect or display a result body/message.
 
 - [ ] **Step 5: Verify green**
 
@@ -1149,7 +1176,7 @@ git commit -m "feat(admin): add builder configuration"
 
 - [ ] **Step 1: Write failing exact-entry tests**
 
-Cover `{allowEmptyReferer, entries}`; defaults `qiuxs.com` and `blog-admin.qiuxs.com` enabled with empty Referer allowed; add/lowercase/remove one trailing dot; reject scheme/path/port/wildcard/credentials/whitespace/IP/duplicates; enable/disable/delete by hostname; exact PUT body; no entry ID; no lock version; `409 settings_conflict` generic retention; and immediate-effective success without Release creation.
+Cover `{allowEmptyReferer, entries}`; defaults `qiuxs.com` and `blog-admin.qiuxs.com` enabled with empty Referer allowed; accept and trim outer whitespace in `" qiuxs.COM. "`; accept the single-label host `"localhost"`; lowercase and remove one trailing dot. Accept total length 253 and label length 63; reject total length 254, a 64-byte label, empty labels, non-ASCII, labels whose first/last byte is `-`, and characters outside ASCII letters/digits/hyphen. Reject schemes, paths, ports, wildcards, credentials, canonical/noncanonical IP literals, every input containing only digits and dots (including `"123"`), internal whitespace, and normalized duplicates. Cover enable/disable/delete by hostname, exact PUT body, no entry ID, no lock version, `409 settings_conflict` generic retention, and immediate-effective success without Release creation.
 
 - [ ] **Step 2: Verify red**
 
@@ -1161,12 +1188,19 @@ Expected: FAIL because the hotlink page is absent.
 
 ```ts
 export function normalizeAllowedHostname(raw: string): string {
-  const candidate = raw.trim().toLowerCase().replace(/\.$/, "");
+  let candidate = raw.trim();
+  if (candidate.endsWith(".")) candidate = candidate.slice(0, -1);
+  candidate = candidate.toLowerCase();
   if (
-    candidate === "" || candidate.includes(":") || candidate.includes("/") ||
-    candidate.includes("*") || /^\d+\.\d+\.\d+\.\d+$/.test(candidate) ||
-    !/^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$/.test(candidate)
-  ) throw new Error("Enter an exact DNS hostname without scheme, path, port, or wildcard");
+    candidate === "" || candidate.length > 253 || /[^\x00-\x7f]/.test(candidate) ||
+    candidate.includes(":") || /^[0-9.]+$/.test(candidate)
+  ) throw new Error("Enter an ASCII hostname, not an IP address");
+  for (const label of candidate.split(".")) {
+    if (
+      label.length < 1 || label.length > 63 || label.startsWith("-") ||
+      label.endsWith("-") || !/^[a-z0-9-]+$/.test(label)
+    ) throw new Error("Each hostname label must use letters, digits, or interior hyphens");
+  }
   return candidate;
 }
 
@@ -1282,6 +1316,8 @@ npm run test:e2e -- e2e/settings-responsive.spec.ts
 
 Expected: all four specs PASS with no external connection; the contract spec reports exactly 29 unique registered operation IDs.
 
+The explicit `npx playwright install chromium` is an idempotent part of this gate. Do not omit it or depend on a Chromium binary left in a shared cache by another workspace.
+
 - [ ] **Step 8: Commit**
 
 ```bash
@@ -1303,7 +1339,21 @@ git commit -m "test(admin): cover browser management flows"
 
 - [ ] **Step 1: Write failing artifact assertions**
 
-Write `verify-dist.test.mjs` fixtures that make the verifier reject missing index, unhashed JS/CSS, source maps, absolute local paths, secret names, output above 2 MiB per file, and HTML references to missing assets. Add one valid fixture with hashed JS/CSS. Bundle only plaintext, Bash, JSON, YAML, Go, JavaScript, TypeScript, JSX, TSX, SQL, HTML, CSS, and Markdown grammars; other fences render plaintext.
+Write `verify-dist.test.mjs` fixtures that make the verifier reject missing index, unhashed JS/CSS, source maps, absolute local paths, any one of these exact protected identifiers, output above 2 MiB per file, and HTML references to missing assets:
+
+```js
+const protectedIdentifiers = [
+  "BLOG_ADMIN_PASSWORD",
+  "BLOG_REDIS_PASSWORD",
+  "BLOG_GFS_APP_SECRET",
+  "BLOG_GFS_PUBLIC_READ_SECRET",
+  "BLOG_BUNDLE_TOKEN",
+  "BLOG_CALLBACK_HMAC_KEY",
+  "BLOG_BUILDER_MASTER_KEY",
+] as const;
+```
+
+Test every identifier individually and one valid fixture with hashed JS/CSS. Scan for these exact case-sensitive strings only; do not generically reject the words `token`, `password`, or `secret`, because legitimate UI copy and generated field names contain them. Bundle only plaintext, Bash, JSON, YAML, Go, JavaScript, TypeScript, JSX, TSX, SQL, HTML, CSS, and Markdown grammars; other fences render plaintext.
 
 - [ ] **Step 2: Verify red**
 
@@ -1332,6 +1382,7 @@ test: version-check
 	npm run test:run
 
 e2e: version-check
+	npx playwright install chromium
 	npm run test:e2e
 
 build: version-check test
@@ -1358,11 +1409,14 @@ npm run typecheck
 npm run test:run
 npm run build
 npm run verify:dist
+npx playwright install chromium
 npm run test:e2e
 git diff --check
 ```
 
-Expected: PASS with no real dependency or network connection; generated types remain clean and `dist/` is a reproducible ignored artifact.
+`npx playwright install chromium` is intentionally idempotent in both `make e2e` and this clean gate. Do not rely on a browser binary left in a shared cache by Task 15 or another workspace.
+
+Expected: PASS with no real service dependency or application request to the external network; generated types remain clean and `dist/` is a reproducible ignored artifact.
 
 - [ ] **Step 6: Perform manual responsive/accessibility smoke**
 

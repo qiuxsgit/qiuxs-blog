@@ -50,3 +50,27 @@ The fixture deliberately models immutable database snapshot rows through
 sqlmock; it does not claim to substitute for a deployment-system integration
 test. Stage 6 remains responsible for testing filesystem, Nginx, and SSH
 behavior against its own pipeline boundaries.
+
+## Round 1 fixture correction
+
+Review identified that the original helper named
+`mutateDraftAndSettingsOutsideRelease` did not perform a mutation, its current
+release assertion compared an uninitialized field to itself, and the Jenkins
+transport accepted any nonempty publish-job ID. The correction was test-only:
+
+- The test first failed after requiring two live mutations: expected `2`, got
+  `0`.
+- GREEN drives `PUT /api/admin/v1/articles/41/draft` and
+  `PUT /api/admin/v1/settings/site` through the composed Admin handler/domain/
+  repository stack with sqlmock writes that change the live rows. Bundle reads
+  after those writes still use the release snapshot rows and retain their
+  identity bytes, gzip bytes after decompression, and ETag.
+- The fixture starts with `current_release_id = 7`. Failed callback SQL is
+  limited to the active-job clear after finalizing the failed job; it contains no
+  current-release or published-article pointer update expectation, and the test
+  asserts the observable old pointer remains `7`.
+- The Jenkins transport records both parameter pairs. The test asserts one call
+  for `(created release, created job)` and one for `(same release, retry job)`,
+  and asserts retry returns the original release with a distinct job.
+- Replay wording now correctly says that the identical canonical callback is
+  accepted idempotently (HTTP 204), not rejected.

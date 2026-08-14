@@ -37,23 +37,28 @@ import (
 
 // TestImmutableReleaseThroughJenkinsCallbackAndRetry proves the composed HTTP
 // surface retains an immutable bundle, cannot advance the current pointer on
-// failure, rejects a replayed callback, and retries with a new publish job.
+// failure, accepts an idempotent replayed callback, and retries with a new
+// publish job.
 func TestImmutableReleaseThroughJenkinsCallbackAndRetry(t *testing.T) {
 	system := newReleaseFlow(t)
 	created := system.createReleaseAsAdmin(release.PublishArticle, 41)
 	first := system.downloadBundle(created.ReleaseID)
 
 	system.mutateDraftAndSettingsOutsideRelease()
+	require.Equal(t, 2, system.liveMutations, "draft and settings must mutate through Admin HTTP")
 	require.Equal(t, first.IdentityBody, system.downloadBundle(created.ReleaseID).IdentityBody)
 
 	system.triggerCallback(created, "queue", release.JobQueued, 18, "nonce-queued-000001")
 	system.triggerCallback(created, "build", release.JobBuilding, 18, "nonce-building-0001")
 	system.triggerCallback(created, "deploy", release.JobDeploying, 18, "nonce-deploying-0001")
 	system.triggerCallback(created, "deploy", release.JobFailed, 18, "nonce-failed-0001")
-	require.Equal(t, system.previousCurrentRelease(), system.currentRelease())
+	require.Equal(t, int64(7), system.previousCurrentRelease())
+	require.Equal(t, int64(7), system.currentRelease())
 
 	retried := system.retryAsAdmin(created.ReleaseID)
+	require.Equal(t, created.ReleaseID, retried.ReleaseID)
 	require.NotEqual(t, created.JobID, retried.JobID)
+	require.Equal(t, []flowJenkinsCall{{ReleaseID: created.ReleaseID, JobID: created.JobID}, {ReleaseID: created.ReleaseID, JobID: retried.JobID}}, system.jenkinsCalls)
 	require.Equal(t, first.ETag, system.downloadBundle(created.ReleaseID).ETag)
 }
 
@@ -95,10 +100,12 @@ type releaseFlow struct {
 	jobStage                                                      string
 	jobBuild, jobFinished, releaseDone                            any
 	releaseStatus                                                 release.ReleaseStatus
-	jenkinsCalls                                                  int
+	jenkinsCalls                                                  []flowJenkinsCall
+	liveMutations                                                 int
 }
 
 type flowReleaseResult struct{ ReleaseID, JobID int64 }
+type flowJenkinsCall struct{ ReleaseID, JobID int64 }
 type flowBundle struct {
 	IdentityBody []byte
 	ETag         string
@@ -106,7 +113,7 @@ type flowBundle struct {
 
 func newReleaseFlow(t *testing.T) *releaseFlow {
 	t.Helper()
-	flow := &releaseFlow{t: t, now: time.Date(2026, 8, 14, 12, 0, 0, 123000000, time.UTC), releaseID: 101, jobID: 101}
+	flow := &releaseFlow{t: t, now: time.Date(2026, 8, 14, 12, 0, 0, 123000000, time.UTC), releaseID: 101, jobID: 101, current: 7}
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	flow.mock = mock
@@ -156,7 +163,41 @@ func (flow *releaseFlow) createReleaseAsAdmin(mode release.PublishMode, articleI
 	return flowReleaseResult{created.Release.Id, created.Job.Id}
 }
 
-func (flow *releaseFlow) mutateDraftAndSettingsOutsideRelease() {}
+func (flow *releaseFlow) mutateDraftAndSettingsOutsideRelease() {
+	changed := revision.PreparedContent{Title: "Changed Draft", Summary: "Changed live summary", ContentMD: "Changed live body", Tags: []tag.Snapshot{}, Media: []media.Reference{}}
+	changedHash := revision.ComputeHash(changed)
+	flow.expectAdmin()
+	flow.mock.ExpectBegin()
+	expectReleaseExec(flow.mock, flowUpdateDraft).WithArgs(changed.Title, changed.Summary, nil, changed.ContentMD, changedHash, flow.now, int64(41), int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectReleaseQuery(flow.mock, flowSelectSavedIdentity).WithArgs(int64(41)).WillReturnRows(sqlmock.NewRows([]string{"id", "lock_version", "revision_no", "created_at"}).AddRow(int64(101), int64(2), int64(2), flow.now))
+	expectReleaseExec(flow.mock, flowDeleteDraftTags).WithArgs(int64(101)).WillReturnResult(sqlmock.NewResult(0, 0))
+	expectReleaseExec(flow.mock, flowDeleteDraftMedia).WithArgs(int64(101)).WillReturnResult(sqlmock.NewResult(0, 0))
+	expectReleaseExec(flow.mock, flowTouchArticle).WithArgs(flow.now, int64(41)).WillReturnResult(sqlmock.NewResult(0, 1))
+	flow.mock.ExpectCommit()
+	response := flow.adminJSON(http.MethodPut, "/api/admin/v1/articles/41/draft", map[string]any{
+		"lockVersion": 1, "title": changed.Title, "summary": changed.Summary, "coverMediaId": nil, "contentMd": changed.ContentMD, "tagIds": []int64{},
+	})
+	require.Equal(flow.t, http.StatusOK, response.StatusCode)
+	var draft httpapi.DraftView
+	decodeResponse(flow.t, response, &draft)
+	require.Equal(flow.t, changed.Title, draft.Title)
+	flow.liveMutations++
+
+	flow.expectAdmin()
+	flow.mock.ExpectBegin()
+	expectReleaseExec(flow.mock, flowUpdateSite).WithArgs(
+		"qiuxs", "qiuxs", "Changed live settings", "shipping", "# About\n", `[{"label":"GitHub","url":"https://github.com/qiuxsgit"}]`,
+		"qiuxs blog", "Service content", nil, "长安休息室", "浙ICP备17057726号-1", flow.now, int64(1),
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectReleaseQuery(flow.mock, flowSelectSite).WillReturnRows(flowSiteRows(2, "Changed live settings", flow.now))
+	flow.mock.ExpectCommit()
+	response = flow.adminJSON(http.MethodPut, "/api/admin/v1/settings/site", siteWrite(1, "Changed live settings"))
+	require.Equal(flow.t, http.StatusOK, response.StatusCode)
+	var site httpapi.SiteSettingsView
+	decodeResponse(flow.t, response, &site)
+	require.Equal(flow.t, "Changed live settings", site.AuthorBio)
+	flow.liveMutations++
+}
 
 func (flow *releaseFlow) downloadBundle(releaseID int64) flowBundle {
 	flow.expectBundleRead(releaseID)
@@ -249,8 +290,9 @@ func (flow *releaseFlow) expectBuilderLoad() {
 
 func (flow *releaseFlow) expectCreate() {
 	flow.mock.ExpectBegin()
-	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(nil, nil))
-	expectReleaseQuery(flow.mock, flowSnapshotSite).WillReturnRows(sqlmock.NewRows([]string{"site_name", "author_bio", "about_md", "social_links_json", "filing_name", "filing_number"}).AddRow("Blog", "Bio", "About", "[]", "Filing", "Filing-1"))
+	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.current, nil))
+	expectReleaseQuery(flow.mock, flowReleaseSelect).WithArgs(flow.current).WillReturnRows(flow.releaseRows(flow.current, release.ReleaseSuccess, flow.now))
+	expectReleaseQuery(flow.mock, flowReleaseArticles).WithArgs(flow.current).WillReturnRows(sqlmock.NewRows([]string{"article_id", "revision_id", "slug", "title", "summary", "content_md", "content_hash", "published_at", "tags_snapshot_json"}))
 	expectReleaseQuery(flow.mock, flowSnapshotDraft).WithArgs(int64(41)).WillReturnRows(sqlmock.NewRows([]string{"id", "slug", "id", "revision_no", "title", "summary", "cover_media_id", "content_md", "content_hash", "lock_version"}).AddRow(int64(41), "article_slug", int64(71), int64(1), "Immutable", "Snapshot", nil, "Body", flow.articleHash, int64(1)))
 	expectReleaseQuery(flow.mock, flowSnapshotTags).WithArgs(int64(71)).WillReturnRows(sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}))
 	expectReleaseQuery(flow.mock, flowSnapshotMedia).WithArgs(int64(71)).WillReturnRows(sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}))
@@ -293,7 +335,7 @@ func (flow *releaseFlow) expectBundleRead(releaseID int64) {
 
 func (flow *releaseFlow) expectCallback(status release.JobStatus, stage string, build int64) {
 	flow.mock.ExpectBegin()
-	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(nil, flow.jobID))
+	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.current, flow.jobID))
 	expectReleaseQuery(flow.mock, flowJobForUpdate).WithArgs(flow.jobID, flow.releaseID).WillReturnRows(flow.jobRows(flow.jobID, flow.jobStatus, flow.jobStage, flow.jobBuild, flow.jobFinished))
 	finished := any(nil)
 	if status == release.JobFailed {
@@ -302,8 +344,8 @@ func (flow *releaseFlow) expectCallback(status release.JobStatus, stage string, 
 	expectReleaseExec(flow.mock, flowUpdateJob).WithArgs(status, stage, build, "", finished, flow.jobID, flow.jobStatus).WillReturnResult(sqlmock.NewResult(0, 1))
 	if status == release.JobFailed {
 		expectReleaseExec(flow.mock, flowUpdateReleaseFinal).WithArgs(release.ReleaseFailed, flow.now, flow.releaseID).WillReturnResult(sqlmock.NewResult(0, 1))
-		// No `completeSiteStateSQL` expectation is present: failed callbacks may
-		// clear the active lock but cannot advance the current release pointer.
+		// No current-release or article-pointer update is expected: failed
+		// callbacks may only clear the active lock and preserve the old release.
 		expectReleaseExec(flow.mock, flowFailActive).WithArgs(1, flow.jobID).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	flow.mock.ExpectCommit()
@@ -312,7 +354,7 @@ func (flow *releaseFlow) expectCallback(status release.JobStatus, stage string, 
 func (flow *releaseFlow) expectRetry(releaseID int64) {
 	newJobID := flow.jobID + flow.cfg.IDGen.Step
 	flow.mock.ExpectBegin()
-	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(nil, nil))
+	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.current, nil))
 	flow.expectAggregateRows(releaseID, release.ReleaseFailed, flow.now, []flowJob{{id: flow.jobID, status: release.JobFailed, stage: "deploy", build: int64(18), finished: flow.now}})
 	expectReleaseExec(flow.mock, flowInsertPublishJob).WithArgs(newJobID, releaseID, int64(9)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseExec(flow.mock, flowSetActive).WithArgs(newJobID, 1).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -331,7 +373,6 @@ func (flow *releaseFlow) jobRows(id int64, status release.JobStatus, stage strin
 type flowJenkinsTransport struct{ flow *releaseFlow }
 
 func (transport flowJenkinsTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	transport.flow.jenkinsCalls++
 	if request.Method != http.MethodPost || request.URL.String() != "https://jenkins.example.test/job/blog/job/deploy/buildWithParameters" {
 		return nil, io.ErrUnexpectedEOF
 	}
@@ -346,6 +387,12 @@ func (transport flowJenkinsTransport) RoundTrip(request *http.Request) (*http.Re
 	if values.Get("RELEASE_ID") != strconv.FormatInt(transport.flow.releaseID, 10) || values.Get("PUBLISH_JOB_ID") == "" {
 		return nil, io.ErrUnexpectedEOF
 	}
+	releaseID, releaseErr := strconv.ParseInt(values.Get("RELEASE_ID"), 10, 64)
+	jobID, jobErr := strconv.ParseInt(values.Get("PUBLISH_JOB_ID"), 10, 64)
+	if releaseErr != nil || jobErr != nil {
+		return nil, io.ErrUnexpectedEOF
+	}
+	transport.flow.jenkinsCalls = append(transport.flow.jenkinsCalls, flowJenkinsCall{ReleaseID: releaseID, JobID: jobID})
 	return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"X-Jenkins-Queue-Id": []string{"18"}}, Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
 }
 

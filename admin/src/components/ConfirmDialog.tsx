@@ -1,6 +1,7 @@
 import { useEffect, useRef, type PropsWithChildren } from "react";
 
 interface ConfirmDialogProps extends PropsWithChildren {
+  cancelDisabled?: boolean;
   confirmDisabled?: boolean;
   confirmLabel: string;
   onCancel: () => void;
@@ -16,7 +17,7 @@ function tabbableChildren(container: HTMLElement): HTMLElement[] {
     .filter((element) => element.tabIndex >= 0 && element.getAttribute("aria-hidden") !== "true");
 }
 
-export function ConfirmDialog({ children, confirmDisabled = false, confirmLabel, onCancel, onConfirm, open, title }: ConfirmDialogProps) {
+export function ConfirmDialog({ cancelDisabled = false, children, confirmDisabled = false, confirmLabel, onCancel, onConfirm, open, title }: ConfirmDialogProps) {
   const dialog = useRef<HTMLElement>(null);
   const cancelButton = useRef<HTMLButtonElement>(null);
   const opener = useRef<HTMLElement | null>(null);
@@ -61,7 +62,7 @@ export function ConfirmDialog({ children, confirmDisabled = false, confirmLabel,
         <h2 id="confirm-dialog-title">{title}</h2>
         <div className="dialog-copy">{children}</div>
         <div className="dialog-actions">
-          <button className="button button-secondary touch-target" onClick={onCancel} ref={cancelButton} type="button">Cancel</button>
+          <button className="button button-secondary touch-target" disabled={cancelDisabled} onClick={onCancel} ref={cancelButton} type="button">Cancel</button>
           <button className="button button-danger touch-target" disabled={confirmDisabled} onClick={onConfirm} type="button">{confirmLabel}</button>
         </div>
       </section>

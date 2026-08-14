@@ -183,6 +183,65 @@ describe("ArticleListPage", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["articles", "detail", 11] });
   });
 
+  it("keeps a pending trash dialog open when Cancel is pressed, then focuses New article after the row is removed", async () => {
+    api.listArticles.mockResolvedValueOnce({ items: [article({ publishedRevisionId: null })] }).mockResolvedValueOnce({ items: [] });
+    let resolveTrash!: () => void;
+    api.trashArticle.mockReturnValue(new Promise<void>((done) => { resolveTrash = done; }));
+    const { user } = renderPage();
+    await screen.findByText("Build log");
+
+    await user.click(screen.getByRole("button", { name: "Actions for Build log" }));
+    await user.click(screen.getByRole("button", { name: "Trash" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Trash article" });
+    await user.click(within(dialog).getByRole("button", { name: "Confirm trash" }));
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    expect(cancel).toBeDisabled();
+    await user.click(cancel);
+    expect(screen.getByRole("alertdialog", { name: "Trash article" })).toBeInTheDocument();
+
+    resolveTrash();
+    await waitFor(() => expect(screen.queryByText("Build log")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "New article" })).toHaveFocus();
+  });
+
+  it("keeps a pending trash dialog open when Escape is pressed, then focuses New article after the row is removed", async () => {
+    api.listArticles.mockResolvedValueOnce({ items: [article({ publishedRevisionId: null })] }).mockResolvedValueOnce({ items: [] });
+    let resolveTrash!: () => void;
+    api.trashArticle.mockReturnValue(new Promise<void>((done) => { resolveTrash = done; }));
+    const { user } = renderPage();
+    await screen.findByText("Build log");
+
+    await user.click(screen.getByRole("button", { name: "Actions for Build log" }));
+    await user.click(screen.getByRole("button", { name: "Trash" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Trash article" });
+    await user.click(within(dialog).getByRole("button", { name: "Confirm trash" }));
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("alertdialog", { name: "Trash article" })).toBeInTheDocument();
+
+    resolveTrash();
+    await waitFor(() => expect(screen.queryByText("Build log")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "New article" })).toHaveFocus();
+  });
+
+  it("re-enables cancellation after a failed lifecycle action", async () => {
+    api.listArticles.mockResolvedValue({ items: [article({ publishedRevisionId: null })] });
+    api.trashArticle.mockRejectedValue(new Error("service unavailable"));
+    const { user } = renderPage();
+    await screen.findByText("Build log");
+
+    await user.click(screen.getByRole("button", { name: "Actions for Build log" }));
+    await user.click(screen.getByRole("button", { name: "Trash" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Trash article" });
+    await user.click(within(dialog).getByRole("button", { name: "Confirm trash" }));
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    await waitFor(() => expect(cancel).not.toBeDisabled());
+
+    await user.click(cancel);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
   it("blocks trash for an article that remains published", async () => {
     api.listArticles.mockResolvedValue({ items: [article({ publishedRevisionId: 22 })] });
     const { user } = renderPage();

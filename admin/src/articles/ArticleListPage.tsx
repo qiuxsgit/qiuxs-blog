@@ -124,6 +124,11 @@ export function ArticleListPage() {
     }
   };
 
+  const cancelAction = () => {
+    if (confirmingAction.current) return;
+    setPendingDialog(undefined);
+  };
+
   const dialogCopy = pendingDialog ? actionCopy(pendingDialog.action) : undefined;
   const emptyMessage = state === "trashed" ? "No trashed articles." : "No active articles yet.";
   const actionPending = lifecycle.isPending || unpublish.isPending;
@@ -211,9 +216,10 @@ export function ArticleListPage() {
 
       {pendingDialog && dialogCopy && (
         <ConfirmDialog
+          cancelDisabled={actionPending}
           confirmDisabled={actionPending}
           confirmLabel={dialogCopy.confirmLabel}
-          onCancel={() => setPendingDialog(undefined)}
+          onCancel={cancelAction}
           onConfirm={confirmAction}
           open
           title={dialogCopy.title}

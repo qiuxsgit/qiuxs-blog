@@ -1,6 +1,7 @@
 package release
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -14,8 +15,24 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-sql-driver/mysql"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/idgen"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/randomkey"
 	"github.com/stretchr/testify/require"
 )
+
+func TestReleaseTagSlugMatchesRandomKeyAndDDLContract(t *testing.T) {
+	generator, err := randomkey.New(bytes.NewReader([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}))
+	require.NoError(t, err)
+	slug, err := generator.TagSlug()
+	require.NoError(t, err)
+	require.Equal(t, "t_abcdefghijkl", slug)
+
+	snapshot := validPreparedSnapshot(time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC))
+	snapshot.Articles[0].Tags[0].Slug = slug
+	require.NoError(t, validatePreparedSnapshot(CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9}, PreparedSnapshot{Articles: []ArticleSnapshot{}}, snapshot))
+
+	snapshot.Articles[0].Tags[0].Slug = "tag_slug_001"
+	require.ErrorIs(t, validatePreparedSnapshot(CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9}, PreparedSnapshot{Articles: []ArticleSnapshot{}}, snapshot), ErrInvalidSnapshot)
+}
 
 func TestCallbackRequiresCorrelatedJobAndPositiveBuildBeforeDatabaseAccess(t *testing.T) {
 	repo, _, _, _ := newRepositoryTest(t)
@@ -316,7 +333,7 @@ func TestValidatePreparedSnapshotRejectsStrictBoundaryViolations(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	base := PreparedSnapshot{Site: SiteSnapshot{SocialLinks: []SocialLink{}}, Articles: []ArticleSnapshot{}}
 	valid := validPreparedSnapshot(now)
-	valid.Articles[0].Tags = []TagSnapshot{{ID: 5, Name: "Go", Slug: "tag_slug_001"}}
+	valid.Articles[0].Tags = []TagSnapshot{{ID: 5, Name: "Go", Slug: "t_abcdefghijkl"}}
 
 	mutations := map[string]func(*PreparedSnapshot){
 		"missing filing":        func(value *PreparedSnapshot) { value.Site.FilingNumber = "" },
@@ -327,10 +344,10 @@ func TestValidatePreparedSnapshotRejectsStrictBoundaryViolations(t *testing.T) {
 		"invalid UTF-8 tag":     func(value *PreparedSnapshot) { value.Articles[0].Tags[0].Name = string([]byte{0xff}) },
 		"too many tags":         func(value *PreparedSnapshot) { value.Articles[0].Tags = make([]TagSnapshot, 33) },
 		"tag order": func(value *PreparedSnapshot) {
-			value.Articles[0].Tags = []TagSnapshot{{ID: 2, Name: "B", Slug: "tag_slug_002"}, {ID: 1, Name: "A", Slug: "tag_slug_001"}}
+			value.Articles[0].Tags = []TagSnapshot{{ID: 2, Name: "B", Slug: "t_abcdefghijkm"}, {ID: 1, Name: "A", Slug: "t_abcdefghijkl"}}
 		},
 		"duplicate tag slug": func(value *PreparedSnapshot) {
-			value.Articles[0].Tags = []TagSnapshot{{ID: 1, Name: "A", Slug: "tag_slug_001"}, {ID: 2, Name: "B", Slug: "tag_slug_001"}}
+			value.Articles[0].Tags = []TagSnapshot{{ID: 1, Name: "A", Slug: "t_abcdefghijkl"}, {ID: 2, Name: "B", Slug: "t_abcdefghijkl"}}
 		},
 		"duplicate article slug": func(value *PreparedSnapshot) {
 			second := value.Articles[0]
@@ -379,10 +396,10 @@ func TestStoredSnapshotJSONRejectsDuplicateUnknownMissingNullAndTrailingValues(t
 		})
 	}
 	for name, raw := range map[string]string{
-		"duplicate tag": `[{"ID":1,"ID":2,"Name":"Go","Slug":"tag_slug_001"}]`,
-		"unknown tag":   `[{"ID":1,"Name":"Go","Slug":"tag_slug_001","secret":"x"}]`,
+		"duplicate tag": `[{"ID":1,"ID":2,"Name":"Go","Slug":"t_abcdefghijkl"}]`,
+		"unknown tag":   `[{"ID":1,"Name":"Go","Slug":"t_abcdefghijkl","secret":"x"}]`,
 		"missing tag":   `[{"ID":1,"Name":"Go"}]`,
-		"null tag text": `[{"ID":1,"Name":null,"Slug":"tag_slug_001"}]`,
+		"null tag text": `[{"ID":1,"Name":null,"Slug":"t_abcdefghijkl"}]`,
 		"null tags":     `null`,
 		"trailing tags": `[] {}`,
 	} {
@@ -400,7 +417,7 @@ func TestStoredSnapshotJSONRejectsInvalidUTF8BeforeDecoding(t *testing.T) {
 	require.Error(t, decodeSiteSnapshot(badSite, &site))
 
 	badTags := append([]byte(`[{"ID":1,"Name":"`), 0xff)
-	badTags = append(badTags, []byte(`","Slug":"tag_slug_001"}]`)...)
+	badTags = append(badTags, []byte(`","Slug":"t_abcdefghijkl"}]`)...)
 	var tags []TagSnapshot
 	require.Error(t, decodeTags(badTags, &tags))
 }
@@ -431,7 +448,7 @@ func TestStoredSiteSocialJSONIsStrictAndBounded(t *testing.T) {
 func TestStoredTagDecoderBoundsBeforeAppending(t *testing.T) {
 	parts := make([]string, maxReleaseTagsPerArticle+1)
 	for index := range parts {
-		parts[index] = fmt.Sprintf(`{"ID":%d,"Name":"Tag","Slug":"tag_slug_%03d"}`, index+1, index+1)
+		parts[index] = fmt.Sprintf(`{"ID":%d,"Name":"Tag","Slug":"t_%012d"}`, index+1, index+1)
 	}
 	var tags []TagSnapshot
 	require.Error(t, decodeTags([]byte("["+strings.Join(parts, ",")+"]"), &tags))
@@ -963,7 +980,7 @@ func validPreparedSnapshot(now time.Time) PreparedSnapshot {
 		Articles: []ArticleSnapshot{{
 			ArticleID: 41, RevisionID: 71, Slug: "article_slug", Title: "Title", Summary: "Summary",
 			ContentMarkdown: "Body", ContentHash: "sha256:" + strings.Repeat("b", 64), PublishedAt: now,
-			Tags: []TagSnapshot{{ID: 5, Name: "Go", Slug: "tag_slug_001"}},
+			Tags: []TagSnapshot{{ID: 5, Name: "Go", Slug: "t_abcdefghijkl"}},
 		}},
 		Checksum: "sha256:" + strings.Repeat("a", 64),
 	}

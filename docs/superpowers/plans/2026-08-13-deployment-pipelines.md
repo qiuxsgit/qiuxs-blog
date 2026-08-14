@@ -16,7 +16,7 @@
 - SSH keys, Service `.env`, Jenkins API token, bundle token, callback secret, and `BLOG_SERVICE_UPSTREAM` live in Jenkins/server configuration, never Git.
 - Admin host build must report Node `v20.19.4`; Service host build must report Go `go1.25.7`; Site builds only in Node `22.20.0` Docker.
 - Static deployments use `releases/<immutable-id>` plus atomic `current` symlink; failed staging never changes `current`.
-- Site publication calls `building`, `deploying`, then retrying final `success`/`failed` callbacks.
+- Site publication receives both Release and Publish Job IDs and includes both in every signed `building`, `deploying`, and retrying final `success`/`failed` callback.
 - Automation tests use temporary local directories and fake ssh/rsync/curl; they never connect to `blogweb1`, `ngx1`, Jenkins, MySQL, Redis, GFS, or OSS.
 
 ---
@@ -66,10 +66,10 @@
 
 **Files:** Create `deploy/jenkins/Jenkinsfile.site`, `deploy/scripts/site-callback.sh`, `deploy/tests/site_pipeline.test.ts`, modify `site/Dockerfile`, `site/README.md`.
 
-**Interfaces:** Parameter `RELEASE_ID`; credentials `BLOG_BUILD_TOKEN`, `BLOG_CALLBACK_SECRET`; downloads gzip bundle, validates ETag/checksum, builds/verifies in Docker, deploys to `root@ngx1:/web/deploy/blog-site/releases/<release-id>`, writes `release.json`, and signs callbacks over canonical JSON + timestamp + nonce.
+**Interfaces:** Parameters `RELEASE_ID` and `PUBLISH_JOB_ID`; credentials `BLOG_BUILD_TOKEN`, `BLOG_CALLBACK_SECRET`; downloads the Release gzip bundle, validates ETag/checksum, builds/verifies in Docker, deploys to `root@ngx1:/web/deploy/blog-site/releases/<release-id>`, writes `release.json`, and signs callbacks containing the exact `releaseId` and `publishJobId` over canonical JSON + timestamp + nonce.
 
-- [ ] Test RELEASE_ID injection rejection, Bearer redaction, exact stage ordering, callback HMAC fixture, retry/backoff, failure callback in `post`, and that current switches only after remote inspection.
-- [ ] Implement pipeline with Docker Node 22.20.0, generated nonce, Jenkins build number, building/deploying/success/failed callbacks, and deterministic release metadata.
+- [ ] Test RELEASE_ID/PUBLISH_JOB_ID injection rejection, positive numeric validation for both, Bearer redaction, exact stage ordering, callback HMAC fixture covering both IDs, retry/backoff, failure callback in `post`, and that current switches only after remote inspection.
+- [ ] Implement pipeline with Docker Node 22.20.0, generated nonce, Jenkins build number, and `building`/`deploying`/`success`/`failed` callbacks that preserve the two input identities unchanged, plus deterministic release metadata.
 - [ ] Run static tests and a fully fake pipeline harness; commit `build(site): add release deployment pipeline`.
 
 ### Task 5: Configure Nginx for the Two Public Domains
@@ -119,4 +119,3 @@
 - Fake failure at every transfer/build/check/switch/callback point preserves the previous `current` target.
 - The offline browser journey produces and opens the final static article.
 - Real deployment remains an operator-triggered Jenkins action because credentials and target machines are external state.
-

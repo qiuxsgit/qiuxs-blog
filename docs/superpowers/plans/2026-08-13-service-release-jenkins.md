@@ -23,7 +23,7 @@
 - `BLOG_BUNDLE_TOKEN`, `BLOG_BUILDER_MASTER_KEY`, and `BLOG_CALLBACK_HMAC_KEY` are required opaque secrets. Master key is exactly 32 bytes after base64 RawStdEncoding decoding; bundle and callback keys are 32–128 bytes. Never put any secret, plaintext Jenkins token, encrypted token, Bearer token, callback signature, or full external URL in client errors or logs.
 - Encrypt Jenkins API tokens with AES-256-GCM using a fresh 12-byte nonce per encryption. Persist `nonce || ciphertext-and-tag` as base64 RawStdEncoding; decrypt only immediately before a Jenkins HTTP request.
 - Jenkins base URLs must be canonical HTTPS origins without userinfo, query, fragment, path, or a trailing slash. Job names match `^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`, contain no `//`, and are URL path-segment escaped for every component.
-- Jenkins test and trigger use an injected `*http.Client` with a bounded request context and never follow redirects. Trigger only `POST <base>/job/<escaped segments>/buildWithParameters` with form field `RELEASE_ID`; use basic authentication from configured username/token, accept 201 or 302 only when redirect following is disabled, and never write credentials into error text.
+- Jenkins test and trigger use an injected `*http.Client` with a bounded request context and never follow redirects. Trigger only `POST <base>/job/<escaped segments>/buildWithParameters` with form fields `RELEASE_ID` and `PUBLISH_JOB_ID`; use basic authentication from configured username/token, accept 201 or 302 only when redirect following is disabled, and never write credentials into error text.
 - Callbacks accept JSON only, limit bodies to 16 KiB, require canonical signed `timestamp`/`nonce`/payload, reject timestamp skew over five minutes, perform constant-time HMAC-SHA256 verification, and claim nonce with Redis `SET NX EX` before state mutation. Duplicate nonce and duplicate state are successful idempotent acknowledgements with no repeated state effects.
 - Callback transitions are monotonic: `queued -> building -> deploying -> success|failed`; `pending -> queued|failed`; a final job accepts only an identical final callback. Any other transition returns a generic conflict problem and leaves data unchanged.
 - Reconciliation reads only configured local `current/release.json` via an injected reader. It accepts only a regular JSON file with known completed release ID, matching checksum, positive build number, and a deployment timestamp; it updates pointers only under `site_state` lock. Missing file means no reconciliation; malformed, unknown, mismatched, or contradictory data blocks new publication and is surfaced only as a generic dependency-unavailable/admin-operational error.
@@ -142,7 +142,7 @@ Expected: FAIL because the schema, release model, API operations, and DDL do not
 Add `contracts/release-bundle-v1.schema.json` with `additionalProperties: false` throughout, positive signed integer IDs, RFC3339 date-times, checksum pattern `^sha256:[0-9a-f]{64}$`, and only the following public shape:
 
 ```json
-{"schemaVersion":1,"releaseId":7,"generatedAt":"2026-08-13T12:00:00Z","site":{"name":"","authorBio":"","aboutMarkdown":"","filingName":"","filingNumber":"","socialLinks":[]},"tags":[{"id":1,"name":"go","slug":"go"}],"articles":[{"articleId":2,"revisionId":3,"slug":"example","title":"","summary":"","contentMarkdown":"","contentHash":"sha256:...","publishedAt":"2026-08-13T12:00:00Z","tags":["go"]}],"checksum":"sha256:..."}
+{"schemaVersion":1,"releaseId":7,"generatedAt":"2026-08-13T12:00:00Z","site":{"name":"","authorBio":"","aboutMarkdown":"","filingName":"","filingNumber":"","socialLinks":[]},"tags":[{"id":1,"name":"go","slug":"t_abcdefghijkl"}],"articles":[{"articleId":2,"revisionId":3,"slug":"example_slug","title":"","summary":"","contentMarkdown":"","contentHash":"sha256:...","publishedAt":"2026-08-13T12:00:00Z","tags":["t_abcdefghijkl"]}],"checksum":"sha256:..."}
 ```
 
 Extend OpenAPI with Admin `GET/PUT /api/admin/v1/builder`, `POST /api/admin/v1/builder/test`, `POST /api/admin/v1/releases`, `GET /api/admin/v1/releases`, `GET /api/admin/v1/releases/{releaseId}`, and `POST /api/admin/v1/releases/{releaseId}/retry`; add Internal `GET /api/internal/v1/releases/{releaseId}/bundle` and `POST /api/internal/v1/jenkins/callback`. Document 200/201/202/204 plus 400/401/403/409/412/429/503 Problem responses. The request schemas must reject extra fields and never expose a stored Jenkins token.
@@ -165,14 +165,16 @@ Define repository signatures in `repository.go`, including transaction-scoped me
 ```go
 type Repository interface {
     CreateLocked(ctx context.Context, command CreateCommand) (Release, PublishJob, error)
-    FindRelease(ctx context.Context, id int64) (Release, error)
+    FindRelease(ctx context.Context, id int64) (Aggregate, error)
+    ListReleases(ctx context.Context, query ListQuery) ([]Aggregate, error)
     LoadBundle(ctx context.Context, id int64) (Bundle, error)
-    CreateRetryLocked(ctx context.Context, releaseID int64) (PublishJob, error)
+    CreateRetryLocked(ctx context.Context, releaseID int64) (Aggregate, PublishJob, error)
     ApplyCallbackLocked(ctx context.Context, event CallbackEvent) (PublishJob, bool, error)
+    FailTriggerLocked(ctx context.Context, publishJobID int64, summary string, at time.Time) (PublishJob, bool, error)
     ReconcileLocked(ctx context.Context, artifact Artifact) (bool, error)
 }
 type CreateCommand struct { Mode PublishMode; ArticleID int64; BuilderID int64; RequestedBy int64 }
-type CallbackEvent struct { ReleaseID, BuildNumber int64; Stage string; Status JobStatus; ErrorSummary string; Timestamp time.Time; Nonce string }
+type CallbackEvent struct { ReleaseID, PublishJobID, BuildNumber int64; Stage string; Status JobStatus; ErrorSummary string; Timestamp time.Time; Nonce string }
 type Artifact struct { ReleaseID int64; Checksum string; BuildNumber int64; DeployedAt time.Time }
 ```
 
@@ -306,7 +308,7 @@ Expected: FAIL because the MySQL repository does not exist.
 
 `CreateLocked` must begin a transaction, lock exactly the `site_state` singleton row, reject non-null active job with `ErrBusy`, ask `SnapshotSource` for frozen/current snapshots according to explicit `PublishMode` (`PublishArticle`, `UnpublishArticle`, `PublishSettings`), generate signed Release/Job IDs through the injected generator before INSERT, serialize copied snapshot fields, create `release_articles`, set `active_publish_job_id`, and commit. For every mode, read the current Release snapshot as the base; never query mutable drafts except `FreezeForPublish` for the selected article.
 
-`CreateRetryLocked` locks `site_state`, rejects active work, verifies the Release exists and is immutable/failed or previously attempted, inserts a fresh pending job, and updates the active pointer without changing Release rows. `ApplyCallbackLocked` locks state and job, performs the exact monotonic transition, sets/validates build number, records only a bounded 512-rune sanitized summary, clears active lock on final outcome, and updates `current_release_id` plus Stage 2 published-revision pointers only for success. Existing matching state returns `(job, true, nil)`; invalid order returns `ErrConflict`.
+`CreateRetryLocked` locks `site_state`, rejects active work, verifies the Release exists and is immutable/failed or previously attempted, inserts a fresh pending job, and updates the active pointer without changing Release rows. `ApplyCallbackLocked` locks the exact `(PublishJobID, ReleaseID)` job row, requires `site_state.active_publish_job_id` to equal that job for non-final mutation, performs the exact monotonic transition, assigns a positive build number once, records only a bounded 512-rune sanitized summary, clears the active lock on final outcome, and updates `current_release_id` plus Stage 2 published-revision pointers only for success. Existing matching state for that same job returns `(job, true, nil)`; a delayed callback for an older job cannot mutate a retry. `FailTriggerLocked` locks the exact active job by ID and records an idempotent buildless trigger failure without fabricating a Jenkins callback. Invalid identity or order returns `ErrConflict`.
 
 - [ ] **Step 4: Add failure/immutability test cases**
 
@@ -419,8 +421,9 @@ func TestBuilderRepositoryEncryptsTokenAndNeverReturnsItToView(t *testing.T) {
 
 func TestTriggerEscapesEachJobSegmentAndDoesNotFollowRedirect(t *testing.T) {
     server, observed := newJenkinsServer(t, http.StatusFound)
-    err := clientFor(server.URL).Trigger(context.Background(), config, 9)
+    err := clientFor(server.URL).Trigger(context.Background(), config, 9, 12)
     require.NoError(t, err); require.Equal(t, "/job/site/job/build/buildWithParameters", observed.Path)
+    require.Equal(t, url.Values{"RELEASE_ID":{"9"}, "PUBLISH_JOB_ID":{"12"}}, observed.Form)
 }
 ```
 
@@ -442,14 +445,14 @@ type ConfigRepository interface { Save(ctx context.Context, input ConfigInput) (
 type Client struct { httpClient *http.Client; timeout time.Duration }
 func ValidateConfig(input ConfigInput) error
 func (c Client) Test(ctx context.Context, cfg StoredConfig, box platform.SecretBox) error
-func (c Client) Trigger(ctx context.Context, cfg StoredConfig, box platform.SecretBox, releaseID int64) (int64, error)
+func (c Client) Trigger(ctx context.Context, cfg StoredConfig, box platform.SecretBox, releaseID, publishJobID int64) (int64, error)
 ```
 
-Validate and canonicalize base URL as described in Global Constraints. Store only `SecretBox.Seal([]byte(Token))`; `Save` accepts empty Token only when replacing non-secret fields on a previously configured row, and never selects/decrypts a token for an Admin response. Build a no-redirect HTTP client clone (`CheckRedirect` returns `http.ErrUseLastResponse`); both methods use `context.WithTimeout(ctx, 10*time.Second)`, decrypt in local memory, set BasicAuth, and return static operation errors. `Test` performs `GET <base>/api/json`; accepts only 200. `Trigger` sends exact form-encoded `RELEASE_ID=<decimal signed id>`, accepts 201/302, parses positive `X-Jenkins-Queue-Id` if present or returns zero queue/build number until callback supplies a build number.
+Validate and canonicalize base URL as described in Global Constraints. Store only `SecretBox.Seal([]byte(Token))`; `Save` accepts empty Token only when replacing non-secret fields on a previously configured row, and never selects/decrypts a token for an Admin response. Build a no-redirect HTTP client clone (`CheckRedirect` returns `http.ErrUseLastResponse`); both methods use `context.WithTimeout(ctx, 10*time.Second)`, decrypt in local memory, set BasicAuth, and return static operation errors. `Test` performs `GET <base>/api/json`; accepts only 200. `Trigger` requires positive Release and Publish Job IDs and sends exactly form-encoded `RELEASE_ID=<decimal signed id>&PUBLISH_JOB_ID=<decimal signed id>`, accepts 201/302, parses positive `X-Jenkins-Queue-Id` if present or returns zero queue/build number until callback supplies a build number.
 
 - [ ] **Step 4: Add safety tests**
 
-Cover HTTP base URL rejection (HTTP, userinfo, query, fragment, path, slash), unsafe/malformed job names, token encryption variation, ciphertext corruption, empty update preserving stored ciphertext, no token in ConfigView/errors/log strings, disabled builder rejection, auth header only at httptest origin, form payload only containing release ID, 401/500/redirect/network errors, and cancellation deadline.
+Cover HTTP base URL rejection (HTTP, userinfo, query, fragment, path, slash), unsafe/malformed job names, token encryption variation, ciphertext corruption, empty update preserving stored ciphertext, no token in ConfigView/errors/log strings, disabled builder rejection, auth header only at httptest origin, form payload containing only the exact Release and Publish Job IDs, 401/500/redirect/network errors, and cancellation deadline.
 
 - [ ] **Step 5: Run focused tests**
 
@@ -492,7 +495,7 @@ func TestPublishMarksTriggerFailureFailedAndReleasesLock(t *testing.T) {
     repo := &releaseFake{created: pendingJob(2, 1), triggerErr: errors.New("private Jenkins failure")}
     _, err := orchestrator(repo).Publish(context.Background(), release.CreateCommand{Mode: release.PublishSettings, BuilderID: 8})
     require.ErrorIs(t, err, release.ErrDependencyUnavailable)
-    require.Equal(t, []release.CallbackEvent{{ReleaseID:1, Status:release.JobFailed, Stage:"trigger"}}, repo.transitions)
+    require.Equal(t, []int64{2}, repo.failedTriggerJobIDs)
 }
 ```
 
@@ -507,14 +510,14 @@ Expected: FAIL because signed callbacks and trigger orchestration are missing.
 Define callback body exactly as:
 
 ```go
-type CallbackPayload struct { ReleaseID int64 `json:"releaseId"`; BuildNumber int64 `json:"buildNumber"`; Stage string `json:"stage"`; Status release.JobStatus `json:"status"`; ErrorSummary string `json:"errorSummary"`; Timestamp time.Time `json:"timestamp"`; Nonce string `json:"nonce"` }
+type CallbackPayload struct { ReleaseID int64 `json:"releaseId"`; PublishJobID int64 `json:"publishJobId"`; BuildNumber int64 `json:"buildNumber"`; Stage string `json:"stage"`; Status release.JobStatus `json:"status"`; ErrorSummary string `json:"errorSummary"`; Timestamp time.Time `json:"timestamp"`; Nonce string `json:"nonce"` }
 type CallbackVerifier struct { key []byte; redis *redis.Client; now func() time.Time }
 func (v CallbackVerifier) VerifyAndClaim(ctx context.Context, raw []byte, signature string) (CallbackPayload, bool, error)
 ```
 
-Require a single `X-Jenkins-Signature: sha256=<lowercase hex>` header. Canonical signing bytes are `strconv.FormatInt(timestamp.Unix(),10)+"\n"+nonce+"\n"+raw`, where `raw` is the exact request body after strict JSON decode/validation and re-encode equality check. Nonce matches `^[A-Za-z0-9_-]{16,128}$`; claim `qiuxs-blog:jenkins:nonce:<sha256(nonce)>` with five-minute TTL via `SetNX`. Validate stage/status pairs and nonnegative build number before Redis.
+Require a single `X-Jenkins-Signature: sha256=<lowercase hex>` header. Canonical signing bytes are `strconv.FormatInt(timestamp.Unix(),10)+"\n"+nonce+"\n"+raw`, where `raw` is the exact request body after strict JSON decode/validation and re-encode equality check and therefore includes `publishJobId`. Nonce matches `^[A-Za-z0-9_-]{16,128}$`; claim `qiuxs-blog:jenkins:nonce:<sha256(nonce)>` with five-minute TTL via `SetNX`. Validate positive Release, Publish Job, and build numbers plus stage/status pairs before Redis.
 
-`Orchestrator.Publish` calls `release.Service.Reconcile` before `Repository.CreateLocked`, triggers Jenkins only after the creation transaction commits, and on trigger error applies a final failed transition to release the lock while returning `ErrDependencyUnavailable`. `Retry` calls `CreateRetryLocked` then triggers the new job; it never mutates the old job or Release. Callback duplicate claims acknowledge without repository changes; first claims call `ApplyCallbackLocked` exactly once. No timeout ever infers success.
+`Orchestrator.Publish` calls `release.Service.Reconcile` before `Repository.CreateLocked`, then triggers Jenkins with both `release.ID` and `job.ID` only after the creation transaction commits. On trigger error it calls `Repository.FailTriggerLocked(ctx, job.ID, summary, at)` to release that exact attempt's lock while returning `ErrDependencyUnavailable`. `Retry` calls `CreateRetryLocked`, triggers Jenkins with the unchanged Release ID and new Job ID, and calls `FailTriggerLocked` for that new Job ID on trigger failure; it never mutates the old job or Release. Callback duplicate claims acknowledge without repository changes; first claims pass both payload IDs to `ApplyCallbackLocked` exactly once. No timeout ever infers success.
 
 - [ ] **Step 4: Add full callback/orchestration failure coverage**
 

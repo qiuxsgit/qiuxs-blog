@@ -29,11 +29,11 @@ func TestReleaseBundleMarshalsOnlyVersionedPublicSnapshotFieldsWithSignedIDs(t *
 			FilingName: "长安休息室", FilingNumber: "浙ICP备17057726号-1",
 			SocialLinks: []SocialLink{{Label: "GitHub", URL: "https://github.com/qiuxsgit"}},
 		},
-		Tags: []BundleTag{{ID: 1, Name: "Go", Slug: "go"}},
+		Tags: []BundleTag{{ID: 1, Name: "Go", Slug: "t_abcdefghijkl"}},
 		Articles: []BundleArticle{{
 			ArticleID: 2, RevisionID: 3, Slug: "example", Title: "Title", Summary: "Summary",
 			ContentMarkdown: "Body", ContentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			PublishedAt: generatedAt, Tags: []string{"go"},
+			PublishedAt: generatedAt, Tags: []string{"t_abcdefghijkl"},
 		}},
 		Checksum: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	}

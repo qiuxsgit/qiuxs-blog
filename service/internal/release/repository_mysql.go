@@ -51,7 +51,7 @@ const (
 var (
 	releaseChecksumPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 	releaseSlugPattern     = regexp.MustCompile(`^[a-z0-9_-]{12}$`)
-	releaseTagSlugPattern  = regexp.MustCompile(`^[a-z0-9_-]{12}$`)
+	releaseTagSlugPattern  = regexp.MustCompile(`^t_[a-z0-9_-]{12}$`)
 	publishBuildUnique     = regexp.MustCompile(`(?i)(?:key ['\x60]?(?:[^'\x60.]+\.)?uk_publish_jobs_release_build['\x60]?|constraint ['\x60]?uk_publish_jobs_release_build['\x60]?)`)
 )
 

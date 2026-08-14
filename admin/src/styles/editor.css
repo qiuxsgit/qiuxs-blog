@@ -1,0 +1,20 @@
+.article-editor { display: grid; gap: 1rem; }
+.editor-heading { align-items: center; display: flex; justify-content: space-between; }
+.editor-heading h1 { margin: 0; }
+.editor-title { display: grid; font-weight: 700; gap: .375rem; }
+.editor-title input { background: transparent; border: 0; border-bottom: 1px solid var(--line); color: var(--paper-50); font-size: clamp(1.5rem, 4vw, 2.5rem); padding: .5rem 0; width: 100%; }
+.editor-metadata { background: var(--ink-900); border: 1px solid var(--line); padding: 1rem; }
+.editor-metadata summary { cursor: pointer; font-weight: 700; }
+.editor-metadata[open] { display: grid; gap: 1rem; }
+.editor-metadata label { display: grid; gap: .375rem; }
+.editor-metadata input, .editor-metadata textarea, .markdown-source { background: var(--ink-900); border: 1px solid var(--line); color: var(--paper-50); font: inherit; padding: .75rem; width: 100%; }
+.editor-metadata textarea { min-height: 7rem; resize: vertical; }
+.tag-row { align-items: end; display: grid; gap: .5rem; grid-template-columns: minmax(8rem, 1fr) minmax(8rem, 1fr) auto; margin-block: .5rem; }
+.tag-row > label { align-items: center; display: flex; gap: .5rem; }
+.tag-create { align-items: end; display: grid; gap: .5rem; grid-template-columns: 1fr auto; margin-top: 1rem; }
+.editor-mode { display: flex; gap: .5rem; }
+.editor-mode button[aria-pressed="true"] { border-color: var(--blue-300); color: var(--blue-300); }
+.markdown-canvas, .markdown-source { background: var(--ink-900); border: 1px solid var(--line); min-height: 32rem; padding: 1rem; }
+.markdown-canvas .ProseMirror { min-height: 30rem; outline: 0; }
+.markdown-source { resize: vertical; }
+@media (max-width: 48rem) { .tag-row { grid-template-columns: 1fr; }.tag-create { grid-template-columns: 1fr; } }

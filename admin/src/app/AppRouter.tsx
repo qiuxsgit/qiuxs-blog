@@ -4,6 +4,7 @@ import { LoginPage } from "../auth/LoginPage";
 import { ArticleListPage } from "../articles/ArticleListPage";
 import { RequireSession } from "../auth/RequireSession";
 import { AppShell } from "../layout/AppShell";
+import { ArticleEditorPage } from "../editor/ArticleEditorPage";
 import { RouteErrorPage } from "./RouteErrorPage";
 
 function ShellLayout() {
@@ -26,8 +27,8 @@ export const appRoutes: RouteObject[] = [
         children: [
           { index: true, element: <Navigate to="/articles" replace /> },
           { path: "articles", element: <ArticleListPage /> },
-          { path: "articles/new", element: <h1>New article</h1> },
-          { path: "articles/:articleId/edit", element: <h1>Edit article</h1> },
+          { path: "articles/new", element: <ArticleEditorPage /> },
+          { path: "articles/:articleId/edit", element: <ArticleEditorPage /> },
           { path: "articles/:articleId/preview", element: <h1>Article preview</h1> },
           { path: "articles/:articleId/versions", element: <h1>Article versions</h1> },
           { path: "publishing", element: <h1>Publishing</h1> },

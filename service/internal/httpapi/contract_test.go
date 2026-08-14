@@ -323,7 +323,7 @@ func TestAdminContractRequestShapesAreExactAndClosed(t *testing.T) {
 		"PutHotlinkSettingsRequest": {"allowEmptyReferer", "entries"},
 		"PutBuilderConfigRequest":   {"baseUrl", "enabled", "jobName", "name", "token", "username"},
 		"CreateReleaseRequest":      {"articleId", "mode"},
-		"JenkinsCallbackRequest":    {"buildNumber", "errorSummary", "nonce", "releaseId", "stage", "status", "timestamp"},
+		"JenkinsCallbackRequest":    {"buildNumber", "errorSummary", "nonce", "publishJobId", "releaseId", "stage", "status", "timestamp"},
 	}
 	for schemaName, wanted := range expected {
 		t.Run(schemaName, func(t *testing.T) {
@@ -362,6 +362,10 @@ func TestAdminContractRequestShapesAreExactAndClosed(t *testing.T) {
 	require.ElementsMatch(t, []string{"release", "job"}, createResult.Value.Required)
 	require.Equal(t, "#/components/schemas/ReleaseView", createResult.Value.Properties["release"].Ref)
 	require.Equal(t, "#/components/schemas/PublishJobView", createResult.Value.Properties["job"].Ref)
+
+	callback := doc.Components.Schemas["JenkinsCallbackRequest"].Value
+	require.Equal(t, float64(1), *callback.Properties["publishJobId"].Value.Min)
+	require.Equal(t, float64(1), *callback.Properties["buildNumber"].Value.Min)
 }
 
 func TestReleaseAdminReadsExposeOrderedJobHistoryAndPagination(t *testing.T) {

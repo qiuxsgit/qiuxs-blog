@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -16,28 +17,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCallbackRequiresCorrelatedJobAndPositiveBuildBeforeDatabaseAccess(t *testing.T) {
+	repo, _, _, _ := newRepositoryTest(t)
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	for name, event := range map[string]CallbackEvent{
+		"missing job":   {ReleaseID: 7, BuildNumber: 44, Stage: "queue", Status: JobQueued, Timestamp: now},
+		"missing build": {ReleaseID: 7, PublishJobID: 12, Stage: "queue", Status: JobQueued, Timestamp: now},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := repo.ApplyCallbackLocked(context.Background(), event)
+			require.ErrorIs(t, err, ErrConflict)
+		})
+	}
+}
+
 const (
-	testSiteStateForUpdateSQL      = "SELECT current_release_id, active_publish_job_id FROM site_state WHERE singleton_key = ? FOR UPDATE"
-	testInsertSiteStateSQL         = "INSERT INTO site_state (id, singleton_key, current_release_id, active_publish_job_id) VALUES (?, 1, NULL, NULL)"
-	testInsertReleaseSQL           = "INSERT INTO releases (id, site_snapshot_json, checksum, status) VALUES (?, ?, ?, 'queued')"
-	testInsertReleaseArticleSQL    = "INSERT INTO release_articles (id, release_id, article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-	testInsertPublishJobSQL        = "INSERT INTO publish_jobs (id, release_id, builder_id, status, stage, error_summary) VALUES (?, ?, ?, 'pending', 'pending', '')"
-	testSetActiveJobSQL            = "UPDATE site_state SET active_publish_job_id = ? WHERE singleton_key = ? AND active_publish_job_id IS NULL"
-	testReleaseSelectSQL           = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ?"
-	testReleaseForUpdateSQL        = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ? FOR UPDATE"
-	testReleaseListSQL             = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
-	testReleaseArticlesSelectSQL   = "SELECT article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json FROM release_articles WHERE release_id = ? ORDER BY article_id ASC"
-	testJobsSelectSQL              = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? ORDER BY created_at DESC, id DESC"
-	testJobForUpdateSQL            = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? AND release_id = ? FOR UPDATE"
-	testJobByBuildForUpdateSQL     = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? AND build_number = ? ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE"
-	testPriorJobCountForUpdateSQL  = "SELECT COUNT(*) FROM publish_jobs WHERE release_id = ? AND id <> ? FOR UPDATE"
-	testLatestFinalJobForUpdateSQL = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? AND status IN ('success', 'failed') ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE"
-	testUpdateJobSQL               = "UPDATE publish_jobs SET status = ?, stage = ?, build_number = ?, error_summary = ?, finished_at = ? WHERE id = ? AND status = ?"
-	testUpdateReleaseFinalSQL      = "UPDATE releases SET status = ?, completed_at = ? WHERE id = ?"
-	testPublishArticlePointersSQL  = "UPDATE articles a LEFT JOIN release_articles ra ON ra.release_id = ? AND ra.article_id = a.id SET a.published_revision_id = ra.revision_id, a.updated_at = ? WHERE a.published_revision_id IS NOT NULL OR ra.revision_id IS NOT NULL"
-	testCompleteSiteStateSQL       = "UPDATE site_state SET current_release_id = ?, active_publish_job_id = NULL WHERE singleton_key = ? AND active_publish_job_id = ?"
-	testFailSiteStateSQL           = "UPDATE site_state SET active_publish_job_id = NULL WHERE singleton_key = ? AND active_publish_job_id = ?"
-	testMaxReleaseIDSQL            = "SELECT MAX(id) FROM releases"
+	testSiteStateForUpdateSQL     = "SELECT current_release_id, active_publish_job_id FROM site_state WHERE singleton_key = ? FOR UPDATE"
+	testInsertSiteStateSQL        = "INSERT INTO site_state (id, singleton_key, current_release_id, active_publish_job_id) VALUES (?, 1, NULL, NULL)"
+	testInsertReleaseSQL          = "INSERT INTO releases (id, site_snapshot_json, checksum, status) VALUES (?, ?, ?, 'queued')"
+	testInsertReleaseArticleSQL   = "INSERT INTO release_articles (id, release_id, article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+	testInsertPublishJobSQL       = "INSERT INTO publish_jobs (id, release_id, builder_id, status, stage, error_summary) VALUES (?, ?, ?, 'pending', 'pending', '')"
+	testSetActiveJobSQL           = "UPDATE site_state SET active_publish_job_id = ? WHERE singleton_key = ? AND active_publish_job_id IS NULL"
+	testReleaseSelectSQL          = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ?"
+	testReleaseForUpdateSQL       = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ? FOR UPDATE"
+	testReleaseListSQL            = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+	testReleaseArticlesSelectSQL  = "SELECT article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json FROM release_articles WHERE release_id = ? ORDER BY article_id ASC LIMIT 100001"
+	testJobsSelectSQL             = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? ORDER BY created_at DESC, id DESC"
+	testJobForUpdateSQL           = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? AND release_id = ? FOR UPDATE"
+	testJobByIDForUpdateSQL       = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? FOR UPDATE"
+	testUpdateJobSQL              = "UPDATE publish_jobs SET status = ?, stage = ?, build_number = ?, error_summary = ?, finished_at = ? WHERE id = ? AND status = ?"
+	testUpdateReleaseFinalSQL     = "UPDATE releases SET status = ?, completed_at = ? WHERE id = ?"
+	testPublishArticlePointersSQL = "UPDATE articles a LEFT JOIN release_articles ra ON ra.release_id = ? AND ra.article_id = a.id SET a.published_revision_id = ra.revision_id, a.updated_at = ? WHERE a.published_revision_id IS NOT NULL OR ra.revision_id IS NOT NULL"
+	testCompleteSiteStateSQL      = "UPDATE site_state SET current_release_id = ?, active_publish_job_id = NULL WHERE singleton_key = ? AND active_publish_job_id = ?"
+	testFailSiteStateSQL          = "UPDATE site_state SET active_publish_job_id = NULL WHERE singleton_key = ? AND active_publish_job_id = ?"
+	testMaxReleaseIDSQL           = "SELECT MAX(id) FROM releases"
 )
 
 func TestMySQLRepositoryCreateLockedPersistsPreparedImmutableSnapshotWithSharedIDs(t *testing.T) {
@@ -73,10 +86,36 @@ func TestMySQLRepositoryCreateLockedPersistsPreparedImmutableSnapshotWithSharedI
 	require.Equal(t, int64(1), job.ReleaseID)
 	require.Equal(t, []string{"idseq:releases", "idseq:release_articles", "idseq:publish_jobs"}, counter.keys)
 	require.Len(t, source.requests, 1)
+	require.IsType(t, (*sql.Tx)(nil), source.executors[0])
 	require.Equal(t, PublishArticle, source.requests[0].Mode)
 	require.Equal(t, int64(41), source.requests[0].ArticleID)
 	require.Zero(t, source.requests[0].CurrentReleaseID)
 	require.Empty(t, source.requests[0].Base.Articles)
+}
+
+func TestMySQLRepositoryCreateLockedSnapshotSourceUsesSameTransactionAndRollsBackItsWrites(t *testing.T) {
+	repo, mock, source, counter := newRepositoryTest(t)
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	source.prepared = validPreparedSnapshot(now)
+	source.execSQL = "UPDATE article_revisions SET status = 'frozen' WHERE id = ? AND status = 'editing'"
+	source.execArgs = []any{int64(71)}
+	counter.errOnKey = "idseq:publish_jobs"
+	mock.ExpectBegin()
+	expectSiteState(mock, nil, nil)
+	mock.ExpectExec(source.execSQL).WithArgs(int64(71)).WillReturnResult(sqlmock.NewResult(0, 1))
+	siteJSON, tagsJSON := snapshotJSON(t, source.prepared)
+	mock.ExpectExec(testInsertReleaseSQL).WithArgs(int64(1), siteJSON, source.prepared.Checksum).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(testInsertReleaseArticleSQL).WithArgs(
+		int64(1), int64(1), int64(41), int64(71), "article_slug", "Title", "Summary", "Body",
+		"sha256:"+strings.Repeat("b", 64), now, tagsJSON,
+	).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectRollback()
+
+	_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9})
+
+	require.ErrorIs(t, err, ErrDependencyUnavailable)
+	require.Len(t, source.executors, 1)
+	require.IsType(t, (*sql.Tx)(nil), source.executors[0])
 }
 
 func TestMySQLRepositoryCreateLockedCreatesMissingSingletonInsideTransaction(t *testing.T) {
@@ -111,7 +150,7 @@ func TestMySQLRepositoryCreateLockedRejectsBusyAndInvalidPreparedSnapshotBeforeI
 
 	t.Run("checksum", func(t *testing.T) {
 		repo, mock, source, counter := newRepositoryTest(t)
-		source.prepared = validPreparedSnapshot(time.Now())
+		source.prepared = validPreparedSnapshot(time.Now().UTC().Truncate(time.Microsecond))
 		source.prepared.Checksum = "sha256:CHECKSUM-SECRET"
 		mock.ExpectBegin()
 		mock.ExpectQuery(testSiteStateForUpdateSQL).WithArgs(1).
@@ -198,18 +237,20 @@ func TestValidatePreparedSnapshotEnforcesModePreservationAndDeepCopies(t *testin
 	first := validPreparedSnapshot(now).Articles[0]
 	second := first
 	second.ArticleID, second.RevisionID, second.Slug = 42, 72, "second_slug_"
-	base := PreparedSnapshot{Site: SiteSnapshot{Name: "old"}, Articles: []ArticleSnapshot{first, second}, Checksum: "sha256:" + strings.Repeat("a", 64)}
+	base := PreparedSnapshot{Site: SiteSnapshot{Name: "Old", FilingName: "ICP", FilingNumber: "ICP-1", SocialLinks: []SocialLink{}}, Articles: []ArticleSnapshot{first, second}, Checksum: "sha256:" + strings.Repeat("a", 64)}
 
 	settings := clonePreparedSnapshot(base)
-	settings.Site.Name = "new"
+	settings.Site.Name = "New"
 	settings.Checksum = "sha256:" + strings.Repeat("c", 64)
 	require.NoError(t, validatePreparedSnapshot(CreateCommand{Mode: PublishSettings, BuilderID: 9}, base, settings))
 
-	unpublish := clonePreparedSnapshot(settings)
+	unpublish := clonePreparedSnapshot(base)
+	unpublish.Checksum = "sha256:" + strings.Repeat("c", 64)
 	unpublish.Articles = []ArticleSnapshot{second}
 	require.NoError(t, validatePreparedSnapshot(CreateCommand{Mode: UnpublishArticle, ArticleID: 41, BuilderID: 9}, base, unpublish))
 
-	publish := clonePreparedSnapshot(settings)
+	publish := clonePreparedSnapshot(base)
+	publish.Checksum = "sha256:" + strings.Repeat("c", 64)
 	publish.Articles[0].RevisionID = 73
 	require.NoError(t, validatePreparedSnapshot(CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9}, base, publish))
 
@@ -240,6 +281,74 @@ func TestValidatePreparedSnapshotEnforcesModePreservationAndDeepCopies(t *testin
 	require.Equal(t, "Go", base.Articles[0].Tags[0].Name)
 }
 
+func TestValidatePreparedSnapshotEnforcesModeIsolation(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	first := validPreparedSnapshot(now).Articles[0]
+	second := first
+	second.ArticleID, second.RevisionID, second.Slug = 42, 72, "second_slug_"
+	base := PreparedSnapshot{
+		Site:     SiteSnapshot{Name: "Blog", AuthorBio: "Bio", FilingName: "ICP", FilingNumber: "ICP-1", SocialLinks: []SocialLink{}},
+		Articles: []ArticleSnapshot{first, second}, Checksum: "sha256:" + strings.Repeat("a", 64),
+	}
+
+	for name, commandAndEdit := range map[string]struct {
+		command CreateCommand
+		edit    func(*PreparedSnapshot)
+	}{
+		"publish changes site":        {CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9}, func(value *PreparedSnapshot) { value.Site.Name = "other" }},
+		"unpublish changes site":      {CreateCommand{Mode: UnpublishArticle, ArticleID: 41, BuilderID: 9}, func(value *PreparedSnapshot) { value.Site.Name = "other" }},
+		"publish changes target slug": {CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9}, func(value *PreparedSnapshot) { value.Articles[0].Slug = "changed_slug" }},
+		"publish changes unrelated":   {CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9}, func(value *PreparedSnapshot) { value.Articles[1].Title = "changed" }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prepared := clonePreparedSnapshot(base)
+			commandAndEdit.edit(&prepared)
+			if commandAndEdit.command.Mode == UnpublishArticle {
+				prepared.Articles = prepared.Articles[1:]
+			}
+			prepared.Checksum = "sha256:" + strings.Repeat("c", 64)
+			require.ErrorIs(t, validatePreparedSnapshot(commandAndEdit.command, base, prepared), ErrInvalidSnapshot)
+		})
+	}
+}
+
+func TestValidatePreparedSnapshotRejectsStrictBoundaryViolations(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	base := PreparedSnapshot{Site: SiteSnapshot{SocialLinks: []SocialLink{}}, Articles: []ArticleSnapshot{}}
+	valid := validPreparedSnapshot(now)
+	valid.Articles[0].Tags = []TagSnapshot{{ID: 5, Name: "Go", Slug: "tag_slug_001"}}
+
+	mutations := map[string]func(*PreparedSnapshot){
+		"missing filing":        func(value *PreparedSnapshot) { value.Site.FilingNumber = "" },
+		"blank title":           func(value *PreparedSnapshot) { value.Articles[0].Title = "" },
+		"content over 2 MiB":    func(value *PreparedSnapshot) { value.Articles[0].ContentMarkdown = strings.Repeat("x", 2*1024*1024+1) },
+		"invalid UTF-8 content": func(value *PreparedSnapshot) { value.Articles[0].ContentMarkdown = string([]byte{0xff}) },
+		"invalid UTF-8 site":    func(value *PreparedSnapshot) { value.Site.AuthorBio = string([]byte{0xff}) },
+		"invalid UTF-8 tag":     func(value *PreparedSnapshot) { value.Articles[0].Tags[0].Name = string([]byte{0xff}) },
+		"too many tags":         func(value *PreparedSnapshot) { value.Articles[0].Tags = make([]TagSnapshot, 33) },
+		"tag order": func(value *PreparedSnapshot) {
+			value.Articles[0].Tags = []TagSnapshot{{ID: 2, Name: "B", Slug: "tag_slug_002"}, {ID: 1, Name: "A", Slug: "tag_slug_001"}}
+		},
+		"duplicate tag slug": func(value *PreparedSnapshot) {
+			value.Articles[0].Tags = []TagSnapshot{{ID: 1, Name: "A", Slug: "tag_slug_001"}, {ID: 2, Name: "B", Slug: "tag_slug_001"}}
+		},
+		"duplicate article slug": func(value *PreparedSnapshot) {
+			second := value.Articles[0]
+			second.ArticleID, second.RevisionID = 42, 72
+			value.Articles = append(value.Articles, second)
+		},
+		"timestamp offset":    func(value *PreparedSnapshot) { value.Articles[0].PublishedAt = now.In(time.FixedZone("offset", 3600)) },
+		"sub micro timestamp": func(value *PreparedSnapshot) { value.Articles[0].PublishedAt = now.Add(time.Nanosecond) },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			value := clonePreparedSnapshot(valid)
+			mutate(&value)
+			require.ErrorIs(t, validatePreparedSnapshot(CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9}, base, value), ErrInvalidSnapshot)
+		})
+	}
+}
+
 func TestPreparedSnapshotNormalizesArraysButStoredNullArraysAreRejected(t *testing.T) {
 	prepared := validPreparedSnapshot(time.Now().UTC())
 	prepared.Site.SocialLinks = nil
@@ -253,6 +362,80 @@ func TestPreparedSnapshotNormalizesArraysButStoredNullArraysAreRejected(t *testi
 	require.Error(t, decodeSiteSnapshot([]byte(`{"name":"Blog","socialLinks":null}`), &site))
 	var tags []TagSnapshot
 	require.Error(t, decodeTags([]byte(`null`), &tags))
+}
+
+func TestStoredSnapshotJSONRejectsDuplicateUnknownMissingNullAndTrailingValues(t *testing.T) {
+	for name, raw := range map[string]string{
+		"duplicate site": `{"name":"Blog","name":"Other","authorBio":"","aboutMarkdown":"","filingName":"ICP","filingNumber":"ICP-1","socialLinks":[]}`,
+		"unknown site":   `{"name":"Blog","authorBio":"","aboutMarkdown":"","filingName":"ICP","filingNumber":"ICP-1","socialLinks":[],"secret":"x"}`,
+		"missing site":   `{"name":"Blog","authorBio":"","aboutMarkdown":"","filingName":"ICP","filingNumber":"ICP-1"}`,
+		"null site":      `null`,
+		"null prose":     `{"name":"Blog","authorBio":null,"aboutMarkdown":"","filingName":"ICP","filingNumber":"ICP-1","socialLinks":[]}`,
+		"trailing site":  `{"name":"Blog","authorBio":"","aboutMarkdown":"","filingName":"ICP","filingNumber":"ICP-1","socialLinks":[]} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var site SiteSnapshot
+			require.Error(t, decodeSiteSnapshot([]byte(raw), &site))
+		})
+	}
+	for name, raw := range map[string]string{
+		"duplicate tag": `[{"ID":1,"ID":2,"Name":"Go","Slug":"tag_slug_001"}]`,
+		"unknown tag":   `[{"ID":1,"Name":"Go","Slug":"tag_slug_001","secret":"x"}]`,
+		"missing tag":   `[{"ID":1,"Name":"Go"}]`,
+		"null tag text": `[{"ID":1,"Name":null,"Slug":"tag_slug_001"}]`,
+		"null tags":     `null`,
+		"trailing tags": `[] {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var tags []TagSnapshot
+			require.Error(t, decodeTags([]byte(raw), &tags))
+		})
+	}
+}
+
+func TestStoredSnapshotJSONRejectsInvalidUTF8BeforeDecoding(t *testing.T) {
+	badSite := append([]byte(`{"name":"`), 0xff)
+	badSite = append(badSite, []byte(`","authorBio":"","aboutMarkdown":"","filingName":"ICP","filingNumber":"ICP-1","socialLinks":[]}`)...)
+	var site SiteSnapshot
+	require.Error(t, decodeSiteSnapshot(badSite, &site))
+
+	badTags := append([]byte(`[{"ID":1,"Name":"`), 0xff)
+	badTags = append(badTags, []byte(`","Slug":"tag_slug_001"}]`)...)
+	var tags []TagSnapshot
+	require.Error(t, decodeTags(badTags, &tags))
+}
+
+func TestStoredSiteSocialJSONIsStrictAndBounded(t *testing.T) {
+	prefix := `{"name":"Blog","authorBio":"","aboutMarkdown":"","filingName":"ICP","filingNumber":"ICP-1","socialLinks":`
+	for name, socialJSON := range map[string]string{
+		"duplicate field": `[{"label":"Git","label":"Other","url":"https://example.com"}]`,
+		"unknown field":   `[{"label":"Git","url":"https://example.com","token":"secret"}]`,
+		"missing field":   `[{"label":"Git"}]`,
+		"null entry":      `[null]`,
+		"invalid URL":     `[{"label":"Git","url":"http://example.com"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var site SiteSnapshot
+			require.Error(t, decodeSiteSnapshot([]byte(prefix+socialJSON+`}`), &site))
+		})
+	}
+	entries := make([]string, 17)
+	for index := range entries {
+		entries[index] = fmt.Sprintf(`{"label":"L%d","url":"https://example.com/%d"}`, index, index)
+	}
+	var site SiteSnapshot
+	require.Error(t, decodeSiteSnapshot([]byte(prefix+`[`+strings.Join(entries, ",")+`]}`), &site))
+	require.LessOrEqual(t, len(site.SocialLinks), 16)
+}
+
+func TestStoredTagDecoderBoundsBeforeAppending(t *testing.T) {
+	parts := make([]string, maxReleaseTagsPerArticle+1)
+	for index := range parts {
+		parts[index] = fmt.Sprintf(`{"ID":%d,"Name":"Tag","Slug":"tag_slug_%03d"}`, index+1, index+1)
+	}
+	var tags []TagSnapshot
+	require.Error(t, decodeTags([]byte("["+strings.Join(parts, ",")+"]"), &tags))
+	require.LessOrEqual(t, len(tags), maxReleaseTagsPerArticle)
 }
 
 func TestMySQLRepositoryCreateRetryLockedReturnsUpdatedAggregateFromOneTransaction(t *testing.T) {
@@ -295,7 +478,7 @@ func TestMySQLRepositoryApplyCallbackLockedTransitionsAndAdvancesPointersOnlyOnS
 		mock.ExpectExec(testUpdateJobSQL).WithArgs(JobBuilding, "build", int64(44), "safe summary", nil, int64(12), JobQueued).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectCommit()
-		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, BuildNumber: 44, Stage: "build", Status: JobBuilding, ErrorSummary: "safe\nsummary", Timestamp: now})
+		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "build", Status: JobBuilding, ErrorSummary: "safe\nsummary", Timestamp: now})
 		require.NoError(t, err)
 		require.False(t, duplicate)
 		require.Equal(t, JobBuilding, job.Status)
@@ -314,31 +497,15 @@ func TestMySQLRepositoryApplyCallbackLockedTransitionsAndAdvancesPointersOnlyOnS
 		mock.ExpectExec(testPublishArticlePointersSQL).WithArgs(int64(7), now).WillReturnResult(sqlmock.NewResult(0, 2))
 		mock.ExpectExec(testCompleteSiteStateSQL).WithArgs(int64(7), 1, int64(12)).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectCommit()
-		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, BuildNumber: 44, Stage: "deploy", Status: JobSuccess, Timestamp: now})
+		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "deploy", Status: JobSuccess, Timestamp: now})
 		require.NoError(t, err)
 		require.False(t, duplicate)
 		require.Equal(t, JobSuccess, job.Status)
 	})
 
-	t.Run("failure", func(t *testing.T) {
-		repo, mock, _, _ := newRepositoryTest(t)
-		mock.ExpectBegin()
-		expectSiteState(mock, int64(3), int64(12))
-		expectJobForUpdate(mock, jobRow{id: 12, releaseID: 7, builderID: 9, status: JobPending, stage: "pending", createdAt: now.Add(-time.Minute)})
-		longSummary := strings.Repeat("密", 520)
-		mock.ExpectQuery(testPriorJobCountForUpdateSQL).WithArgs(int64(7), int64(12)).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-		mock.ExpectExec(testUpdateJobSQL).WithArgs(JobFailed, "trigger", nil, strings.Repeat("密", 512), now, int64(12), JobPending).
-			WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectExec(testUpdateReleaseFinalSQL).WithArgs(ReleaseFailed, now, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectExec(testFailSiteStateSQL).WithArgs(1, int64(12)).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectCommit()
-		_, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, Stage: "trigger", Status: JobFailed, ErrorSummary: longSummary, Timestamp: now})
-		require.NoError(t, err)
-		require.False(t, duplicate)
-	})
 }
 
-func TestMySQLRepositoryApplyCallbackLockedIsIdempotentAndRejectsInvalidOrder(t *testing.T) {
+func TestMySQLRepositoryApplyCallbackLockedUsesExactAttemptIdentity(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	build := int64(44)
 	t.Run("duplicate", func(t *testing.T) {
@@ -347,21 +514,9 @@ func TestMySQLRepositoryApplyCallbackLockedIsIdempotentAndRejectsInvalidOrder(t 
 		expectSiteState(mock, nil, int64(12))
 		expectJobForUpdate(mock, jobRow{id: 12, releaseID: 7, builderID: 9, status: JobBuilding, stage: "build", buildNumber: &build, errorSummary: "same", createdAt: now.Add(-time.Minute)})
 		mock.ExpectCommit()
-		_, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, BuildNumber: 44, Stage: "build", Status: JobBuilding, ErrorSummary: "same", Timestamp: now})
+		_, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "build", Status: JobBuilding, ErrorSummary: "same", Timestamp: now})
 		require.NoError(t, err)
 		require.True(t, duplicate)
-	})
-
-	t.Run("final replay with unspecified build preserves stored build", func(t *testing.T) {
-		repo, mock, _, _ := newRepositoryTest(t)
-		mock.ExpectBegin()
-		expectSiteState(mock, int64(7), nil)
-		mock.ExpectRollback()
-
-		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, Stage: "deploy", Status: JobSuccess, Timestamp: now})
-		require.ErrorIs(t, err, ErrConflict)
-		require.False(t, duplicate)
-		require.Zero(t, job.ID)
 	})
 
 	t.Run("invalid", func(t *testing.T) {
@@ -370,7 +525,7 @@ func TestMySQLRepositoryApplyCallbackLockedIsIdempotentAndRejectsInvalidOrder(t 
 		expectSiteState(mock, nil, int64(12))
 		expectJobForUpdate(mock, jobRow{id: 12, releaseID: 7, builderID: 9, status: JobQueued, stage: "queue", buildNumber: &build, createdAt: now.Add(-time.Minute)})
 		mock.ExpectRollback()
-		_, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, BuildNumber: 44, Stage: "deploy", Status: JobSuccess, Timestamp: now})
+		_, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "deploy", Status: JobSuccess, Timestamp: now})
 		require.ErrorIs(t, err, ErrConflict)
 		require.False(t, duplicate)
 	})
@@ -379,45 +534,16 @@ func TestMySQLRepositoryApplyCallbackLockedIsIdempotentAndRejectsInvalidOrder(t 
 		repo, mock, _, _ := newRepositoryTest(t)
 		mock.ExpectBegin()
 		expectSiteState(mock, nil, int64(13))
-		expectJobForUpdate(mock, jobRow{id: 13, releaseID: 7, builderID: 9, status: JobPending, stage: "pending", createdAt: now})
-		mock.ExpectQuery(testJobByBuildForUpdateSQL).WithArgs(int64(7), int64(44)).WillReturnRows(
+		mock.ExpectQuery(testJobForUpdateSQL).WithArgs(int64(12), int64(7)).WillReturnRows(
 			sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
 				AddRow(int64(12), int64(7), int64(9), JobFailed, "deploy", int64(44), "failed", now.Add(-time.Hour), now.Add(-time.Minute)),
 		)
 		mock.ExpectCommit()
 
-		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, BuildNumber: 44, Stage: "deploy", Status: JobFailed, ErrorSummary: "failed", Timestamp: now.Add(-time.Minute)})
+		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "deploy", Status: JobFailed, ErrorSummary: "failed", Timestamp: now.Add(-time.Minute)})
 		require.NoError(t, err)
 		require.True(t, duplicate)
 		require.Equal(t, int64(12), job.ID)
-	})
-
-	t.Run("old buildless trigger failure does not finalize active retry", func(t *testing.T) {
-		repo, mock, _, _ := newRepositoryTest(t)
-		oldEventAt := now.Add(-time.Hour)
-		mock.ExpectBegin()
-		expectSiteState(mock, nil, int64(13))
-		expectJobForUpdate(mock, jobRow{id: 13, releaseID: 7, builderID: 9, status: JobPending, stage: "pending", createdAt: now})
-		mock.ExpectQuery(testPriorJobCountForUpdateSQL).WithArgs(int64(7), int64(13)).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-		mock.ExpectRollback()
-
-		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, Stage: "trigger", Status: JobFailed, ErrorSummary: "failed", Timestamp: oldEventAt})
-		require.ErrorIs(t, err, ErrConflict)
-		require.False(t, duplicate)
-		require.Zero(t, job.ID)
-	})
-
-	t.Run("old buildless nonfinal callback cannot advance active retry", func(t *testing.T) {
-		repo, mock, _, _ := newRepositoryTest(t)
-		mock.ExpectBegin()
-		expectSiteState(mock, nil, int64(13))
-		expectJobForUpdate(mock, jobRow{id: 13, releaseID: 7, builderID: 9, status: JobPending, stage: "pending", createdAt: now})
-		mock.ExpectQuery(testPriorJobCountForUpdateSQL).WithArgs(int64(7), int64(13)).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-		mock.ExpectRollback()
-
-		_, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, Stage: "queue", Status: JobQueued, Timestamp: now.Add(-time.Hour)})
-		require.ErrorIs(t, err, ErrConflict)
-		require.False(t, duplicate)
 	})
 
 	t.Run("old positive-build final callback remains idempotent after later job", func(t *testing.T) {
@@ -425,17 +551,83 @@ func TestMySQLRepositoryApplyCallbackLockedIsIdempotentAndRejectsInvalidOrder(t 
 		oldFinished := now.Add(-time.Hour)
 		mock.ExpectBegin()
 		expectSiteState(mock, int64(7), nil)
-		mock.ExpectQuery(testJobByBuildForUpdateSQL).WithArgs(int64(7), int64(44)).WillReturnRows(
+		mock.ExpectQuery(testJobForUpdateSQL).WithArgs(int64(12), int64(7)).WillReturnRows(
 			sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
 				AddRow(int64(12), int64(7), int64(9), JobFailed, "deploy", int64(44), "failed", oldFinished.Add(-time.Minute), oldFinished),
 		)
 		mock.ExpectCommit()
 
-		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, BuildNumber: 44, Stage: "deploy", Status: JobFailed, ErrorSummary: "failed", Timestamp: oldFinished})
+		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "deploy", Status: JobFailed, ErrorSummary: "failed", Timestamp: oldFinished})
 		require.NoError(t, err)
 		require.True(t, duplicate)
 		require.Equal(t, int64(12), job.ID)
 	})
+}
+
+func TestMySQLRepositoryApplyCallbackLockedRejectsDelayedOldAttemptAgainstRetry(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	repo, mock, _, _ := newRepositoryTest(t)
+	mock.ExpectBegin()
+	expectSiteState(mock, nil, int64(13))
+	mock.ExpectQuery(testJobForUpdateSQL).WithArgs(int64(12), int64(7)).WillReturnRows(
+		sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
+			AddRow(int64(12), int64(7), int64(9), JobFailed, "trigger", nil, "failed", now.Add(-time.Hour), now.Add(-time.Minute)),
+	)
+	mock.ExpectRollback()
+
+	_, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "build", Status: JobBuilding, Timestamp: now})
+
+	require.ErrorIs(t, err, ErrConflict)
+	require.False(t, duplicate)
+}
+
+func TestMySQLRepositoryApplyCallbackLockedMapsNamedBuildConflict(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	repo, mock, _, _ := newRepositoryTest(t)
+	mock.ExpectBegin()
+	expectSiteState(mock, nil, int64(13))
+	expectJobForUpdate(mock, jobRow{id: 13, releaseID: 7, builderID: 9, status: JobPending, stage: "pending", createdAt: now.Add(-time.Minute)})
+	mock.ExpectExec(testUpdateJobSQL).WithArgs(JobQueued, "queue", int64(44), "", nil, int64(13), JobPending).
+		WillReturnError(&mysql.MySQLError{Number: 1062, Message: "Duplicate entry 'private-build' for key 'uk_publish_jobs_release_build'"})
+	mock.ExpectRollback()
+
+	_, _, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 13, BuildNumber: 44, Stage: "queue", Status: JobQueued, Timestamp: now})
+
+	require.ErrorIs(t, err, ErrConflict)
+	require.NotContains(t, err.Error(), "private-build")
+}
+
+func TestMySQLRepositoryFailTriggerLockedFinalizesExactActiveRetry(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	repo, mock, _, _ := newRepositoryTest(t)
+	mock.ExpectBegin()
+	expectSiteState(mock, nil, int64(13))
+	expectJobByIDForUpdate(mock, jobRow{id: 13, releaseID: 7, builderID: 9, status: JobPending, stage: "pending", createdAt: now.Add(-time.Minute)})
+	mock.ExpectExec(testUpdateJobSQL).WithArgs(JobFailed, "trigger", nil, "safe summary", now, int64(13), JobPending).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(testUpdateReleaseFinalSQL).WithArgs(ReleaseFailed, now, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(testFailSiteStateSQL).WithArgs(1, int64(13)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	job, duplicate, err := repo.FailTriggerLocked(context.Background(), 13, "safe\nsummary", now)
+
+	require.NoError(t, err)
+	require.False(t, duplicate)
+	require.Equal(t, int64(13), job.ID)
+}
+
+func TestMySQLRepositoryFailTriggerLockedReplaysOnlyExactFinishedAttempt(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	repo, mock, _, _ := newRepositoryTest(t)
+	mock.ExpectBegin()
+	expectSiteState(mock, int64(3), nil)
+	expectJobByIDForUpdate(mock, jobRow{id: 13, releaseID: 7, builderID: 9, status: JobFailed, stage: "trigger", errorSummary: "safe summary", createdAt: now.Add(-time.Minute), finishedAt: &now})
+	mock.ExpectCommit()
+
+	job, duplicate, err := repo.FailTriggerLocked(context.Background(), 13, "safe\nsummary", now)
+
+	require.NoError(t, err)
+	require.True(t, duplicate)
+	require.Equal(t, int64(13), job.ID)
 }
 
 func TestMySQLRepositoryApplyCallbackLockedAcceptsExactNoChangeReleaseFinalization(t *testing.T) {
@@ -444,18 +636,17 @@ func TestMySQLRepositoryApplyCallbackLockedAcceptsExactNoChangeReleaseFinalizati
 	completed := now
 	repo, mock, _, _ := newRepositoryTest(t)
 	mock.ExpectBegin()
-	expectSiteState(mock, int64(3), int64(13))
-	expectJobForUpdate(mock, jobRow{id: 13, releaseID: 7, builderID: 9, status: JobPending, stage: "pending", createdAt: now.Add(-time.Minute)})
-	mock.ExpectQuery(testPriorJobCountForUpdateSQL).WithArgs(int64(7), int64(13)).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	mock.ExpectExec(testUpdateJobSQL).WithArgs(JobFailed, "trigger", nil, "", now, int64(13), JobPending).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectSiteState(mock, int64(3), int64(12))
+	expectJobByIDForUpdate(mock, jobRow{id: 12, releaseID: 7, builderID: 9, status: JobPending, stage: "pending", createdAt: now.Add(-time.Minute)})
+	mock.ExpectExec(testUpdateJobSQL).WithArgs(JobFailed, "trigger", nil, "", now, int64(12), JobPending).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(testUpdateReleaseFinalSQL).WithArgs(ReleaseFailed, now, int64(7)).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(testReleaseForUpdateSQL).WithArgs(int64(7)).WillReturnRows(
 		releaseRowsNoTest(7, validPreparedSnapshot(now), now.Add(-time.Hour), ReleaseFailed, &completed),
 	)
-	mock.ExpectExec(testFailSiteStateSQL).WithArgs(1, int64(13)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(testFailSiteStateSQL).WithArgs(1, int64(12)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	_, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, Stage: "trigger", Status: JobFailed, Timestamp: inputAt})
+	_, duplicate, err := repo.FailTriggerLocked(context.Background(), 12, "", inputAt)
 	require.NoError(t, err)
 	require.False(t, duplicate)
 }
@@ -523,6 +714,44 @@ func TestMySQLRepositoryReconcileLockedAdvancesADeployedReleaseAtomically(t *tes
 	require.True(t, changed)
 }
 
+func TestMySQLRepositoryReconcileLockedAllowsExactActiveFailedRetry(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	snapshot := validPreparedSnapshot(now.Add(-time.Hour))
+	build := int64(45)
+	failedAt := now.Add(-time.Minute)
+	repo, mock, _, _ := newRepositoryTest(t)
+	mock.ExpectBegin()
+	expectSiteState(mock, int64(3), int64(13))
+	mock.ExpectQuery(testReleaseForUpdateSQL).WithArgs(int64(7)).WillReturnRows(releaseRowsNoTest(7, snapshot, now.Add(-time.Hour), ReleaseFailed, &failedAt))
+	expectJobForUpdate(mock, jobRow{id: 13, releaseID: 7, builderID: 9, status: JobDeploying, stage: "deploy", buildNumber: &build, createdAt: now.Add(-time.Minute)})
+	mock.ExpectExec(testUpdateJobSQL).WithArgs(JobSuccess, "deploy", int64(45), "", now, int64(13), JobDeploying).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(testUpdateReleaseFinalSQL).WithArgs(ReleaseSuccess, now, int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(testPublishArticlePointersSQL).WithArgs(int64(7), now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(testCompleteSiteStateSQL).WithArgs(int64(7), 1, int64(13)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	changed, err := repo.ReconcileLocked(context.Background(), Artifact{ReleaseID: 7, Checksum: snapshot.Checksum, BuildNumber: 45, DeployedAt: now})
+
+	require.NoError(t, err)
+	require.True(t, changed)
+}
+
+func TestMySQLRepositoryReconcileLockedRejectsFailedReleaseWithoutExactActiveRetry(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	snapshot := validPreparedSnapshot(now.Add(-time.Hour))
+	failedAt := now.Add(-time.Minute)
+	repo, mock, _, _ := newRepositoryTest(t)
+	mock.ExpectBegin()
+	expectSiteState(mock, int64(3), nil)
+	mock.ExpectQuery(testReleaseForUpdateSQL).WithArgs(int64(7)).WillReturnRows(releaseRowsNoTest(7, snapshot, now.Add(-time.Hour), ReleaseFailed, &failedAt))
+	mock.ExpectRollback()
+
+	changed, err := repo.ReconcileLocked(context.Background(), Artifact{ReleaseID: 7, Checksum: snapshot.Checksum, BuildNumber: 45, DeployedAt: now})
+
+	require.ErrorIs(t, err, ErrReconciliationRequired)
+	require.False(t, changed)
+}
+
 func TestMySQLRepositoryReconcileLockedIsIdempotentAndRejectsMismatch(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	snapshot := validPreparedSnapshot(now.Add(-time.Hour))
@@ -581,16 +810,25 @@ func TestMySQLRepositoryRejectsNilDependenciesAndSanitizesFailures(t *testing.T)
 }
 
 type snapshotSourceFake struct {
-	mu       sync.Mutex
-	prepared PreparedSnapshot
-	err      error
-	requests []SnapshotRequest
+	mu        sync.Mutex
+	prepared  PreparedSnapshot
+	err       error
+	requests  []SnapshotRequest
+	executors []SnapshotExecutor
+	execSQL   string
+	execArgs  []any
 }
 
-func (s *snapshotSourceFake) PrepareSnapshot(_ context.Context, request SnapshotRequest) (PreparedSnapshot, error) {
+func (s *snapshotSourceFake) PrepareSnapshot(ctx context.Context, executor SnapshotExecutor, request SnapshotRequest) (PreparedSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requests = append(s.requests, cloneSnapshotRequest(request))
+	s.executors = append(s.executors, executor)
+	if s.execSQL != "" {
+		if _, err := executor.ExecContext(ctx, s.execSQL, s.execArgs...); err != nil {
+			return PreparedSnapshot{}, err
+		}
+	}
 	if s.err != nil {
 		return PreparedSnapshot{}, s.err
 	}
@@ -598,11 +836,12 @@ func (s *snapshotSourceFake) PrepareSnapshot(_ context.Context, request Snapshot
 }
 
 type tableCounter struct {
-	mu     sync.Mutex
-	keys   []string
-	next   map[string]int64
-	err    error
-	raises []raiseCall
+	mu       sync.Mutex
+	keys     []string
+	next     map[string]int64
+	err      error
+	errOnKey string
+	raises   []raiseCall
 }
 
 type raiseCall struct {
@@ -614,7 +853,10 @@ func (c *tableCounter) Increment(_ context.Context, key string) (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.keys = append(c.keys, key)
-	if c.err != nil {
+	if c.err != nil || c.errOnKey == key {
+		if c.err == nil {
+			return 0, errors.New("configured counter failure")
+		}
 		return 0, c.err
 	}
 	if c.next == nil {
@@ -709,13 +951,19 @@ func expectJobForUpdate(mock sqlmock.Sqlmock, job jobRow) {
 			AddRow(job.id, job.releaseID, job.builderID, job.status, job.stage, job.buildNumber, job.errorSummary, job.createdAt, job.finishedAt))
 }
 
+func expectJobByIDForUpdate(mock sqlmock.Sqlmock, job jobRow) {
+	mock.ExpectQuery(testJobByIDForUpdateSQL).WithArgs(job.id).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
+			AddRow(job.id, job.releaseID, job.builderID, job.status, job.stage, job.buildNumber, job.errorSummary, job.createdAt, job.finishedAt))
+}
+
 func validPreparedSnapshot(now time.Time) PreparedSnapshot {
 	return PreparedSnapshot{
 		Site: SiteSnapshot{Name: "Blog", AuthorBio: "Bio", AboutMarkdown: "About", FilingName: "ICP", FilingNumber: "ICP-1", SocialLinks: []SocialLink{}},
 		Articles: []ArticleSnapshot{{
 			ArticleID: 41, RevisionID: 71, Slug: "article_slug", Title: "Title", Summary: "Summary",
 			ContentMarkdown: "Body", ContentHash: "sha256:" + strings.Repeat("b", 64), PublishedAt: now,
-			Tags: []TagSnapshot{{ID: 5, Name: "Go", Slug: "go"}},
+			Tags: []TagSnapshot{{ID: 5, Name: "Go", Slug: "tag_slug_001"}},
 		}},
 		Checksum: "sha256:" + strings.Repeat("a", 64),
 	}
@@ -723,7 +971,7 @@ func validPreparedSnapshot(now time.Time) PreparedSnapshot {
 
 func emptyPreparedSnapshot() PreparedSnapshot {
 	return PreparedSnapshot{
-		Site:     SiteSnapshot{Name: "Blog", SocialLinks: []SocialLink{}},
+		Site:     SiteSnapshot{Name: "Blog", FilingName: "ICP", FilingNumber: "ICP-1", SocialLinks: []SocialLink{}},
 		Articles: []ArticleSnapshot{},
 		Checksum: "sha256:" + strings.Repeat("a", 64),
 	}

@@ -469,9 +469,10 @@ Go 服务在事务中：
 3. 以当前线上 Release 为基础生成新的整站 Release：文章发布使用本次冻结修订，取消发布从快照中移除目标文章，单独发布站点设置时沿用当前线上文章修订而不带入未发布草稿。
 4. 写入站点配置快照、`release_articles` 和 `publish_jobs`。
 5. 设置 `active_publish_job_id`。
-6. 事务提交后调用 Jenkins `buildWithParameters`，只传 `RELEASE_ID`。
+6. 事务提交后调用 Jenkins `buildWithParameters`，只传 `RELEASE_ID` 和 `PUBLISH_JOB_ID`，后者唯一标识本次发布尝试。
 
 Jenkins 调用失败时 Job 标记失败并释放活动锁；Release 保留用于审计。失败重试创建新的 Job 记录，不覆盖原记录。
+Jenkins 回调必须同时携带正数 `releaseId`、`publishJobId` 和 `buildNumber`；Service 在同一事务中按 Release + Job 精确锁定本次尝试，首次正数 Build Number 赋值后不得变更。只有 Jenkins 触发本身失败、尚未产生 Build Number 时，由 Service 内部按 `publishJobId` 记录触发失败，不伪造 Jenkins 回调。
 
 ### 14.2 流水线
 
@@ -516,6 +517,7 @@ Jenkins 至少在 `building`、`deploying` 和最终 `success`/`failed` 三个�
 
 ```text
 release_id
+publish_job_id
 build_number
 stage
 status
@@ -525,7 +527,7 @@ nonce
 signature
 ```
 
-签名覆盖规范化请求体、timestamp 和 nonce。回调接口幂等，相同状态重复送达不会制造额外副作用。Jenkins 对最终回调执行重试。
+签名覆盖规范化请求体、timestamp 和 nonce。服务按 `release_id` 与 `publish_job_id` 锁定唯一发布尝试，回调接口幂等，相同状态重复送达不会制造额外副作用。Jenkins 对最终回调执行重试。
 
 每份静态产物包含 `release.json`，记录 Release ID、Bundle 校验和、Build Number 和部署时间。Go 服务在启动和创建新发布前读取本机 `current/release.json`：若文件表明某个已知 Release 已完成切换但最终回调丢失，且校验和与数据库一致，则完成安全对账；不一致时禁止新发布并要求人工处理。
 

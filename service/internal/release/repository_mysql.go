@@ -1,10 +1,12 @@
 package release
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"reflect"
 	"regexp"
 	"sort"
@@ -13,30 +15,30 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/idgen"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/settings"
 )
 
 const (
-	siteStateForUpdateSQL      = "SELECT current_release_id, active_publish_job_id FROM site_state WHERE singleton_key = ? FOR UPDATE"
-	insertSiteStateSQL         = "INSERT INTO site_state (id, singleton_key, current_release_id, active_publish_job_id) VALUES (?, 1, NULL, NULL)"
-	insertReleaseSQL           = "INSERT INTO releases (id, site_snapshot_json, checksum, status) VALUES (?, ?, ?, 'queued')"
-	insertReleaseArticleSQL    = "INSERT INTO release_articles (id, release_id, article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-	insertPublishJobSQL        = "INSERT INTO publish_jobs (id, release_id, builder_id, status, stage, error_summary) VALUES (?, ?, ?, 'pending', 'pending', '')"
-	setActiveJobSQL            = "UPDATE site_state SET active_publish_job_id = ? WHERE singleton_key = ? AND active_publish_job_id IS NULL"
-	releaseSelectSQL           = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ?"
-	releaseForUpdateSQL        = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ? FOR UPDATE"
-	releaseListSQL             = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
-	releaseArticlesSelectSQL   = "SELECT article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json FROM release_articles WHERE release_id = ? ORDER BY article_id ASC"
-	jobsSelectSQL              = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? ORDER BY created_at DESC, id DESC"
-	jobForUpdateSQL            = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? AND release_id = ? FOR UPDATE"
-	latestFinalJobForUpdateSQL = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? AND status IN ('success', 'failed') ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE"
-	jobByBuildForUpdateSQL     = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? AND build_number = ? ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE"
-	priorJobCountForUpdateSQL  = "SELECT COUNT(*) FROM publish_jobs WHERE release_id = ? AND id <> ? FOR UPDATE"
-	updateJobSQL               = "UPDATE publish_jobs SET status = ?, stage = ?, build_number = ?, error_summary = ?, finished_at = ? WHERE id = ? AND status = ?"
-	updateReleaseFinalSQL      = "UPDATE releases SET status = ?, completed_at = ? WHERE id = ?"
-	publishArticlePointersSQL  = "UPDATE articles a LEFT JOIN release_articles ra ON ra.release_id = ? AND ra.article_id = a.id SET a.published_revision_id = ra.revision_id, a.updated_at = ? WHERE a.published_revision_id IS NOT NULL OR ra.revision_id IS NOT NULL"
-	completeSiteStateSQL       = "UPDATE site_state SET current_release_id = ?, active_publish_job_id = NULL WHERE singleton_key = ? AND active_publish_job_id = ?"
-	failSiteStateSQL           = "UPDATE site_state SET active_publish_job_id = NULL WHERE singleton_key = ? AND active_publish_job_id = ?"
+	siteStateForUpdateSQL     = "SELECT current_release_id, active_publish_job_id FROM site_state WHERE singleton_key = ? FOR UPDATE"
+	insertSiteStateSQL        = "INSERT INTO site_state (id, singleton_key, current_release_id, active_publish_job_id) VALUES (?, 1, NULL, NULL)"
+	insertReleaseSQL          = "INSERT INTO releases (id, site_snapshot_json, checksum, status) VALUES (?, ?, ?, 'queued')"
+	insertReleaseArticleSQL   = "INSERT INTO release_articles (id, release_id, article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+	insertPublishJobSQL       = "INSERT INTO publish_jobs (id, release_id, builder_id, status, stage, error_summary) VALUES (?, ?, ?, 'pending', 'pending', '')"
+	setActiveJobSQL           = "UPDATE site_state SET active_publish_job_id = ? WHERE singleton_key = ? AND active_publish_job_id IS NULL"
+	releaseSelectSQL          = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ?"
+	releaseForUpdateSQL       = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ? FOR UPDATE"
+	releaseListSQL            = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+	releaseArticlesSelectSQL  = "SELECT article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json FROM release_articles WHERE release_id = ? ORDER BY article_id ASC LIMIT 100001"
+	jobsSelectSQL             = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? ORDER BY created_at DESC, id DESC"
+	jobForUpdateSQL           = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? AND release_id = ? FOR UPDATE"
+	jobByIDForUpdateSQL       = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? FOR UPDATE"
+	updateJobSQL              = "UPDATE publish_jobs SET status = ?, stage = ?, build_number = ?, error_summary = ?, finished_at = ? WHERE id = ? AND status = ?"
+	updateReleaseFinalSQL     = "UPDATE releases SET status = ?, completed_at = ? WHERE id = ?"
+	publishArticlePointersSQL = "UPDATE articles a LEFT JOIN release_articles ra ON ra.release_id = ? AND ra.article_id = a.id SET a.published_revision_id = ra.revision_id, a.updated_at = ? WHERE a.published_revision_id IS NOT NULL OR ra.revision_id IS NOT NULL"
+	completeSiteStateSQL      = "UPDATE site_state SET current_release_id = ?, active_publish_job_id = NULL WHERE singleton_key = ? AND active_publish_job_id = ?"
+	failSiteStateSQL          = "UPDATE site_state SET active_publish_job_id = NULL WHERE singleton_key = ? AND active_publish_job_id = ?"
 )
 
 const (
@@ -49,6 +51,15 @@ const (
 var (
 	releaseChecksumPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 	releaseSlugPattern     = regexp.MustCompile(`^[a-z0-9_-]{12}$`)
+	releaseTagSlugPattern  = regexp.MustCompile(`^[a-z0-9_-]{12}$`)
+	publishBuildUnique     = regexp.MustCompile(`(?i)(?:key ['\x60]?(?:[^'\x60.]+\.)?uk_publish_jobs_release_build['\x60]?|constraint ['\x60]?uk_publish_jobs_release_build['\x60]?)`)
+)
+
+const (
+	maxReleaseTagsPerArticle = 32
+	maxReleaseContentBytes   = 2 * 1024 * 1024
+	maxReleaseArticles       = 100000
+	maxReleaseSocialLinks    = 16
 )
 
 type MySQLRepository struct {
@@ -108,7 +119,7 @@ func (r *MySQLRepository) CreateLocked(ctx context.Context, command CreateComman
 		Mode: command.Mode, ArticleID: command.ArticleID,
 		CurrentReleaseID: state.current.Int64, Base: clonePreparedSnapshot(base),
 	}
-	prepared, err := r.snapshots.PrepareSnapshot(ctx, request)
+	prepared, err := r.snapshots.PrepareSnapshot(ctx, tx, request)
 	if err != nil {
 		return Release{}, PublishJob{}, releaseDependency("prepare immutable release snapshot", err)
 	}
@@ -370,46 +381,19 @@ func (r *MySQLRepository) ApplyCallbackLocked(ctx context.Context, event Callbac
 	if err != nil {
 		return PublishJob{}, false, err
 	}
-	var job PublishJob
-	if state.active.Valid {
-		job, err = queryJobForUpdate(ctx, tx, state.active.Int64, event.ReleaseID)
-		if err == nil && event.BuildNumber == 0 {
-			prior, priorErr := hasPriorJobAttempt(ctx, tx, event.ReleaseID, job.ID)
-			if priorErr != nil {
-				return PublishJob{}, false, priorErr
-			}
-			if prior {
-				return PublishJob{}, false, releaseDomain("apply publish callback", ErrConflict)
-			}
-		}
-		if err == nil && event.BuildNumber > 0 && (job.BuildNumber == nil || *job.BuildNumber != event.BuildNumber) {
-			var historical PublishJob
-			var historicalErr error
-			historical, historicalErr = queryJobByBuildForUpdate(ctx, tx, event.ReleaseID, event.BuildNumber)
-			if historicalErr == nil {
-				if callbackMatches(historical, event) {
-					if commitErr := tx.Commit(); commitErr != nil {
-						return PublishJob{}, false, releaseDependency("commit duplicate publish callback", commitErr)
-					}
-					committed = true
-					return clonePublishJob(historical), true, nil
-				}
-				return PublishJob{}, false, releaseDomain("apply publish callback", ErrConflict)
-			}
-			if historicalErr != nil && !errors.Is(historicalErr, ErrNotFound) {
-				return PublishJob{}, false, historicalErr
-			}
-		}
-	} else if event.Status == JobSuccess || event.Status == JobFailed {
-		if event.BuildNumber == 0 {
-			return PublishJob{}, false, releaseDomain("apply publish callback", ErrConflict)
-		}
-		job, err = queryJobByBuildForUpdate(ctx, tx, event.ReleaseID, event.BuildNumber)
-	} else {
-		return PublishJob{}, false, releaseDomain("apply publish callback", ErrConflict)
-	}
+	job, err := queryJobForUpdate(ctx, tx, event.PublishJobID, event.ReleaseID)
 	if err != nil {
 		return PublishJob{}, false, err
+	}
+	if !state.active.Valid || state.active.Int64 != event.PublishJobID {
+		if callbackMatches(job, event) {
+			if err := tx.Commit(); err != nil {
+				return PublishJob{}, false, releaseDependency("commit duplicate publish callback", err)
+			}
+			committed = true
+			return clonePublishJob(job), true, nil
+		}
+		return PublishJob{}, false, releaseDomain("apply publish callback", ErrConflict)
 	}
 	if callbackMatches(job, event) {
 		if err := tx.Commit(); err != nil {
@@ -431,6 +415,9 @@ func (r *MySQLRepository) ApplyCallbackLocked(ctx context.Context, event Callbac
 	}
 	result, err := tx.ExecContext(ctx, updateJobSQL, event.Status, event.Stage, nullableInt64(build), event.ErrorSummary, finished, job.ID, job.Status)
 	if err != nil {
+		if isPublishBuildDuplicate(err) {
+			return PublishJob{}, false, releaseDomain("assign publish build", ErrConflict)
+		}
 		return PublishJob{}, false, releaseDependency("update publish job", err)
 	}
 	rows, err := result.RowsAffected()
@@ -479,6 +466,70 @@ func (r *MySQLRepository) ApplyCallbackLocked(ctx context.Context, event Callbac
 	}
 	if err := tx.Commit(); err != nil {
 		return PublishJob{}, false, releaseDependency("commit publish callback", err)
+	}
+	committed = true
+	return clonePublishJob(job), false, nil
+}
+
+func (r *MySQLRepository) FailTriggerLocked(ctx context.Context, publishJobID int64, summary string, at time.Time) (PublishJob, bool, error) {
+	if err := r.validate(ctx); err != nil {
+		return PublishJob{}, false, err
+	}
+	at = at.UTC().Truncate(time.Microsecond)
+	if publishJobID <= 0 || at.IsZero() {
+		return PublishJob{}, false, releaseDomain("fail publish trigger", ErrConflict)
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PublishJob{}, false, releaseDependency("begin trigger failure", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	state, err := lockSiteState(ctx, tx)
+	if err != nil {
+		return PublishJob{}, false, err
+	}
+	job, err := queryJobByIDForUpdate(ctx, tx, publishJobID)
+	if err != nil {
+		return PublishJob{}, false, err
+	}
+	event := CallbackEvent{ReleaseID: job.ReleaseID, PublishJobID: job.ID, Stage: "trigger", Status: JobFailed, ErrorSummary: sanitizeSummary(summary), Timestamp: at}
+	if !state.active.Valid || state.active.Int64 != publishJobID {
+		if callbackMatches(job, event) {
+			if err := tx.Commit(); err != nil {
+				return PublishJob{}, false, releaseDependency("commit duplicate trigger failure", err)
+			}
+			committed = true
+			return clonePublishJob(job), true, nil
+		}
+		return PublishJob{}, false, releaseDomain("fail publish trigger", ErrConflict)
+	}
+	if callbackMatches(job, event) {
+		if err := tx.Commit(); err != nil {
+			return PublishJob{}, false, releaseDependency("commit duplicate trigger failure", err)
+		}
+		committed = true
+		return clonePublishJob(job), true, nil
+	}
+	if job.Status != JobPending {
+		return PublishJob{}, false, releaseDomain("fail publish trigger", ErrConflict)
+	}
+	if err := updateCallbackJob(ctx, tx, job, event); err != nil {
+		return PublishJob{}, false, err
+	}
+	if err := completeRelease(ctx, tx, job.ReleaseID, ReleaseFailed, at); err != nil {
+		return PublishJob{}, false, err
+	}
+	if err := execExactlyOne(ctx, tx, "clear failed trigger job", failSiteStateSQL, 1, job.ID); err != nil {
+		return PublishJob{}, false, err
+	}
+	job.Status, job.Stage, job.ErrorSummary, job.FinishedAt = JobFailed, "trigger", event.ErrorSummary, cloneTime(&at)
+	if err := tx.Commit(); err != nil {
+		return PublishJob{}, false, releaseDependency("commit trigger failure", err)
 	}
 	committed = true
 	return clonePublishJob(job), false, nil
@@ -541,7 +592,7 @@ func (r *MySQLRepository) ReconcileLocked(ctx context.Context, artifact Artifact
 		}
 		return false, err
 	}
-	if rel.Status != ReleaseQueued || job.Status != JobDeploying || job.BuildNumber == nil || *job.BuildNumber != artifact.BuildNumber {
+	if (rel.Status != ReleaseQueued && rel.Status != ReleaseFailed) || job.Status != JobDeploying || job.BuildNumber == nil || *job.BuildNumber != artifact.BuildNumber {
 		return false, releaseDomain("reconcile release", ErrReconciliationRequired)
 	}
 	if err := execExactlyOne(ctx, tx, "update reconciled publish job", updateJobSQL,
@@ -666,7 +717,8 @@ func scanRelease(scanner releaseScanner) (Release, error) {
 	if completed.Valid {
 		item.CompletedAt = cloneTime(&completed.Time)
 	}
-	if err := decodeSiteSnapshot(siteJSON, &item.Site); err != nil || !validStoredRelease(item) {
+	if err := decodeSiteSnapshot(siteJSON, &item.Site); err != nil ||
+		settings.ValidateReleaseSnapshot(toSettingsSite(item.Site)) != nil || !validStoredRelease(item) {
 		return Release{}, releaseDependency("scan release", errors.New("stored release is invalid"))
 	}
 	return item, nil
@@ -702,31 +754,26 @@ func queryJobForUpdate(ctx context.Context, tx *sql.Tx, id, releaseID int64) (Pu
 	return job, err
 }
 
-func queryLatestFinalJobForUpdate(ctx context.Context, tx *sql.Tx, releaseID int64) (PublishJob, error) {
-	job, err := scanJob(tx.QueryRowContext(ctx, latestFinalJobForUpdateSQL, releaseID))
+func queryJobByIDForUpdate(ctx context.Context, tx *sql.Tx, id int64) (PublishJob, error) {
+	job, err := scanJob(tx.QueryRowContext(ctx, jobByIDForUpdateSQL, id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return PublishJob{}, releaseDomain("find completed publish job", ErrNotFound)
+		return PublishJob{}, releaseDomain("find publish job", ErrNotFound)
 	}
 	return job, err
 }
 
-func queryJobByBuildForUpdate(ctx context.Context, tx *sql.Tx, releaseID, buildNumber int64) (PublishJob, error) {
-	job, err := scanJob(tx.QueryRowContext(ctx, jobByBuildForUpdateSQL, releaseID, buildNumber))
-	if errors.Is(err, sql.ErrNoRows) {
-		return PublishJob{}, releaseDomain("find historical publish job", ErrNotFound)
+func updateCallbackJob(ctx context.Context, tx *sql.Tx, job PublishJob, event CallbackEvent) error {
+	var finished any
+	if finalJobStatus(event.Status) {
+		finished = event.Timestamp
 	}
-	return job, err
-}
-
-func hasPriorJobAttempt(ctx context.Context, tx *sql.Tx, releaseID, activeJobID int64) (bool, error) {
-	var count int64
-	if err := tx.QueryRowContext(ctx, priorJobCountForUpdateSQL, releaseID, activeJobID).Scan(&count); err != nil {
-		return false, releaseDependency("inspect publish job history", err)
+	build, err := callbackBuildNumber(job.BuildNumber, event.BuildNumber)
+	if err != nil {
+		return err
 	}
-	if count < 0 {
-		return false, releaseDependency("inspect publish job history", errors.New("stored job count is invalid"))
-	}
-	return count > 0, nil
+	return execExactlyOne(ctx, tx, "update publish job", updateJobSQL,
+		event.Status, event.Stage, nullableInt64(build), event.ErrorSummary, finished, job.ID, job.Status,
+	)
 }
 
 func scanJob(scanner releaseScanner) (PublishJob, error) {
@@ -777,6 +824,9 @@ func loadReleaseArticles(ctx context.Context, queryer interface {
 	items := make([]ArticleSnapshot, 0)
 	seen := make(map[int64]struct{})
 	for rows.Next() {
+		if len(items) == maxReleaseArticles {
+			return nil, releaseDependency("load release articles", errors.New("stored release article count exceeds limit"))
+		}
 		var item ArticleSnapshot
 		var tagsJSON []byte
 		if err := rows.Scan(&item.ArticleID, &item.RevisionID, &item.Slug, &item.Title, &item.Summary, &item.ContentMarkdown, &item.ContentHash, &item.PublishedAt, &tagsJSON); err != nil {
@@ -817,10 +867,14 @@ func validateCreateCommand(command CreateCommand) error {
 }
 
 func validatePreparedSnapshot(command CreateCommand, base, prepared PreparedSnapshot) error {
-	if !releaseChecksumPattern.MatchString(prepared.Checksum) || len(prepared.Articles) > 100000 {
+	if !releaseChecksumPattern.MatchString(prepared.Checksum) || len(prepared.Articles) > maxReleaseArticles {
+		return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
+	}
+	if err := settings.ValidateReleaseSnapshot(toSettingsSite(prepared.Site)); err != nil {
 		return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
 	}
 	seen := make(map[int64]struct{}, len(prepared.Articles))
+	seenSlugs := make(map[string]struct{}, len(prepared.Articles))
 	for _, item := range prepared.Articles {
 		if !validArticleSnapshot(item) {
 			return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
@@ -829,6 +883,10 @@ func validatePreparedSnapshot(command CreateCommand, base, prepared PreparedSnap
 			return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
 		}
 		seen[item.ArticleID] = struct{}{}
+		if _, duplicate := seenSlugs[item.Slug]; duplicate {
+			return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
+		}
+		seenSlugs[item.Slug] = struct{}{}
 	}
 	baseByID := articlesByID(base.Articles)
 	preparedByID := articlesByID(prepared.Articles)
@@ -841,6 +899,9 @@ func validatePreparedSnapshot(command CreateCommand, base, prepared PreparedSnap
 			return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
 		}
 	case UnpublishArticle:
+		if base.Checksum != "" && !reflect.DeepEqual(base.Site, prepared.Site) {
+			return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
+		}
 		if _, present := baseByID[command.ArticleID]; !present {
 			return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
 		}
@@ -849,7 +910,14 @@ func validatePreparedSnapshot(command CreateCommand, base, prepared PreparedSnap
 			return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
 		}
 	case PublishArticle:
-		if _, present := preparedByID[command.ArticleID]; !present {
+		if base.Checksum != "" && !reflect.DeepEqual(base.Site, prepared.Site) {
+			return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
+		}
+		preparedTarget, present := preparedByID[command.ArticleID]
+		if !present {
+			return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
+		}
+		if baseTarget, existed := baseByID[command.ArticleID]; existed && baseTarget.Slug != preparedTarget.Slug {
 			return releaseDomain("validate release snapshot", ErrInvalidSnapshot)
 		}
 		delete(baseByID, command.ArticleID)
@@ -882,20 +950,47 @@ func normalizePreparedSnapshot(value PreparedSnapshot) PreparedSnapshot {
 func validArticleSnapshot(item ArticleSnapshot) bool {
 	if item.ArticleID <= 0 || item.RevisionID <= 0 || !releaseSlugPattern.MatchString(item.Slug) ||
 		!releaseChecksumPattern.MatchString(item.ContentHash) || item.PublishedAt.IsZero() ||
-		utf8.RuneCountInString(item.Title) > 200 || utf8.RuneCountInString(item.Summary) > 600 {
+		!utf8.ValidString(item.Slug) || !utf8.ValidString(item.Title) || !utf8.ValidString(item.Summary) ||
+		!utf8.ValidString(item.ContentMarkdown) || !utf8.ValidString(item.ContentHash) ||
+		item.PublishedAt.Location() != time.UTC || item.PublishedAt.Nanosecond()%1000 != 0 ||
+		strings.TrimSpace(item.Title) == "" || item.Title != strings.TrimSpace(item.Title) ||
+		utf8.RuneCountInString(item.Title) > 200 || utf8.RuneCountInString(item.Summary) > 600 ||
+		len(item.ContentMarkdown) > maxReleaseContentBytes || len(item.Tags) > maxReleaseTagsPerArticle {
 		return false
 	}
 	seenTags := make(map[int64]struct{}, len(item.Tags))
-	for _, tag := range item.Tags {
-		if tag.ID <= 0 || strings.TrimSpace(tag.Name) == "" || strings.TrimSpace(tag.Slug) == "" {
+	seenTagSlugs := make(map[string]struct{}, len(item.Tags))
+	var previous TagSnapshot
+	for index, tag := range item.Tags {
+		if tag.ID <= 0 || !utf8.ValidString(tag.Name) || !utf8.ValidString(tag.Slug) || tag.Name == "" ||
+			tag.Name != strings.TrimSpace(tag.Name) || utf8.RuneCountInString(tag.Name) > 64 || !releaseTagSlugPattern.MatchString(tag.Slug) {
 			return false
 		}
 		if _, duplicate := seenTags[tag.ID]; duplicate {
 			return false
 		}
+		if index > 0 && (previous.Slug > tag.Slug || previous.Slug == tag.Slug && previous.ID >= tag.ID) {
+			return false
+		}
 		seenTags[tag.ID] = struct{}{}
+		if _, duplicate := seenTagSlugs[tag.Slug]; duplicate {
+			return false
+		}
+		seenTagSlugs[tag.Slug] = struct{}{}
+		previous = tag
 	}
 	return true
+}
+
+func toSettingsSite(site SiteSnapshot) settings.ReleaseSnapshot {
+	socials := make([]settings.SocialLink, len(site.SocialLinks))
+	for index, social := range site.SocialLinks {
+		socials[index] = settings.SocialLink{Label: social.Label, URL: social.URL}
+	}
+	return settings.ReleaseSnapshot{
+		SiteName: site.Name, AuthorBio: site.AuthorBio, AboutMD: site.AboutMarkdown,
+		SocialLinks: socials, FilingName: site.FilingName, FilingNumber: site.FilingNumber,
+	}
 }
 
 func articlesByID(items []ArticleSnapshot) map[int64]ArticleSnapshot {
@@ -923,12 +1018,17 @@ func articleMapsEqual(left, right map[int64]ArticleSnapshot) bool {
 }
 
 func validateCallbackEvent(event CallbackEvent) error {
-	if event.ReleaseID <= 0 || event.BuildNumber < 0 || event.Timestamp.IsZero() ||
+	if event.ReleaseID <= 0 || event.PublishJobID <= 0 || event.BuildNumber <= 0 || event.Timestamp.IsZero() ||
 		strings.TrimSpace(event.Stage) == "" || utf8.RuneCountInString(event.Stage) > 64 ||
 		(event.Status != JobQueued && event.Status != JobBuilding && event.Status != JobDeploying && event.Status != JobSuccess && event.Status != JobFailed) {
 		return releaseDomain("apply publish callback", ErrConflict)
 	}
 	return nil
+}
+
+func isPublishBuildDuplicate(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 && publishBuildUnique.MatchString(mysqlErr.Message)
 }
 
 func allowedTransition(from, to JobStatus) bool {
@@ -1146,22 +1246,206 @@ func nullableInt64(value *int64) any {
 }
 
 func decodeSiteSnapshot(raw []byte, target *SiteSnapshot) error {
-	if err := json.Unmarshal(raw, target); err != nil {
-		return err
+	if !utf8.Valid(raw) {
+		return errors.New("stored site snapshot is not valid UTF-8")
 	}
-	if target.SocialLinks == nil {
-		return errors.New("stored social links must be an array")
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return errors.New("stored site snapshot must be an object")
+	}
+	seen := make(map[string]struct{}, 6)
+	for decoder.More() {
+		token, tokenErr := decoder.Token()
+		if tokenErr != nil {
+			return tokenErr
+		}
+		field, ok := token.(string)
+		if !ok {
+			return errors.New("stored site field is invalid")
+		}
+		if _, duplicate := seen[field]; duplicate {
+			return errors.New("stored site field is duplicated")
+		}
+		seen[field] = struct{}{}
+		switch field {
+		case "name":
+			err = decodeRequiredJSONText(decoder, &target.Name)
+		case "authorBio":
+			err = decodeRequiredJSONText(decoder, &target.AuthorBio)
+		case "aboutMarkdown":
+			err = decodeRequiredJSONText(decoder, &target.AboutMarkdown)
+		case "filingName":
+			err = decodeRequiredJSONText(decoder, &target.FilingName)
+		case "filingNumber":
+			err = decodeRequiredJSONText(decoder, &target.FilingNumber)
+		case "socialLinks":
+			target.SocialLinks, err = decodeSocialLinks(decoder)
+		default:
+			return errors.New("stored site field is unknown")
+		}
+		if err != nil {
+			return err
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') {
+		return errors.New("stored site snapshot is malformed")
+	}
+	if len(seen) != 6 || target.SocialLinks == nil {
+		return errors.New("stored site snapshot is incomplete")
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("stored site snapshot has trailing data")
+	}
+	if settings.ValidateReleaseSnapshot(toSettingsSite(*target)) != nil {
+		return errors.New("stored site snapshot violates domain limits")
 	}
 	return nil
 }
-func decodeTags(raw []byte, target *[]TagSnapshot) error {
-	if err := json.Unmarshal(raw, target); err != nil {
-		return err
+
+func decodeSocialLinks(decoder *json.Decoder) ([]SocialLink, error) {
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('[') {
+		return nil, errors.New("stored social links must be an array")
 	}
-	if *target == nil {
+	links := make([]SocialLink, 0)
+	for decoder.More() {
+		if len(links) == maxReleaseSocialLinks {
+			return links, errors.New("stored social links exceed limit")
+		}
+		link, decodeErr := decodeSocialLink(decoder)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		links = append(links, link)
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim(']') {
+		return nil, errors.New("stored social links are malformed")
+	}
+	return links, nil
+}
+
+func decodeSocialLink(decoder *json.Decoder) (SocialLink, error) {
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return SocialLink{}, errors.New("stored social link must be an object")
+	}
+	var link SocialLink
+	seen := make(map[string]struct{}, 2)
+	for decoder.More() {
+		token, tokenErr := decoder.Token()
+		if tokenErr != nil {
+			return SocialLink{}, tokenErr
+		}
+		field, ok := token.(string)
+		if !ok {
+			return SocialLink{}, errors.New("stored social link field is invalid")
+		}
+		if _, duplicate := seen[field]; duplicate {
+			return SocialLink{}, errors.New("stored social link field is duplicated")
+		}
+		seen[field] = struct{}{}
+		switch field {
+		case "label":
+			err = decodeRequiredJSONText(decoder, &link.Label)
+		case "url":
+			err = decodeRequiredJSONText(decoder, &link.URL)
+		default:
+			return SocialLink{}, errors.New("stored social link field is unknown")
+		}
+		if err != nil {
+			return SocialLink{}, err
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') || len(seen) != 2 {
+		return SocialLink{}, errors.New("stored social link is incomplete")
+	}
+	return link, nil
+}
+
+func decodeRequiredJSONText(decoder *json.Decoder, target *string) error {
+	var value *string
+	if err := decoder.Decode(&value); err != nil || value == nil {
+		return errors.New("stored JSON text field is invalid")
+	}
+	*target = *value
+	return nil
+}
+
+func decodeTags(raw []byte, target *[]TagSnapshot) error {
+	if !utf8.Valid(raw) {
+		return errors.New("stored tags are not valid UTF-8")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('[') {
 		return errors.New("stored tags must be an array")
 	}
+	values := make([]TagSnapshot, 0)
+	for decoder.More() {
+		if len(values) == maxReleaseTagsPerArticle {
+			*target = values
+			return errors.New("stored tags exceed limit")
+		}
+		value, decodeErr := decodeTagSnapshot(decoder)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		values = append(values, value)
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim(']') {
+		return errors.New("stored tags are malformed")
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("stored tags have trailing data")
+	}
+	*target = values
 	return nil
+}
+
+func decodeTagSnapshot(decoder *json.Decoder) (TagSnapshot, error) {
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return TagSnapshot{}, errors.New("stored tag must be an object")
+	}
+	var value TagSnapshot
+	seen := make(map[string]struct{}, 3)
+	for decoder.More() {
+		token, tokenErr := decoder.Token()
+		if tokenErr != nil {
+			return TagSnapshot{}, tokenErr
+		}
+		field, ok := token.(string)
+		if !ok {
+			return TagSnapshot{}, errors.New("stored tag field is invalid")
+		}
+		if _, duplicate := seen[field]; duplicate {
+			return TagSnapshot{}, errors.New("stored tag field is duplicated")
+		}
+		seen[field] = struct{}{}
+		switch field {
+		case "ID":
+			err = decoder.Decode(&value.ID)
+		case "Name":
+			err = decodeRequiredJSONText(decoder, &value.Name)
+		case "Slug":
+			err = decodeRequiredJSONText(decoder, &value.Slug)
+		default:
+			return TagSnapshot{}, errors.New("stored tag field is unknown")
+		}
+		if err != nil {
+			return TagSnapshot{}, err
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') || len(seen) != 3 {
+		return TagSnapshot{}, errors.New("stored tag is incomplete")
+	}
+	return value, nil
 }
 
 func assembleStoredBundle(rel Release, articles []ArticleSnapshot) Bundle {

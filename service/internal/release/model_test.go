@@ -57,8 +57,9 @@ func TestReleaseRepositoryContractUsesImmutableCommandsAndSnapshots(t *testing.T
 	var _ Repository = (*repositoryContractFake)(nil)
 	command := CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9, RequestedBy: 1}
 	require.Equal(t, int64(41), command.ArticleID)
-	event := CallbackEvent{ReleaseID: 7, BuildNumber: 12, Stage: "deploy", Status: JobDeploying, Timestamp: time.Now(), Nonce: "abcdefghijklmnop"}
+	event := CallbackEvent{ReleaseID: 7, PublishJobID: 11, BuildNumber: 12, Stage: "deploy", Status: JobDeploying, Timestamp: time.Now(), Nonce: "abcdefghijklmnop"}
 	require.Equal(t, int64(7), event.ReleaseID)
+	require.Equal(t, int64(11), event.PublishJobID)
 	artifact := Artifact{ReleaseID: 7, BuildNumber: 12, DeployedAt: time.Now()}
 	require.Equal(t, int64(12), artifact.BuildNumber)
 	require.ErrorIs(t, ErrBusy, ErrBusy)
@@ -161,7 +162,7 @@ type repositoryContractFake struct{}
 
 type snapshotSourceContractFake struct{}
 
-func (*snapshotSourceContractFake) PrepareSnapshot(context.Context, SnapshotRequest) (PreparedSnapshot, error) {
+func (*snapshotSourceContractFake) PrepareSnapshot(context.Context, SnapshotExecutor, SnapshotRequest) (PreparedSnapshot, error) {
 	return PreparedSnapshot{}, errors.New("not implemented")
 }
 
@@ -186,6 +187,10 @@ func (*repositoryContractFake) CreateRetryLocked(context.Context, int64) (Aggreg
 }
 
 func (*repositoryContractFake) ApplyCallbackLocked(context.Context, CallbackEvent) (PublishJob, bool, error) {
+	return PublishJob{}, false, errors.New("not implemented")
+}
+
+func (*repositoryContractFake) FailTriggerLocked(context.Context, int64, string, time.Time) (PublishJob, bool, error) {
 	return PublishJob{}, false, errors.New("not implemented")
 }
 

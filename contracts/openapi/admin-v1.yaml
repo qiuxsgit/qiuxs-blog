@@ -994,10 +994,11 @@ components:
     JenkinsCallbackRequest:
       type: object
       additionalProperties: false
-      required: [releaseId, buildNumber, stage, status, errorSummary, timestamp, nonce]
+      required: [releaseId, publishJobId, buildNumber, stage, status, errorSummary, timestamp, nonce]
       properties:
         releaseId: {type: integer, format: int64, minimum: 1}
-        buildNumber: {type: integer, format: int64, minimum: 0}
+        publishJobId: {type: integer, format: int64, minimum: 1}
+        buildNumber: {type: integer, format: int64, minimum: 1}
         stage: {type: string, minLength: 1, maxLength: 64}
         status: {type: string, enum: [queued, building, deploying, success, failed]}
         errorSummary: {type: string, maxLength: 512}

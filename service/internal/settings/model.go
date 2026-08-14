@@ -75,6 +75,37 @@ func ValidatePublishable(site Site) error {
 	return nil
 }
 
+type ReleaseSnapshot struct {
+	SiteName, AuthorBio, AboutMD, FilingName, FilingNumber string
+	SocialLinks                                            []SocialLink
+}
+
+// ValidateReleaseSnapshot applies the canonical limits for the subset of site
+// settings stored in an immutable release, without persistence access.
+func ValidateReleaseSnapshot(snapshot ReleaseSnapshot) error {
+	if !utf8.ValidString(snapshot.SiteName) || !utf8.ValidString(snapshot.AuthorBio) || !utf8.ValidString(snapshot.AboutMD) ||
+		!utf8.ValidString(snapshot.FilingName) || !utf8.ValidString(snapshot.FilingNumber) ||
+		!validRequiredRunes(snapshot.SiteName, 100) || snapshot.AuthorBio != strings.TrimSpace(snapshot.AuthorBio) ||
+		utf8.RuneCountInString(snapshot.AuthorBio) > 1000 || len(snapshot.AboutMD) > maximumAboutSize ||
+		!validRequiredRunes(snapshot.FilingName, 100) || !validRequiredRunes(snapshot.FilingNumber, 100) ||
+		len(snapshot.SocialLinks) > maximumSocials || snapshot.SocialLinks == nil {
+		return settingsDomainError("validate release settings snapshot", ErrInvalid, nil)
+	}
+	labels := make(map[string]struct{}, len(snapshot.SocialLinks))
+	for _, social := range snapshot.SocialLinks {
+		if !utf8.ValidString(social.Label) || !utf8.ValidString(social.URL) || social.Label == "" ||
+			social.Label != strings.TrimSpace(social.Label) || !canonicalSocialURL(social.URL) {
+			return settingsDomainError("validate release settings snapshot", ErrInvalid, nil)
+		}
+		key := strings.ToLower(social.Label)
+		if _, duplicate := labels[key]; duplicate {
+			return settingsDomainError("validate release settings snapshot", ErrInvalid, nil)
+		}
+		labels[key] = struct{}{}
+	}
+	return nil
+}
+
 func normalizeSite(site Site) (Site, error) {
 	normalized := cloneSite(site)
 	normalized.SiteName = strings.TrimSpace(site.SiteName)

@@ -262,6 +262,7 @@ CREATE TABLE publish_jobs (
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     finished_at DATETIME(6) NULL,
     PRIMARY KEY (id),
+    UNIQUE KEY uk_publish_jobs_release_build (release_id, build_number),
     KEY idx_publish_jobs_release_created (release_id, created_at),
     CONSTRAINT fk_publish_jobs_release FOREIGN KEY (release_id) REFERENCES releases (id) ON DELETE RESTRICT,
     CONSTRAINT fk_publish_jobs_builder FOREIGN KEY (builder_id) REFERENCES builder_config (id) ON DELETE RESTRICT,

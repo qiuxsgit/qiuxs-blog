@@ -1,9 +1,19 @@
 package release
 
-import "context"
+import (
+	"context"
+	"database/sql"
+	"time"
+)
+
+type SnapshotExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
 
 type SnapshotSource interface {
-	PrepareSnapshot(context.Context, SnapshotRequest) (PreparedSnapshot, error)
+	PrepareSnapshot(context.Context, SnapshotExecutor, SnapshotRequest) (PreparedSnapshot, error)
 }
 
 type Repository interface {
@@ -16,5 +26,6 @@ type Repository interface {
 	// aggregate; Aggregate.ValidateRetry must succeed for the returned values.
 	CreateRetryLocked(context.Context, int64) (Aggregate, PublishJob, error)
 	ApplyCallbackLocked(context.Context, CallbackEvent) (PublishJob, bool, error)
+	FailTriggerLocked(context.Context, int64, string, time.Time) (PublishJob, bool, error)
 	ReconcileLocked(context.Context, Artifact) (bool, error)
 }

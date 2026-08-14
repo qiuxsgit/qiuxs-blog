@@ -230,6 +230,7 @@ type PreparedSnapshot struct {
 
 type CallbackEvent struct {
 	ReleaseID    int64
+	PublishJobID int64
 	BuildNumber  int64
 	Stage        string
 	Status       JobStatus

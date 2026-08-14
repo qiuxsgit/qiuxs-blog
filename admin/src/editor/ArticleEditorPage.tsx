@@ -7,12 +7,14 @@ import { queryKeys } from "../api/query-keys";
 import { requireEntityId } from "../api/ids";
 import { useAuth } from "../auth/AuthProvider";
 import { ProblemNotice } from "../components/ProblemNotice";
+import { SaveIndicator } from "../components/SaveIndicator";
 import { MarkdownEditor } from "./MarkdownEditor";
+import { ConflictDialog } from "./ConflictDialog";
+import { useAutosave } from "./useAutosave";
 import { operationProblem } from "./operation-problem";
 import {
   MAX_SELECTED_TAGS,
   fromArticleDetail,
-  toSaveRequest,
   toggleTagId,
   validateEditorDocument,
   validateTagName,
@@ -46,13 +48,12 @@ export function ArticleEditorPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const creating = useRef(false);
-  const saving = useRef(false);
   const creatingTag = useRef(false);
   const renamingTag = useRef(false);
   const [createError, setCreateError] = useState<unknown>();
   const [createdArticle, setCreatedArticle] = useState<ArticleDetail>();
-  const [document, setDocument] = useState<EditorDocument>();
-  const [lockVersion, setLockVersion] = useState<number>();
+  const [loadedDocument, setLoadedDocument] = useState<EditorDocument>();
+  const [loadedLockVersion, setLoadedLockVersion] = useState<number>();
   const [mode, setMode] = useState<Mode>("visual");
   const [saveErrors, setSaveErrors] = useState<string[]>([]);
   const [newTagName, setNewTagName] = useState("");
@@ -90,29 +91,23 @@ export function ArticleEditorPage() {
 
   useEffect(() => {
     if (!article.data) return;
-    setDocument(fromArticleDetail(article.data));
-    setLockVersion(article.data.draft.lockVersion);
+    setLoadedDocument(fromArticleDetail(article.data));
+    setLoadedLockVersion(article.data.draft.lockVersion);
   }, [article.data]);
-
-  const save = useMutation({
-    mutationFn: (input: { articleId: number; document: EditorDocument; lockVersion: number }) => (
-      api.saveArticleDraft(input.articleId, toSaveRequest(input.document, input.lockVersion))
-    ),
-    onSuccess: (draft) => {
-      setLockVersion(draft.lockVersion);
-      setDocument((current) => current ? { ...current, ...fromArticleDetail({
-        ...(article.data as ArticleDetail),
-        draft,
-      }) } : current);
-      queryClient.setQueryData<ArticleDetail>(queryKeys.article(draft.articleId), (current) => current ? { ...current, draft } : current);
-    },
-    onSettled: () => { saving.current = false; },
+  const autosave = useAutosave({
+    articleId: articleId ?? 1,
+    initial: loadedDocument ?? { title: "", summary: "", coverMediaId: null, contentMd: "", tagIds: [] },
+    initialLockVersion: loadedLockVersion ?? 1,
+    delayMs: 2000,
+    save: (input, signal) => api.saveArticleDraft(articleId ?? 1, input, signal),
+    reload: (signal) => api.getArticle(articleId ?? 1, signal),
   });
+  const document = autosave.document;
   const createTag = useMutation({
     mutationFn: (name: string) => api.createTag({ name }),
     onSuccess: (returned) => {
       queryClient.setQueryData(queryKeys.tags, (current: { items: TagView[] } | undefined) => ({ items: replaceTag(current?.items ?? [], returned) }));
-      setDocument((current) => current ? { ...current, tagIds: toggleTagId(current.tagIds, returned.id, true) } : current);
+      autosave.edit({ ...autosave.document, tagIds: toggleTagId(autosave.document.tagIds, returned.id, true) });
       setNewTagName("");
     },
     onSettled: () => { creatingTag.current = false; },
@@ -139,20 +134,18 @@ export function ArticleEditorPage() {
     <ProblemNotice problem={operationProblem(article.error, "Unable to load article", "load_article_failed")} />
     <button className="editor-touch-target" onClick={() => void article.refetch()} type="button">Retry loading article</button>
   </section>;
-  if (article.isPending || !document || lockVersion === undefined) {
+  if (article.isPending || !loadedDocument || loadedLockVersion === undefined) {
     return <section aria-busy="true" aria-label="Loading article"><p aria-label="Loading article" role="status">Loading article</p></section>;
   }
 
   const setField = <Key extends keyof EditorDocument>(key: Key, value: EditorDocument[Key]) => {
-    setDocument((current) => current ? { ...current, [key]: value } : current);
+    autosave.edit({ ...autosave.document, [key]: value });
     setSaveErrors([]);
   };
   const submitSave = () => {
-    const errors = validateEditorDocument(document, lockVersion);
+    const errors = validateEditorDocument(document, autosave.state.lockVersion);
     setSaveErrors(errors);
-    if (errors.length > 0 || saving.current) return;
-    saving.current = true;
-    save.mutate({ articleId, document, lockVersion });
+    if (errors.length === 0) autosave.retry();
   };
   const submitCreateTag = () => {
     const error = validateTagName(newTagName);
@@ -174,12 +167,14 @@ export function ArticleEditorPage() {
     <section aria-labelledby="editor-heading" className="article-editor">
       <div className="editor-heading">
         <h1 id="editor-heading">Edit article</h1>
-        <button className="button touch-target" disabled={save.isPending} onClick={submitSave} type="button">
-          {save.isPending ? "Saving draft" : "Save draft"}
+        <button className="button touch-target" disabled={autosave.state.kind === "saving"} onClick={submitSave} type="button">
+          {autosave.state.kind === "saving" ? "Saving draft" : "Save draft"}
         </button>
       </div>
+      <SaveIndicator state={autosave.state} />
       {saveErrors.length > 0 && <div role="alert"><ul>{saveErrors.map((error) => <li key={error}>{error}</li>)}</ul></div>}
-      {save.isError && <ProblemNotice problem={operationProblem(save.error, "Unable to save draft", "save_draft_failed")} />}
+      {autosave.state.kind === "failed" && <><ProblemNotice problem={autosave.state.problem} /><button className="editor-touch-target" onClick={autosave.retry} type="button">Retry saving</button></>}
+      {autosave.state.kind === "conflict" && <ConflictDialog local={autosave.state.local} onCopy={() => void navigator.clipboard?.writeText(autosave.copyMarkdown())} onReload={() => void autosave.reload()} />}
 
       <label className="editor-title">Title<input aria-label="Title" onChange={(event) => setField("title", event.currentTarget.value)} value={document.title} /></label>
 

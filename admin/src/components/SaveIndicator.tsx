@@ -1,14 +1,13 @@
-type SaveState = "idle" | "saved" | "saving" | "error";
-
-const labels: Record<SaveState, readonly [string, string]> = {
-  idle: ["", ""],
-  saving: ["◌", "Saving changes"],
-  saved: ["✓", "All changes saved"],
-  error: ["⚠", "Unable to save changes"],
-};
+import type { SaveState } from "../editor/useAutosave";
 
 export function SaveIndicator({ state }: { state: SaveState }) {
-  const [icon, label] = labels[state];
-  if (!label) return null;
-  return <p aria-label={label} aria-live="polite" className={`save-indicator save-${state}`} role="status"><span aria-hidden="true">{icon}</span> {label}</p>;
+  const labels = {
+    saved: ["✓", "Saved"],
+    dirty: ["●", "Unsaved changes"],
+    saving: ["◌", "Saving changes"],
+    failed: ["⚠", "Save failed"],
+    conflict: ["⚠", "Version conflict"],
+  } as const;
+  const [icon, label] = labels[state.kind];
+  return <p aria-label={label} aria-live="polite" className={`save-indicator save-${state.kind}`} role="status"><span aria-hidden="true">{icon}</span> {label}{state.kind === "saved" ? ` · ${state.savedAt.toLocaleTimeString()}` : ""}</p>;
 }

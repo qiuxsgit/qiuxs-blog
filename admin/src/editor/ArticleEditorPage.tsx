@@ -21,6 +21,8 @@ import {
   type EditorDocument,
 } from "./editor-document";
 import { versionCapabilityFromAutosave } from "../versions/version-model";
+import { publishArticleRequest } from "../publishing/release-status";
+import { syncReleaseCache } from "../publishing/release-cache";
 import "../styles/editor.css";
 
 type Mode = "visual" | "source";
@@ -60,6 +62,7 @@ export function ArticleEditorPage() {
   const [newTagName, setNewTagName] = useState("");
   const [tagNameError, setTagNameError] = useState<string>();
   const [renameNames, setRenameNames] = useState<Record<number, string>>({});
+  const [publishError, setPublishError] = useState<unknown>();
 
   const createNewArticle = () => {
     if (creating.current) return;
@@ -121,6 +124,15 @@ export function ArticleEditorPage() {
     },
     onSettled: () => { renamingTag.current = false; },
   });
+  const publish = useMutation({
+    mutationFn: async () => {
+      const result = await api.createRelease(publishArticleRequest({ id: articleId! }));
+      await syncReleaseCache(queryClient, result.release, "create");
+      return result.release.id;
+    },
+    onSuccess: (releaseId) => navigate(`/publishing?release=${releaseId}`),
+    onError: setPublishError,
+  });
 
   if (isNew) {
     if (createError) return <section>
@@ -172,11 +184,15 @@ export function ArticleEditorPage() {
         <button className="button touch-target" disabled={autosave.state.kind === "saving"} onClick={submitSave} type="button">
           {autosave.state.kind === "saving" ? "Saving draft" : "Save draft"}
         </button>
+        <button className="button touch-target" disabled={!autosave.canPublish || publish.isPending} onClick={() => { setPublishError(undefined); publish.mutate(); }} type="button">
+          {publish.isPending ? "Starting release" : "Publish"}
+        </button>
       </div>
       <SaveIndicator state={autosave.state} />
       {saveErrors.length > 0 && <div role="alert"><ul>{saveErrors.map((error) => <li key={error}>{error}</li>)}</ul></div>}
       {autosave.state.kind === "failed" && <><ProblemNotice problem={autosave.state.problem} /><button className="editor-touch-target" onClick={autosave.retry} type="button">Retry saving</button></>}
       {autosave.state.kind === "conflict" && <ConflictDialog problem={autosave.state.problem} local={autosave.state.local} onCopy={() => void navigator.clipboard?.writeText(autosave.copyMarkdown())} onReload={() => { if (window.confirm("Reload the server draft and discard local changes?")) void autosave.reload(true); }} />}
+      {publishError !== undefined && <ProblemNotice problem={operationProblem(publishError, "Unable to start publish release", "publish_release_failed")} />}
 
       <label className="editor-title">Title<input aria-label="Title" onChange={(event) => setField("title", event.currentTarget.value)} value={document.title} /></label>
 

@@ -8,6 +8,7 @@ import { ArticleEditorPage } from "../editor/ArticleEditorPage";
 import { RouteErrorPage } from "./RouteErrorPage";
 import { ArticlePreviewPage } from "../preview/ArticlePreviewPage";
 import { ArticleVersionsPage } from "../versions/ArticleVersionsPage";
+import { PublishingPage } from "../publishing/PublishingPage";
 
 function ShellLayout() {
   return <AppShell><Outlet /></AppShell>;
@@ -33,7 +34,7 @@ export const appRoutes: RouteObject[] = [
           { path: "articles/:articleId/edit", element: <ArticleEditorPage /> },
           { path: "articles/:articleId/preview", element: <ArticlePreviewPage /> },
           { path: "articles/:articleId/versions", element: <ArticleVersionsPage /> },
-          { path: "publishing", element: <h1>Publishing</h1> },
+          { path: "publishing", element: <PublishingPage /> },
           { path: "settings/site", element: <h1>Site</h1> },
           { path: "settings/builder", element: <h1>Builder</h1> },
           { path: "settings/hotlink", element: <h1>Hotlink</h1> },

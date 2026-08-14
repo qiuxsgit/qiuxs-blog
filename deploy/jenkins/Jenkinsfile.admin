@@ -1,0 +1,12 @@
+pipeline {
+  agent any
+  options { timestamps(); disableConcurrentBuilds() }
+  environment { DEPLOY_ROOT = '/web/deploy/blog-admin'; DEPLOY_HOST = 'root@ngx1'; RELEASE_ID = "${env.BUILD_NUMBER}-${env.GIT_COMMIT?.take(12) ?: 'local'}" }
+  stages {
+    stage('toolchain') { steps { sh 'node --version | grep -F "v20.19.4" && npm --version' } }
+    stage('verify') { steps { dir('admin') { sh 'npm ci && make test' } } }
+    stage('build') { steps { dir('admin') { sh 'make build' } } }
+    stage('deploy') { steps { sh 'deploy/scripts/deploy-static.sh "$DEPLOY_HOST" "$DEPLOY_ROOT" "$RELEASE_ID" admin/dist 5' } }
+  }
+  post { failure { echo 'Admin deployment failed before current was switched.' } }
+}

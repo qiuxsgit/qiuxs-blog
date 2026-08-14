@@ -1,0 +1,18 @@
+pipeline {
+  agent any
+  parameters {
+    string(name: 'RELEASE_ID', trim: true)
+    string(name: 'PUBLISH_JOB_ID', trim: true)
+  }
+  options { timestamps(); disableConcurrentBuilds() }
+  environment { DEPLOY_ROOT = '/web/deploy/blog-site'; DEPLOY_HOST = 'root@ngx1'; CALLBACK = credentials('blog-build-callback-url'); CALLBACK_SECRET = credentials('blog-build-callback-secret') }
+  stages {
+    stage('validate') { steps { sh '[[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ && "$PUBLISH_JOB_ID" =~ ^[1-9][0-9]*$ ]]' ; sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" building "$BUILD_NUMBER"' } }
+    stage('build') { steps { dir('site') { sh 'node --version | grep -F "v20.19.4"; npm ci; npm run build' } } }
+    stage('deploy') { steps { sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" deploying "$BUILD_NUMBER"'; sh 'deploy/scripts/deploy-static.sh "$DEPLOY_HOST" "$DEPLOY_ROOT" "$RELEASE_ID" site/dist 5' } }
+  }
+  post {
+    success { sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" success "$BUILD_NUMBER"' }
+    failure { sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" failed "$BUILD_NUMBER" || true' }
+  }
+}

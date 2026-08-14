@@ -1,0 +1,26 @@
+server {
+    listen 80;
+    server_name blog-admin.qiuxs.com;
+    root /web/deploy/blog-admin/current;
+    client_max_body_size 10m;
+    location ~ /\. { deny all; }
+    location = /healthz { add_header Content-Type text/plain; return 200 "ok\n"; }
+    location /api/ {
+        proxy_pass http://${BLOG_SERVICE_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 30s;
+    }
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache" always;
+    }
+    location ~* \.(?:js|css|png|jpg|jpeg|gif|svg|ico|webp|woff2)$ {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+    }
+}

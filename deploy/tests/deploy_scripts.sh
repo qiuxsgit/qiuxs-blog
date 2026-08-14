@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+mkdir "$tmp/source"; printf '<!doctype html>\n' > "$tmp/source/index.html"
+if "$root/deploy/scripts/deploy-static.sh" root@ngx1 /tmp/unsafe x "$tmp/source" 2>/dev/null; then exit 1; fi
+if "$root/deploy/scripts/deploy-static.sh" root@ngx1 /web/deploy/blog-site '../escape' "$tmp/source" 5 2>/dev/null; then exit 1; fi
+echo 'deployment argument gate passed'

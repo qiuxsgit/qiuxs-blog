@@ -1,0 +1,27 @@
+[Unit]
+Description=qiuxs blog service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=blog
+Group=blog
+WorkingDirectory=/web/deploy/blog/current
+EnvironmentFile=/web/deploy/blog/shared/blog.env
+ExecStart=/web/deploy/blog/current/blog-service
+Restart=on-failure
+RestartSec=3s
+StartLimitIntervalSec=60
+StartLimitBurst=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/web/deploy/blog/shared
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

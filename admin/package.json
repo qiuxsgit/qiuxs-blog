@@ -19,8 +19,8 @@
     "verify:dist": "node scripts/verify-dist.mjs"
   },
   "dependencies": {
-    "@milkdown/kit": "^7.22.1",
-    "@milkdown/react": "^7.22.1",
+    "@milkdown/kit": "7.21.0",
+    "@milkdown/react": "7.21.0",
     "@shikijs/rehype": "^4.4.3",
     "@tanstack/react-query": "^5.101.4",
     "github-slugger": "^2.0.0",

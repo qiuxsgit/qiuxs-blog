@@ -1,0 +1,4 @@
+---
+import Base from '../layouts/BaseLayout.astro'; import Card from '../components/ArticleCard.astro'; import {loadBundle} from '../lib/bundle'; import {buildContentIndex} from '../lib/content'; const b=await loadBundle(); const c=buildContentIndex(b);
+---
+<Base><section class="hero"><div class="eyebrow">ENGINEERING LOG</div><h1>{b.site.name}</h1><p>{b.site.authorBio}</p><a href="/posts/">浏览全部文章 →</a></section><h2>最近文章</h2><div class="grid">{c.articles.slice(0,6).map(article=><Card {article}/>)}</div></Base>

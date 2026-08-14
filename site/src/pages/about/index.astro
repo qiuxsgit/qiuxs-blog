@@ -1,0 +1,4 @@
+---
+import Base from '../../layouts/BaseLayout.astro'; import {loadBundle} from '../../lib/bundle'; import {renderMarkdown} from '../../lib/markdown'; const b=await loadBundle(); const about=await renderMarkdown(b.site.aboutMarkdown);
+---
+<Base title="关于"><h1>关于</h1><p>{b.site.authorBio}</p><div class="article" set:html={about.html}/></Base>

@@ -1,0 +1,4 @@
+---
+import Base from '../../layouts/BaseLayout.astro'; import Card from '../../components/ArticleCard.astro'; import {loadBundle} from '../../lib/bundle'; import {buildContentIndex} from '../../lib/content'; export async function getStaticPaths(){const b=await loadBundle(); return b.tags.map(tag=>({params:{slug:tag.slug},props:{tag,b}}));} const {tag,b}=Astro.props; const c=buildContentIndex(b);
+---
+<Base title={tag.name}><h1>#{tag.name}</h1><div class="grid">{(c.byTag.get(tag.slug)??[]).map(article=><Card {article}/>)}</div></Base>

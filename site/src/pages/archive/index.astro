@@ -1,0 +1,4 @@
+---
+import Base from '../../layouts/BaseLayout.astro'; import {loadBundle} from '../../lib/bundle'; import {buildContentIndex} from '../../lib/content'; const b=await loadBundle(); const c=buildContentIndex(b);
+---
+<Base title="归档"><h1>归档</h1>{c.years.map(year=><section><h2>{year}</h2><ul>{c.articles.filter(a=>a.publishedAt.startsWith(year)).map(a=><li><a href={`/posts/${a.slug}/`}>{a.title}</a> <span class="meta">{new Date(a.publishedAt).toLocaleDateString('zh-CN')}</span></li>)}</ul></section>)}</Base>

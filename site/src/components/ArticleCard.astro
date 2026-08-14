@@ -1,0 +1,4 @@
+---
+const {article}=Astro.props;
+---
+<article class="card"><div class="meta">{new Date(article.publishedAt).toLocaleDateString('zh-CN')}</div><h2><a href={`/posts/${article.slug}/`}>{article.title}</a></h2><p>{article.summary}</p><div class="tags">{article.tags.map((t:string)=><span class="tag">#{t}</span>)}</div></article>

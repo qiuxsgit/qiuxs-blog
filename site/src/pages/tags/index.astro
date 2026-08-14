@@ -1,0 +1,4 @@
+---
+import Base from '../../layouts/BaseLayout.astro'; import {loadBundle} from '../../lib/bundle'; const b=await loadBundle();
+---
+<Base title="标签"><h1>标签</h1><div class="tags">{b.tags.map(t=><a class="tag" href={`/tags/${t.slug}/`}>{t.name}</a>)}</div></Base>

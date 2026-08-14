@@ -1,0 +1,3 @@
+import type {ReleaseBundle} from './bundle';
+export const postUrl=(slug:string)=>`/posts/${slug}/`; export const tagUrl=(slug:string)=>`/tags/${slug}/`;
+export function buildContentIndex(bundle:ReleaseBundle){ const articles=[...bundle.articles].sort((a,b)=>Date.parse(b.publishedAt)-Date.parse(a.publishedAt)); const byTag=new Map<string,typeof articles>(); for(const a of articles) for(const t of a.tags) byTag.set(t,[...(byTag.get(t)??[]),a]); const years=[...new Set(articles.map(a=>a.publishedAt.slice(0,4)))].sort().reverse(); return {articles,byTag,years,previous:(slug:string)=>{const i=articles.findIndex(a=>a.slug===slug);return i>=0?articles[i+1]:undefined},next:(slug:string)=>{const i=articles.findIndex(a=>a.slug===slug);return i>0?articles[i-1]:undefined}}; }

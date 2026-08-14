@@ -1,0 +1,4 @@
+---
+import Base from '../../layouts/BaseLayout.astro'; import Card from '../../components/ArticleCard.astro'; import {loadBundle} from '../../lib/bundle'; const b=await loadBundle();
+---
+<Base title="文章"><h1>文章</h1><div class="grid">{b.articles.map(article=><Card {article}/>)}</div></Base>

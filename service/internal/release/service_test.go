@@ -3,6 +3,8 @@ package release
 import (
 	"context"
 	"errors"
+	"io"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
@@ -188,3 +190,288 @@ func TestReleaseServiceNilSafetyAndRepositoryErrors(t *testing.T) {
 	_, _, err = service.Bundle(nil, 7)
 	require.Error(t, err)
 }
+
+func TestOrchestratorPublishReconcilesLoadsBuilderCommitsThenTriggersExactAttempt(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	order := make([]string, 0, 4)
+	repository := newOrchestratorRepository(t, now, &order)
+	service, err := NewService(repository)
+	require.NoError(t, err)
+	provider := &orchestratorBuilderProvider{order: &order, target: BuilderTarget{
+		BuilderID: 9,
+		Trigger: func(_ context.Context, releaseID, publishJobID int64) (int64, error) {
+			order = append(order, "trigger")
+			require.Equal(t, int64(7), releaseID)
+			require.Equal(t, int64(12), publishJobID)
+			return 55, nil
+		},
+	}}
+	orchestrator, err := NewOrchestrator(service, provider, func() (io.ReadCloser, error) {
+		order = append(order, "reconcile")
+		return nil, fs.ErrNotExist
+	}, func() time.Time { return now })
+	require.NoError(t, err)
+
+	created, job, err := orchestrator.Publish(context.Background(), CreateCommand{Mode: PublishSettings, RequestedBy: 3})
+	require.NoError(t, err)
+	require.Equal(t, int64(7), created.ID)
+	require.Equal(t, int64(12), job.ID)
+	require.Equal(t, CreateCommand{Mode: PublishSettings, BuilderID: 9, RequestedBy: 3}, repository.lastCreate)
+	require.Equal(t, []string{"reconcile", "builder", "create", "trigger"}, order)
+	require.Zero(t, repository.failCalls)
+}
+
+func TestOrchestratorTriggerFailureCompensatesExactJobAfterRequestCancellation(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 123000, time.UTC)
+	repository := newOrchestratorRepository(t, now, nil)
+	service, err := NewService(repository)
+	require.NoError(t, err)
+	requestContext, cancel := context.WithCancel(context.Background())
+	provider := &orchestratorBuilderProvider{target: BuilderTarget{
+		BuilderID: 9,
+		Trigger: func(context.Context, int64, int64) (int64, error) {
+			cancel()
+			return 0, errors.New("private Jenkins URL and token")
+		},
+	}}
+	orchestrator, err := NewOrchestrator(service, provider, missingArtifactReader, func() time.Time { return now })
+	require.NoError(t, err)
+
+	_, _, err = orchestrator.Publish(requestContext, CreateCommand{Mode: PublishSettings})
+	require.ErrorIs(t, err, ErrDependencyUnavailable)
+	require.NotContains(t, err.Error(), "private")
+	require.Equal(t, 1, repository.failCalls)
+	require.Equal(t, int64(12), repository.failedJobID)
+	require.Equal(t, "Jenkins trigger failed", repository.failedSummary)
+	require.Equal(t, now, repository.failedAt)
+	require.NoError(t, repository.failedContextErr)
+	require.True(t, repository.failedHasDeadline)
+}
+
+func TestOrchestratorSamplesTriggerFailureAfterAttemptAndClampsDatabaseClockSkew(t *testing.T) {
+	start := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	for name, postTrigger := range map[string]time.Time{
+		"later application clock": start.Add(2 * time.Minute),
+		"database clock ahead":    start.Add(30 * time.Second),
+	} {
+		t.Run(name, func(t *testing.T) {
+			repository := newOrchestratorRepository(t, start, nil)
+			repository.createJob.CreatedAt = start.Add(time.Minute)
+			service, err := NewService(repository)
+			require.NoError(t, err)
+			provider := &orchestratorBuilderProvider{target: BuilderTarget{BuilderID: 9, Trigger: func(context.Context, int64, int64) (int64, error) {
+				return 0, errors.New("trigger failed")
+			}}}
+			clockCalls := 0
+			clock := func() time.Time {
+				clockCalls++
+				if clockCalls == 1 {
+					return start
+				}
+				return postTrigger
+			}
+			orchestrator, err := NewOrchestrator(service, provider, missingArtifactReader, clock)
+			require.NoError(t, err)
+
+			_, _, err = orchestrator.Publish(context.Background(), CreateCommand{Mode: PublishSettings})
+			require.ErrorIs(t, err, ErrDependencyUnavailable)
+			expected := postTrigger
+			if expected.Before(repository.createJob.CreatedAt) {
+				expected = repository.createJob.CreatedAt
+			}
+			require.Equal(t, 2, clockCalls)
+			require.Equal(t, expected, repository.failedAt)
+			require.False(t, repository.failedAt.Before(repository.createJob.CreatedAt))
+		})
+	}
+}
+
+func TestOrchestratorRetryUsesNewJobWithoutChangingImmutableRelease(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	repository := newOrchestratorRepository(t, now, nil)
+	failedAt := now.Add(-time.Minute)
+	repository.retryAggregate = validAggregate(repository.createRelease.Checksum)
+	repository.retryAggregate.Release = repository.createRelease
+	repository.retryAggregate.Release.Status = ReleaseFailed
+	repository.retryAggregate.Release.CompletedAt = &failedAt
+	repository.retryAggregate.Jobs = []PublishJob{
+		{ID: 13, ReleaseID: 7, BuilderID: 9, Status: JobPending, Stage: "pending", CreatedAt: now},
+		{ID: 12, ReleaseID: 7, BuilderID: 9, Status: JobFailed, Stage: "deploy", BuildNumber: int64Pointer(44), CreatedAt: now.Add(-time.Minute), FinishedAt: &failedAt},
+	}
+	repository.retryJob = repository.retryAggregate.Jobs[0]
+	service, err := NewService(repository)
+	require.NoError(t, err)
+	provider := &orchestratorBuilderProvider{target: BuilderTarget{BuilderID: 9, Trigger: func(_ context.Context, releaseID, jobID int64) (int64, error) {
+		require.Equal(t, int64(7), releaseID)
+		require.Equal(t, int64(13), jobID)
+		return 56, nil
+	}}}
+	orchestrator, err := NewOrchestrator(service, provider, missingArtifactReader, func() time.Time { return now })
+	require.NoError(t, err)
+
+	aggregate, job, err := orchestrator.Retry(context.Background(), 7)
+	require.NoError(t, err)
+	require.Equal(t, int64(13), job.ID)
+	require.Equal(t, repository.createRelease.Checksum, aggregate.Release.Checksum)
+	require.Equal(t, 1, repository.retryCalls)
+	require.Zero(t, repository.failCalls)
+}
+
+func TestOrchestratorSkipsRepositoryForVerifierDuplicateAndDispatchesFirstExactly(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	repository := newOrchestratorRepository(t, now, nil)
+	build := int64(44)
+	repository.callbackJob = PublishJob{ID: 12, ReleaseID: 7, BuilderID: 9, Status: JobQueued, Stage: "queue", BuildNumber: &build, CreatedAt: now}
+	service, err := NewService(repository)
+	require.NoError(t, err)
+	orchestrator, err := NewOrchestrator(service, &orchestratorBuilderProvider{}, missingArtifactReader, func() time.Time { return now })
+	require.NoError(t, err)
+	event := CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "queue", Status: JobQueued, Timestamp: now, Nonce: "nonce_1234567890"}
+
+	job, duplicate, err := orchestrator.Callback(context.Background(), event, true)
+	require.NoError(t, err)
+	require.True(t, duplicate)
+	require.Equal(t, PublishJob{}, job)
+	require.Zero(t, repository.callbackCalls)
+
+	job, duplicate, err = orchestrator.Callback(context.Background(), event, false)
+	require.NoError(t, err)
+	require.False(t, duplicate)
+	require.Equal(t, int64(12), job.ID)
+	require.Equal(t, event, repository.lastCallback)
+	require.Equal(t, 1, repository.callbackCalls)
+
+	second := event
+	second.Nonce = "different_nonce_1"
+	repository.callbackDup = true
+	_, duplicate, err = orchestrator.Callback(context.Background(), second, false)
+	require.NoError(t, err)
+	require.True(t, duplicate)
+	require.Equal(t, 2, repository.callbackCalls)
+}
+
+func TestOrchestratorFailurePrecedenceAndNilSafety(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	repository := newOrchestratorRepository(t, now, nil)
+	service, err := NewService(repository)
+	require.NoError(t, err)
+	provider := &orchestratorBuilderProvider{target: BuilderTarget{BuilderID: 9, Trigger: func(context.Context, int64, int64) (int64, error) {
+		return 0, errors.New("trigger-secret")
+	}}}
+
+	orchestrator, err := NewOrchestrator(service, provider, func() (io.ReadCloser, error) {
+		return nil, errors.New("artifact-secret")
+	}, func() time.Time { return now })
+	require.NoError(t, err)
+	_, _, err = orchestrator.Publish(context.Background(), CreateCommand{Mode: PublishSettings})
+	require.ErrorIs(t, err, ErrDependencyUnavailable)
+	require.Zero(t, provider.prepareCalls)
+	require.Zero(t, repository.createCalls)
+	require.NotContains(t, err.Error(), "artifact-secret")
+
+	orchestrator.artifact = missingArtifactReader
+	provider.err = errors.New("builder-token-secret")
+	_, _, err = orchestrator.Publish(context.Background(), CreateCommand{Mode: PublishSettings})
+	require.ErrorIs(t, err, ErrDependencyUnavailable)
+	require.Zero(t, repository.createCalls)
+	require.NotContains(t, err.Error(), "builder-token-secret")
+
+	provider.err = nil
+	repository.createErr = releaseDependency("create release", errors.New("database-secret"))
+	_, _, err = orchestrator.Publish(context.Background(), CreateCommand{Mode: PublishSettings})
+	require.ErrorIs(t, err, ErrDependencyUnavailable)
+	require.Zero(t, repository.failCalls)
+
+	repository.createErr = nil
+	repository.failErr = releaseDependency("fail trigger", errors.New("compensation-secret"))
+	_, _, err = orchestrator.Publish(context.Background(), CreateCommand{Mode: PublishSettings})
+	require.ErrorIs(t, err, ErrDependencyUnavailable)
+	require.NotContains(t, err.Error(), "trigger-secret")
+	require.NotContains(t, err.Error(), "compensation-secret")
+
+	for _, construct := range []func() (*Orchestrator, error){
+		func() (*Orchestrator, error) { return NewOrchestrator(nil, provider, missingArtifactReader, time.Now) },
+		func() (*Orchestrator, error) { return NewOrchestrator(service, nil, missingArtifactReader, time.Now) },
+		func() (*Orchestrator, error) { return NewOrchestrator(service, provider, nil, time.Now) },
+		func() (*Orchestrator, error) { return NewOrchestrator(service, provider, missingArtifactReader, nil) },
+	} {
+		var got *Orchestrator
+		require.NotPanics(t, func() { got, err = construct() })
+		require.Nil(t, got)
+		require.Error(t, err)
+	}
+	var nilOrchestrator *Orchestrator
+	require.NotPanics(t, func() { _, _, err = nilOrchestrator.Publish(context.Background(), CreateCommand{}) })
+	require.Error(t, err)
+}
+
+func missingArtifactReader() (io.ReadCloser, error) { return nil, fs.ErrNotExist }
+
+type orchestratorBuilderProvider struct {
+	target       BuilderTarget
+	err          error
+	prepareCalls int
+	order        *[]string
+}
+
+func (p *orchestratorBuilderProvider) Prepare(context.Context) (BuilderTarget, error) {
+	p.prepareCalls++
+	if p.order != nil {
+		*p.order = append(*p.order, "builder")
+	}
+	return p.target, p.err
+}
+
+type orchestratorRepository struct {
+	*repositorySpy
+	order             *[]string
+	retryCalls        int
+	callbackCalls     int
+	failCalls         int
+	failedJobID       int64
+	failedSummary     string
+	failedAt          time.Time
+	failedContextErr  error
+	failedHasDeadline bool
+	failErr           error
+}
+
+func newOrchestratorRepository(t *testing.T, now time.Time, order *[]string) *orchestratorRepository {
+	t.Helper()
+	prepared := validPreparedSnapshot(now)
+	checksum := mustPreparedChecksum(t, prepared)
+	return &orchestratorRepository{repositorySpy: &repositorySpy{
+		createRelease: Release{ID: 7, Status: ReleaseQueued, Site: prepared.Site, Checksum: checksum, CreatedAt: now},
+		createJob:     PublishJob{ID: 12, ReleaseID: 7, BuilderID: 9, Status: JobPending, Stage: "pending", CreatedAt: now},
+	}, order: order}
+}
+
+func (r *orchestratorRepository) CreateLocked(ctx context.Context, command CreateCommand) (Release, PublishJob, error) {
+	if r.order != nil {
+		*r.order = append(*r.order, "create")
+	}
+	return r.repositorySpy.CreateLocked(ctx, command)
+}
+
+func (r *orchestratorRepository) CreateRetryLocked(context.Context, int64) (Aggregate, PublishJob, error) {
+	r.retryCalls++
+	return cloneAggregate(r.retryAggregate), clonePublishJob(r.retryJob), r.retryErr
+}
+
+func (r *orchestratorRepository) ApplyCallbackLocked(ctx context.Context, event CallbackEvent) (PublishJob, bool, error) {
+	r.callbackCalls++
+	return r.repositorySpy.ApplyCallbackLocked(ctx, event)
+}
+
+func (r *orchestratorRepository) FailTriggerLocked(ctx context.Context, jobID int64, summary string, at time.Time) (PublishJob, bool, error) {
+	r.failCalls++
+	r.failedJobID, r.failedSummary, r.failedAt = jobID, summary, at
+	r.failedContextErr = ctx.Err()
+	_, r.failedHasDeadline = ctx.Deadline()
+	if r.failErr != nil {
+		return PublishJob{}, false, r.failErr
+	}
+	return PublishJob{ID: jobID, ReleaseID: 7, BuilderID: 9, Status: JobFailed, Stage: "trigger", ErrorSummary: summary, CreatedAt: r.createJob.CreatedAt, FinishedAt: &at}, false, nil
+}
+
+func int64Pointer(value int64) *int64 { return &value }

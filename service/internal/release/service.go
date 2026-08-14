@@ -14,11 +14,169 @@ type Service struct {
 	repository Repository
 }
 
+const triggerCompensationTimeout = 5 * time.Second
+
+type BuilderTarget struct {
+	BuilderID int64
+	Trigger   func(context.Context, int64, int64) (int64, error)
+}
+
+type BuilderTargetProvider interface {
+	Prepare(context.Context) (BuilderTarget, error)
+}
+
+type Orchestrator struct {
+	service  *Service
+	builder  BuilderTargetProvider
+	artifact ArtifactReader
+	now      func() time.Time
+}
+
 func NewService(repository Repository) (*Service, error) {
 	if nilReleaseInterface(repository) {
 		return nil, errors.New("release repository is required")
 	}
 	return &Service{repository: repository}, nil
+}
+
+func NewOrchestrator(service *Service, builder BuilderTargetProvider, artifact ArtifactReader, now func() time.Time) (*Orchestrator, error) {
+	if service == nil || nilReleaseInterface(service.repository) || nilReleaseInterface(builder) || artifact == nil || now == nil {
+		return nil, errors.New("release orchestrator dependencies are required")
+	}
+	return &Orchestrator{service: service, builder: builder, artifact: artifact, now: now}, nil
+}
+
+func (o *Orchestrator) Publish(ctx context.Context, command CreateCommand) (Release, PublishJob, error) {
+	_, err := o.operationTime(ctx)
+	if err != nil {
+		return Release{}, PublishJob{}, err
+	}
+	if _, err := o.service.Reconcile(ctx, o.artifact); err != nil {
+		return Release{}, PublishJob{}, err
+	}
+	target, err := o.prepareBuilder(ctx)
+	if err != nil {
+		return Release{}, PublishJob{}, err
+	}
+	command.BuilderID = target.BuilderID
+	created, job, err := o.service.Create(ctx, command)
+	if err != nil {
+		return Release{}, PublishJob{}, err
+	}
+	if err := o.trigger(ctx, target, created.ID, job); err != nil {
+		return Release{}, PublishJob{}, err
+	}
+	return created, job, nil
+}
+
+func (o *Orchestrator) Retry(ctx context.Context, releaseID int64) (Aggregate, PublishJob, error) {
+	_, err := o.operationTime(ctx)
+	if err != nil {
+		return Aggregate{}, PublishJob{}, err
+	}
+	target, err := o.prepareBuilder(ctx)
+	if err != nil {
+		return Aggregate{}, PublishJob{}, err
+	}
+	aggregate, job, err := o.service.Retry(ctx, releaseID)
+	if err != nil {
+		return Aggregate{}, PublishJob{}, err
+	}
+	if err := o.trigger(ctx, target, aggregate.Release.ID, job); err != nil {
+		return Aggregate{}, PublishJob{}, err
+	}
+	return aggregate, job, nil
+}
+
+func (o *Orchestrator) Callback(ctx context.Context, event CallbackEvent, verifierDuplicate bool) (PublishJob, bool, error) {
+	if err := o.validate(ctx); err != nil {
+		return PublishJob{}, false, err
+	}
+	if err := validateCallbackEvent(event); err != nil {
+		return PublishJob{}, false, err
+	}
+	if verifierDuplicate {
+		return PublishJob{}, true, nil
+	}
+	return o.service.ApplyCallback(ctx, event)
+}
+
+func (o *Orchestrator) prepareBuilder(ctx context.Context) (BuilderTarget, error) {
+	target, err := o.builder.Prepare(ctx)
+	if err != nil {
+		return BuilderTarget{}, releaseDependency("load release builder", safeExternalCause(err))
+	}
+	if target.BuilderID <= 0 || target.Trigger == nil {
+		return BuilderTarget{}, releaseDependency("validate release builder", errors.New("release builder is invalid"))
+	}
+	return target, nil
+}
+
+func (o *Orchestrator) trigger(ctx context.Context, target BuilderTarget, releaseID int64, job PublishJob) error {
+	var triggerErr error
+	if job.BuilderID != target.BuilderID {
+		triggerErr = errors.New("release builder identity is invalid")
+	} else {
+		_, triggerErr = target.Trigger(ctx, releaseID, job.ID)
+	}
+	if triggerErr == nil {
+		return nil
+	}
+	at := o.now().UTC().Truncate(time.Microsecond)
+	if at.IsZero() || at.Before(job.CreatedAt) {
+		at = job.CreatedAt.UTC().Truncate(time.Microsecond)
+	}
+	compensationContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), triggerCompensationTimeout)
+	defer cancel()
+	failed, _, compensationErr := o.service.repository.FailTriggerLocked(
+		compensationContext, job.ID, "Jenkins trigger failed", at,
+	)
+	if compensationErr != nil {
+		return releaseDependency("record Jenkins trigger failure", safeExternalCause(compensationErr))
+	}
+	if !validTriggerFailure(failed, job, releaseID, at) {
+		return releaseDependency("validate Jenkins trigger failure", errors.New("stored trigger failure is invalid"))
+	}
+	return releaseDependency("trigger Jenkins release", safeExternalCause(triggerErr))
+}
+
+func validTriggerFailure(failed, initial PublishJob, releaseID int64, at time.Time) bool {
+	return failed.ID == initial.ID && failed.ReleaseID == releaseID && failed.BuilderID == initial.BuilderID &&
+		failed.Status == JobFailed && failed.Stage == "trigger" && failed.BuildNumber == nil &&
+		failed.ErrorSummary == "Jenkins trigger failed" && !failed.CreatedAt.IsZero() &&
+		failed.CreatedAt.Location() == time.UTC && failed.FinishedAt != nil && failed.FinishedAt.Equal(at)
+}
+
+func safeExternalCause(err error) error {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return context.DeadlineExceeded
+	default:
+		return errors.New("external dependency failed")
+	}
+}
+
+func (o *Orchestrator) operationTime(ctx context.Context) (time.Time, error) {
+	if err := o.validate(ctx); err != nil {
+		return time.Time{}, err
+	}
+	at := o.now()
+	if at.IsZero() {
+		return time.Time{}, releaseDependency("read release clock", errors.New("release clock is invalid"))
+	}
+	return at.UTC().Truncate(time.Microsecond), nil
+}
+
+func (o *Orchestrator) validate(ctx context.Context) error {
+	if o == nil || o.service == nil || nilReleaseInterface(o.service.repository) || nilReleaseInterface(o.builder) || o.artifact == nil || o.now == nil {
+		return errors.New("release orchestrator is not configured")
+	}
+	if nilReleaseInterface(ctx) {
+		return releaseDomain("use release orchestrator", ErrConflict)
+	}
+	return nil
 }
 
 func (s *Service) Create(ctx context.Context, command CreateCommand) (Release, PublishJob, error) {

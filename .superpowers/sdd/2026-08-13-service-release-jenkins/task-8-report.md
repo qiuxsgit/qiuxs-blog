@@ -74,3 +74,18 @@ transport accepted any nonempty publish-job ID. The correction was test-only:
   and asserts retry returns the original release with a distinct job.
 - Replay wording now correctly says that the identical canonical callback is
   accepted idempotently (HTTP 204), not rejected.
+
+## Round 2 published-pointer correction
+
+The remaining review finding was that an old current release existed but its
+release snapshot had no article, while the test's current-pointer accessor only
+returned fixture state. RED added the desired observable assertion and failed to
+compile because `assertPublishedPointerPreserved` did not yet exist.
+
+GREEN preloads current release `7` with immutable article `42` at published
+revision `17`. It removes the fixture current-pointer accessors. After the
+failed callback, the test performs a real authenticated
+`GET /api/admin/v1/articles/42`; sqlmock supplies the old live article row and
+the actual handler response must expose `publishedRevisionId = 17`. Callback
+expectations still permit only failed-job/release finalization and active-lock
+clear, with neither article-pointer nor current-release update permitted.

@@ -52,8 +52,7 @@ func TestImmutableReleaseThroughJenkinsCallbackAndRetry(t *testing.T) {
 	system.triggerCallback(created, "build", release.JobBuilding, 18, "nonce-building-0001")
 	system.triggerCallback(created, "deploy", release.JobDeploying, 18, "nonce-deploying-0001")
 	system.triggerCallback(created, "deploy", release.JobFailed, 18, "nonce-failed-0001")
-	require.Equal(t, int64(7), system.previousCurrentRelease())
-	require.Equal(t, int64(7), system.currentRelease())
+	system.assertPublishedPointerPreserved(42, 17)
 
 	retried := system.retryAsAdmin(created.ReleaseID)
 	require.Equal(t, created.ReleaseID, retried.ReleaseID)
@@ -95,7 +94,8 @@ type releaseFlow struct {
 	cfg                                                           config.Config
 	now                                                           time.Time
 	passwordHash, encryptedToken, checksum, articleHash, siteJSON string
-	releaseID, jobID, current                                     int64
+	releaseID, jobID, oldCurrentReleaseID                         int64
+	oldArticlePublishedAt                                         time.Time
 	jobStatus                                                     release.JobStatus
 	jobStage                                                      string
 	jobBuild, jobFinished, releaseDone                            any
@@ -113,7 +113,8 @@ type flowBundle struct {
 
 func newReleaseFlow(t *testing.T) *releaseFlow {
 	t.Helper()
-	flow := &releaseFlow{t: t, now: time.Date(2026, 8, 14, 12, 0, 0, 123000000, time.UTC), releaseID: 101, jobID: 101, current: 7}
+	flow := &releaseFlow{t: t, now: time.Date(2026, 8, 14, 12, 0, 0, 123000000, time.UTC), releaseID: 101, jobID: 101, oldCurrentReleaseID: 7}
+	flow.oldArticlePublishedAt = flow.now.Add(-time.Hour)
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	flow.mock = mock
@@ -133,7 +134,7 @@ func newReleaseFlow(t *testing.T) *releaseFlow {
 	flow.siteJSON = `{"name":"Blog","authorBio":"Bio","aboutMarkdown":"About","filingName":"Filing","filingNumber":"Filing-1","socialLinks":[]}`
 	// Reviewed checksum for this fixed immutable fixture; the flow does not
 	// duplicate the release package's canonicalization implementation.
-	flow.checksum = "sha256:cb7b16eff6ff1cc8725c1bb938ad78590a928eee01ab75aa3a090d4f8b2ffcdd"
+	flow.checksum = "sha256:b207ebaaa205494636f8db129a1f3bea8831e3acc4301ae6608ea40772cadf1b"
 	router, err := app.Build(flow.cfg, app.Dependencies{
 		DB: db, Redis: flow.redis, Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		Random: bytes.NewReader(bytes.Repeat([]byte{3}, 1024)), Now: func() time.Time { return flow.now },
@@ -259,9 +260,6 @@ func (flow *releaseFlow) triggerCallback(created flowReleaseResult, stage string
 	}
 }
 
-func (flow *releaseFlow) previousCurrentRelease() int64 { return flow.current }
-func (flow *releaseFlow) currentRelease() int64         { return flow.current }
-
 func (flow *releaseFlow) retryAsAdmin(releaseID int64) flowReleaseResult {
 	flow.expectAdmin()
 	flow.expectBuilderLoad()
@@ -272,6 +270,26 @@ func (flow *releaseFlow) retryAsAdmin(releaseID int64) flowReleaseResult {
 	decodeResponse(flow.t, response, &retried)
 	flow.jobID, flow.jobStatus, flow.jobStage, flow.jobBuild, flow.jobFinished = retried.Job.Id, release.JobPending, "pending", nil, nil
 	return flowReleaseResult{retried.Release.Id, retried.Job.Id}
+}
+
+func (flow *releaseFlow) assertPublishedPointerPreserved(articleID, revisionID int64) {
+	flow.expectAdmin()
+	expectReleaseQuery(flow.mock, flowSelectArticle).WithArgs(int64(articleID)).WillReturnRows(sqlmock.NewRows(strings.Split(flowArticleCols, ", ")).AddRow(
+		int64(articleID), "oldarticle42", int64(18), int64(revisionID), "active", flow.now, flow.now,
+	))
+	flow.mock.ExpectBegin()
+	expectReleaseQuery(flow.mock, flowSelectEditingAt).WithArgs(int64(18), int64(articleID)).WillReturnRows(flowRevisionRows().AddRow(
+		int64(18), int64(articleID), int64(2), "editing", "draft", "Old live draft", "", nil, "Old live body", flow.articleHash, int64(1), flow.now, flow.now,
+	))
+	expectReleaseQuery(flow.mock, flowSelectDraftTags).WithArgs(int64(18)).WillReturnRows(sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}))
+	expectReleaseQuery(flow.mock, flowSelectDraftMedia).WithArgs(int64(18)).WillReturnRows(sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}))
+	flow.mock.ExpectCommit()
+	response := flow.adminJSON(http.MethodGet, "/api/admin/v1/articles/"+strconv.FormatInt(int64(articleID), 10), nil)
+	require.Equal(flow.t, http.StatusOK, response.StatusCode)
+	var detail httpapi.ArticleDetail
+	decodeResponse(flow.t, response, &detail)
+	require.NotNil(flow.t, detail.PublishedRevisionId)
+	require.Equal(flow.t, int64(revisionID), *detail.PublishedRevisionId)
 }
 
 func (flow *releaseFlow) adminJSON(method, path string, body any) *http.Response {
@@ -290,9 +308,9 @@ func (flow *releaseFlow) expectBuilderLoad() {
 
 func (flow *releaseFlow) expectCreate() {
 	flow.mock.ExpectBegin()
-	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.current, nil))
-	expectReleaseQuery(flow.mock, flowReleaseSelect).WithArgs(flow.current).WillReturnRows(flow.releaseRows(flow.current, release.ReleaseSuccess, flow.now))
-	expectReleaseQuery(flow.mock, flowReleaseArticles).WithArgs(flow.current).WillReturnRows(sqlmock.NewRows([]string{"article_id", "revision_id", "slug", "title", "summary", "content_md", "content_hash", "published_at", "tags_snapshot_json"}))
+	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.oldCurrentReleaseID, nil))
+	expectReleaseQuery(flow.mock, flowReleaseSelect).WithArgs(flow.oldCurrentReleaseID).WillReturnRows(flow.releaseRows(flow.oldCurrentReleaseID, release.ReleaseSuccess, flow.now))
+	expectReleaseQuery(flow.mock, flowReleaseArticles).WithArgs(flow.oldCurrentReleaseID).WillReturnRows(flow.oldReleaseArticleRows())
 	expectReleaseQuery(flow.mock, flowSnapshotDraft).WithArgs(int64(41)).WillReturnRows(sqlmock.NewRows([]string{"id", "slug", "id", "revision_no", "title", "summary", "cover_media_id", "content_md", "content_hash", "lock_version"}).AddRow(int64(41), "article_slug", int64(71), int64(1), "Immutable", "Snapshot", nil, "Body", flow.articleHash, int64(1)))
 	expectReleaseQuery(flow.mock, flowSnapshotTags).WithArgs(int64(71)).WillReturnRows(sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}))
 	expectReleaseQuery(flow.mock, flowSnapshotMedia).WithArgs(int64(71)).WillReturnRows(sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}))
@@ -301,6 +319,7 @@ func (flow *releaseFlow) expectCreate() {
 	expectReleaseExec(flow.mock, flowReplaceDraft).WithArgs(int64(101), flow.now, int64(41), int64(71)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseExec(flow.mock, flowInsertRelease).WithArgs(int64(101), flow.siteJSON, flow.checksum).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseExec(flow.mock, flowInsertReleaseArt).WithArgs(int64(101), int64(101), int64(41), int64(71), "article_slug", "Immutable", "Snapshot", "Body", "sha256:"+flow.articleHash, flow.now, "[]").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectReleaseExec(flow.mock, flowInsertReleaseArt).WithArgs(int64(202), int64(101), int64(42), int64(17), "oldarticle42", "Old published", "Old snapshot", "Old body", "sha256:"+flow.articleHash, flow.oldArticlePublishedAt, "[]").WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseExec(flow.mock, flowInsertPublishJob).WithArgs(int64(101), int64(101), int64(9)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseExec(flow.mock, flowSetActive).WithArgs(int64(101), 1).WillReturnResult(sqlmock.NewResult(0, 1))
 	flow.expectAggregateRows(flow.releaseID, release.ReleaseQueued, nil, []flowJob{{id: 101, status: release.JobPending, stage: "pending"}})
@@ -329,13 +348,13 @@ func (flow *releaseFlow) expectBundleRead(releaseID int64) {
 	flow.mock.ExpectCommit()
 	flow.mock.ExpectBegin()
 	expectReleaseQuery(flow.mock, flowReleaseSelect).WithArgs(releaseID).WillReturnRows(flow.releaseRows(releaseID, flow.releaseStatus, flow.releaseDone))
-	expectReleaseQuery(flow.mock, flowReleaseArticles).WithArgs(releaseID).WillReturnRows(sqlmock.NewRows([]string{"article_id", "revision_id", "slug", "title", "summary", "content_md", "content_hash", "published_at", "tags_snapshot_json"}).AddRow(int64(41), int64(71), "article_slug", "Immutable", "Snapshot", "Body", "sha256:"+flow.articleHash, flow.now, "[]"))
+	expectReleaseQuery(flow.mock, flowReleaseArticles).WithArgs(releaseID).WillReturnRows(flow.newReleaseArticleRows())
 	flow.mock.ExpectCommit()
 }
 
 func (flow *releaseFlow) expectCallback(status release.JobStatus, stage string, build int64) {
 	flow.mock.ExpectBegin()
-	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.current, flow.jobID))
+	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.oldCurrentReleaseID, flow.jobID))
 	expectReleaseQuery(flow.mock, flowJobForUpdate).WithArgs(flow.jobID, flow.releaseID).WillReturnRows(flow.jobRows(flow.jobID, flow.jobStatus, flow.jobStage, flow.jobBuild, flow.jobFinished))
 	finished := any(nil)
 	if status == release.JobFailed {
@@ -354,7 +373,7 @@ func (flow *releaseFlow) expectCallback(status release.JobStatus, stage string, 
 func (flow *releaseFlow) expectRetry(releaseID int64) {
 	newJobID := flow.jobID + flow.cfg.IDGen.Step
 	flow.mock.ExpectBegin()
-	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.current, nil))
+	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.oldCurrentReleaseID, nil))
 	flow.expectAggregateRows(releaseID, release.ReleaseFailed, flow.now, []flowJob{{id: flow.jobID, status: release.JobFailed, stage: "deploy", build: int64(18), finished: flow.now}})
 	expectReleaseExec(flow.mock, flowInsertPublishJob).WithArgs(newJobID, releaseID, int64(9)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseExec(flow.mock, flowSetActive).WithArgs(newJobID, 1).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -364,6 +383,18 @@ func (flow *releaseFlow) expectRetry(releaseID int64) {
 
 func (flow *releaseFlow) releaseRows(id int64, status release.ReleaseStatus, completed any) *sqlmock.Rows {
 	return sqlmock.NewRows([]string{"id", "site_snapshot_json", "checksum", "status", "created_at", "completed_at"}).AddRow(id, flow.siteJSON, flow.checksum, status, flow.now, completed)
+}
+
+func (flow *releaseFlow) oldReleaseArticleRows() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"article_id", "revision_id", "slug", "title", "summary", "content_md", "content_hash", "published_at", "tags_snapshot_json"}).AddRow(
+		int64(42), int64(17), "oldarticle42", "Old published", "Old snapshot", "Old body", "sha256:"+flow.articleHash, flow.oldArticlePublishedAt, "[]",
+	)
+}
+
+func (flow *releaseFlow) newReleaseArticleRows() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"article_id", "revision_id", "slug", "title", "summary", "content_md", "content_hash", "published_at", "tags_snapshot_json"}).
+		AddRow(int64(41), int64(71), "article_slug", "Immutable", "Snapshot", "Body", "sha256:"+flow.articleHash, flow.now, "[]").
+		AddRow(int64(42), int64(17), "oldarticle42", "Old published", "Old snapshot", "Old body", "sha256:"+flow.articleHash, flow.oldArticlePublishedAt, "[]")
 }
 
 func (flow *releaseFlow) jobRows(id int64, status release.JobStatus, stage string, build, finished any) *sqlmock.Rows {

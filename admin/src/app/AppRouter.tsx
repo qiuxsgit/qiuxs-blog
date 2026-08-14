@@ -11,6 +11,7 @@ import { ArticleVersionsPage } from "../versions/ArticleVersionsPage";
 import { PublishingPage } from "../publishing/PublishingPage";
 import { SiteSettingsPage } from "../settings/SiteSettingsPage";
 import { BuilderSettingsPage } from "../settings/BuilderSettingsPage";
+import { HotlinkSettingsPage } from "../settings/HotlinkSettingsPage";
 
 function ShellLayout() {
   return <AppShell><Outlet /></AppShell>;
@@ -39,7 +40,7 @@ export const appRoutes: RouteObject[] = [
           { path: "publishing", element: <PublishingPage /> },
           { path: "settings/site", element: <SiteSettingsPage /> },
           { path: "settings/builder", element: <BuilderSettingsPage /> },
-          { path: "settings/hotlink", element: <h1>Hotlink</h1> },
+          { path: "settings/hotlink", element: <HotlinkSettingsPage /> },
           { path: "*", element: <h1>Page not found</h1> },
         ],
       },

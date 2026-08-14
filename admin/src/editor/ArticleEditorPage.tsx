@@ -18,10 +18,11 @@ import {
   toggleTagId,
   validateEditorDocument,
   validateTagName,
+  canPublishArticle,
   type EditorDocument,
 } from "./editor-document";
 import { versionCapabilityFromAutosave } from "../versions/version-model";
-import { publishArticleRequest } from "../publishing/release-status";
+import { publishArticleRequest, releaseProblemMessage } from "../publishing/release-status";
 import { syncReleaseCache } from "../publishing/release-cache";
 import "../styles/editor.css";
 
@@ -184,7 +185,7 @@ export function ArticleEditorPage() {
         <button className="button touch-target" disabled={autosave.state.kind === "saving"} onClick={submitSave} type="button">
           {autosave.state.kind === "saving" ? "Saving draft" : "Save draft"}
         </button>
-        <button className="button touch-target" disabled={!autosave.canPublish || publish.isPending} onClick={() => { setPublishError(undefined); publish.mutate(); }} type="button">
+        <button className="button touch-target" disabled={!canPublishArticle(document, autosave.state) || publish.isPending} onClick={() => { setPublishError(undefined); publish.mutate(); }} type="button">
           {publish.isPending ? "Starting release" : "Publish"}
         </button>
       </div>
@@ -192,7 +193,7 @@ export function ArticleEditorPage() {
       {saveErrors.length > 0 && <div role="alert"><ul>{saveErrors.map((error) => <li key={error}>{error}</li>)}</ul></div>}
       {autosave.state.kind === "failed" && <><ProblemNotice problem={autosave.state.problem} /><button className="editor-touch-target" onClick={autosave.retry} type="button">Retry saving</button></>}
       {autosave.state.kind === "conflict" && <ConflictDialog problem={autosave.state.problem} local={autosave.state.local} onCopy={() => void navigator.clipboard?.writeText(autosave.copyMarkdown())} onReload={() => { if (window.confirm("Reload the server draft and discard local changes?")) void autosave.reload(true); }} />}
-      {publishError !== undefined && <ProblemNotice problem={operationProblem(publishError, "Unable to start publish release", "publish_release_failed")} />}
+      {publishError !== undefined && <ProblemNotice problem={operationProblem(publishError, releaseProblemMessage(publishError), "publish_release_failed")} />}
 
       <label className="editor-title">Title<input aria-label="Title" onChange={(event) => setField("title", event.currentTarget.value)} value={document.title} /></label>
 

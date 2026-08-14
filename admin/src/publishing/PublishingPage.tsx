@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
 import { ProblemNotice } from "../components/ProblemNotice";
@@ -20,6 +20,9 @@ export function PublishingPage() {
   const selectedFromList = useMemo(() => list.data?.items.find((item) => item.id === selectedId), [list.data, selectedId]);
   const detail = useQuery({ queryKey: queryKeys.release(selectedId ?? 0), queryFn: ({ signal }) => api.getRelease(selectedId!, signal), enabled: selectedId !== undefined, initialData: selectedFromList });
   const [actionError, setActionError] = useState<unknown>();
+  const [focusJobId, setFocusJobId] = useState<number>();
+  const jobTarget = useRef<HTMLElement | null>(null);
+  const active = detail.data;
   const publishSettings = useMutation({
     mutationFn: async () => {
       const result = await api.createRelease(publishSettingsRequest());
@@ -33,9 +36,9 @@ export function PublishingPage() {
     mutationFn: async (release: ReleaseView) => {
       const result = await api.retryRelease(release.id);
       await syncReleaseCache(queryClient, result.release, "retry");
-      return result.release.id;
+      return { releaseId: result.release.id, jobId: result.job.id };
     },
-    onSuccess: (id) => navigate(`/publishing?release=${id}`),
+    onSuccess: ({ releaseId, jobId }) => { setFocusJobId(jobId); navigate(`/publishing?release=${releaseId}`); },
     onError: setActionError,
   });
 
@@ -53,8 +56,8 @@ export function PublishingPage() {
     const timer = window.setInterval(() => void poll(), 3000);
     return () => { disposed = true; window.clearInterval(timer); };
   }, [api, detail.data, queryClient, selectedId]);
+  useEffect(() => { if (focusJobId !== undefined && jobTarget.current) { jobTarget.current.focus(); setFocusJobId(undefined); } }, [active?.latestJob.id, focusJobId]);
 
-  const active = detail.data;
   return <section aria-labelledby="publishing-heading">
     <div className="page-heading"><div><h1 id="publishing-heading">Publishing</h1><p>Immutable releases and Jenkins job history.</p></div><button className="button touch-target" disabled={publishSettings.isPending} onClick={() => { setActionError(undefined); publishSettings.mutate(); }} type="button">{publishSettings.isPending ? "Starting release" : "Publish saved site settings"}</button></div>
     {actionError !== undefined && <><ProblemNotice problem={operationProblem(actionError, releaseProblemMessage(actionError), "release_failed")} /><p>{releaseProblemMessage(actionError)}</p></>}
@@ -65,6 +68,6 @@ export function PublishingPage() {
         <nav aria-label="Release pagination"><button className="touch-target" disabled={offset === 0} onClick={() => setOffset(previousReleaseOffset(offset))} type="button">Previous</button><button className="touch-target" disabled={nextReleaseOffset(offset, list.data?.items.length ?? 0) === undefined} onClick={() => { const next = nextReleaseOffset(offset, list.data?.items.length ?? 0); if (next !== undefined) setOffset(next); }} type="button">Next</button></nav>
       </>}
     </>}
-    {active && <article aria-labelledby="release-detail-heading"><h2 id="release-detail-heading">Release #{active.id}</h2><p>Status: {releaseStatusLabel(active.status)}</p><p>Checksum: {active.checksum}</p><p>Created: {active.createdAt}</p><p>Completed: {active.completedAt ?? "—"}</p><h3>Jobs</h3><ol>{active.jobs.map((job) => <li key={job.id}><p>Job #{job.id} · release #{job.releaseId} · {jobStatusLabel(job.status)}</p><p>Builder: {builderTargetText(job)}</p><p>Stage: {job.stage} · Build: {job.buildNumber ?? "—"}</p><p>{job.errorSummary}</p><p>Finished: {job.finishedAt ?? "—"}</p></li>)}</ol>{(active.status === "failed" || active.latestJob.status === "failed") && <button className="button touch-target" disabled={retry.isPending} onClick={() => { setActionError(undefined); retry.mutate(active); }} type="button">{retry.isPending ? "Retrying" : "Retry release"}</button>}</article>}
+    {active && <article aria-labelledby="release-detail-heading"><h2 id="release-detail-heading">Release #{active.id}</h2><p>Status: {releaseStatusLabel(active.status)}</p><p>Checksum: {active.checksum}</p><p>Created: {active.createdAt}</p><p>Completed: {active.completedAt ?? "—"}</p><h3>Jobs</h3><ol>{active.jobs.map((job) => <li key={job.id} ref={job.id === focusJobId ? (node) => { jobTarget.current = node ?? null; } : undefined} tabIndex={job.id === focusJobId ? -1 : undefined}><p>Job #{job.id} · release #{job.releaseId} · {jobStatusLabel(job.status)}</p><p>Builder: {builderTargetText(job)}</p><p>Stage: {job.stage} · Build: {job.buildNumber ?? "—"}</p><p>{job.errorSummary}</p><p>Finished: {job.finishedAt ?? "—"}</p></li>)}</ol>{(active.status === "failed" || active.latestJob.status === "failed") && <button className="button touch-target" disabled={retry.isPending} onClick={() => { setActionError(undefined); retry.mutate(active); }} type="button">{retry.isPending ? "Retrying" : "Retry release"}</button>}</article>}
   </section>;
 }

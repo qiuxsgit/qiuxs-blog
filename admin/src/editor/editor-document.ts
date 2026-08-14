@@ -1,5 +1,6 @@
 import type { ArticleDetail, SaveDraftRequest } from "../api/admin-api";
 import type { EntityId } from "../api/ids";
+import type { SaveState } from "./useAutosave";
 
 export const MAX_DOCUMENT_BYTES = 2 * 1024 * 1024;
 export const MAX_SELECTED_TAGS = 32;
@@ -14,6 +15,13 @@ export interface EditorDocument {
 
 export interface EditorValidationOptions {
   rejectBlobUrls?: boolean;
+}
+
+/** Publishing is deliberately stricter than saving a draft. */
+export function canPublishArticle(document: EditorDocument, state: Pick<SaveState, "kind" | "lockVersion">): boolean {
+  return state.kind === "saved"
+    && document.title.trim().length > 0
+    && validateEditorDocument(document, state.lockVersion, { rejectBlobUrls: true }).length === 0;
 }
 
 const utf8 = new TextEncoder();

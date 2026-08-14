@@ -20,6 +20,7 @@ function tabbableChildren(container: HTMLElement): HTMLElement[] {
 export function ConfirmDialog({ cancelDisabled = false, children, confirmDisabled = false, confirmLabel, onCancel, onConfirm, open, title }: ConfirmDialogProps) {
   const dialog = useRef<HTMLElement>(null);
   const cancelButton = useRef<HTMLButtonElement>(null);
+  const confirmButton = useRef<HTMLButtonElement>(null);
   const opener = useRef<HTMLElement | null>(null);
   const onCancelRef = useRef(onCancel);
   onCancelRef.current = onCancel;
@@ -55,6 +56,12 @@ export function ConfirmDialog({ cancelDisabled = false, children, confirmDisable
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open]);
 
+  useEffect(() => {
+    if (open && confirmDisabled && document.activeElement === confirmButton.current) {
+      cancelButton.current?.focus();
+    }
+  }, [confirmDisabled, open]);
+
   if (!open) return null;
   return (
     <div className="dialog-backdrop">
@@ -62,8 +69,10 @@ export function ConfirmDialog({ cancelDisabled = false, children, confirmDisable
         <h2 id="confirm-dialog-title">{title}</h2>
         <div className="dialog-copy">{children}</div>
         <div className="dialog-actions">
-          <button className="button button-secondary touch-target" disabled={cancelDisabled} onClick={onCancel} ref={cancelButton} type="button">Cancel</button>
-          <button className="button button-danger touch-target" disabled={confirmDisabled} onClick={onConfirm} type="button">{confirmLabel}</button>
+          <button aria-disabled={cancelDisabled || undefined} className="button button-secondary touch-target" onClick={() => {
+            if (!cancelDisabled) onCancel();
+          }} ref={cancelButton} type="button">Cancel</button>
+          <button className="button button-danger touch-target" disabled={confirmDisabled} onClick={onConfirm} ref={confirmButton} type="button">{confirmLabel}</button>
         </div>
       </section>
     </div>

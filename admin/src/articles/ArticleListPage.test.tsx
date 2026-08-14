@@ -195,7 +195,13 @@ describe("ArticleListPage", () => {
     const dialog = screen.getByRole("alertdialog", { name: "Trash article" });
     await user.click(within(dialog).getByRole("button", { name: "Confirm trash" }));
     const cancel = within(dialog).getByRole("button", { name: "Cancel" });
-    expect(cancel).toBeDisabled();
+    expect(cancel).toHaveAttribute("aria-disabled", "true");
+    expect(cancel).not.toBeDisabled();
+    expect(cancel).toHaveFocus();
+    await user.keyboard("{Tab}");
+    expect(cancel).toHaveFocus();
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(cancel).toHaveFocus();
     await user.click(cancel);
     expect(screen.getByRole("alertdialog", { name: "Trash article" })).toBeInTheDocument();
 
@@ -236,7 +242,8 @@ describe("ArticleListPage", () => {
     const dialog = screen.getByRole("alertdialog", { name: "Trash article" });
     await user.click(within(dialog).getByRole("button", { name: "Confirm trash" }));
     const cancel = within(dialog).getByRole("button", { name: "Cancel" });
-    await waitFor(() => expect(cancel).not.toBeDisabled());
+    await waitFor(() => expect(cancel).not.toHaveAttribute("aria-disabled"));
+    expect(cancel).toHaveFocus();
 
     await user.click(cancel);
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();

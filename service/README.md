@@ -1,10 +1,10 @@
 # qiuxs-blog service
 
-This directory contains the Go 1.25.7 Blog Service through roadmap Stage 2. It
+This directory contains the Go 1.25.7 Blog Service through roadmap Stage 3. It
 provides health checks, administrator bootstrap and sessions, article drafts and
 revision history, tags, media registration, site and hotlink settings, and the
-public media redirect. Release/Jenkins orchestration belongs to Stage 3 and is
-not part of this service stage.
+public media redirect, immutable release snapshots, Jenkins orchestration, and
+the internal Bundle/callback endpoints.
 
 ## Configuration
 
@@ -29,6 +29,10 @@ All runtime configuration is supplied through environment variables.
 | `BLOG_GFS_APP_ID` | required | Application ID for the dedicated Blog Service GFS application. |
 | `BLOG_GFS_APP_SECRET` | required | Raw GFS application secret used only for local upload signing. Keep it out of source control, process output, and logs. |
 | `BLOG_GFS_PUBLIC_READ_SECRET` | required | Secret used only to sign short-lived GFS read URLs locally. Keep it out of source control, process output, and logs. |
+| `BLOG_BUNDLE_TOKEN` | required | Opaque 32--128 byte Bearer token for the internal Bundle endpoint. Keep it only in Jenkins credentials. |
+| `BLOG_CALLBACK_HMAC_KEY` | required | Opaque 32--128 byte HMAC key shared only with the Jenkins callback credential. |
+| `BLOG_BUILDER_MASTER_KEY` | required | Canonical unpadded Raw-Std-Base64 encoding of exactly 32 bytes; encrypts the Jenkins API token stored in MySQL. |
+| `BLOG_CURRENT_RELEASE_JSON_PATH` | `/web/deploy/blog-site/current/release.json` | Local path of the deployed `release.json` artifact read during startup reconciliation. It is read-only service input, never a service deployment target. |
 
 Every entity ID is allocated from a Redis counter before its MySQL `INSERT`.
 IDs are positive signed `BIGINT` values and never encode timestamps or other
@@ -40,7 +44,7 @@ default single lane produces `1, 2, 3, ...`.
 The binaries never read or execute files under `sqls/`. There is no service
 migration command. There is no automatic migration at startup.
 
-Stage 2 supplies cumulative development DDL only. Prepare a disposable or empty
+The service supplies cumulative development DDL only. Prepare a disposable or empty
 development database in this order:
 
 1. Review `sqls/develop/develop.sql` and the target database.
@@ -50,8 +54,10 @@ development database in this order:
 4. Run `blog-admin init` once to create the first administrator.
 
 Do not replay the cumulative development file over an arbitrary populated
-schema, and do not treat it as a versioned release migration. Stage 2 creates no
-`v*.sql` release file. See [the SQL lifecycle notes](sqls/README.md).
+schema, and do not treat it as a versioned release migration. Release tables are
+also reviewed and applied through this same manual `develop.sql` lifecycle; no
+service command creates, migrates, or alters them and no `v*.sql` release file
+exists. See [the SQL lifecycle notes](sqls/README.md).
 
 ## Initialize the first administrator
 
@@ -202,9 +208,79 @@ limit follow the byte limits above.
 The API always returns the fixed read-only filing link
 `https://beian.miit.gov.cn/`; clients cannot configure or persist that URL.
 `settings.ValidatePublishable` is the reusable gate requiring nonblank filing
-name and number. Stage 3 owns Release enforcement and will invoke this
-already-tested gate before creating a release snapshot. Stage 2 does not create
-Release, Jenkins, Bundle, Astro, or deployment behavior.
+name and number. Release creation invokes this gate before writing its immutable
+snapshot.
+
+## Immutable releases and Jenkins operation
+
+The service snapshots a requested article or settings change into `releases` and
+`release_articles` under the locked `site_state` row, then creates one active
+`publish_jobs` row. A Bundle is always reconstructed from those immutable rows:
+later draft or settings changes cannot alter its bytes. A retry retains the same
+release and snapshot but creates a new publish-job ID. A failed job clears only
+the active job lock; it cannot advance `current_release_id` or published article
+pointers.
+
+Before using releases, run the manual SQL lifecycle above on a reviewed empty or
+disposable database, start MySQL and Redis, and configure the three release
+secrets. `BLOG_BUILDER_MASTER_KEY` is base64 material: decode it with Raw Std
+Base64 to exactly 32 bytes. `BLOG_BUNDLE_TOKEN` and `BLOG_CALLBACK_HMAC_KEY` are
+not decoded by the service; supply each as a 32--128 byte opaque secret. Never
+put any of these values in source control, request logs, or shell history.
+
+An administrator configures Jenkins through `PUT /api/admin/v1/builder` with
+name, HTTPS base URL, username, job name, enabled flag, and token. The token is
+accepted only on write, AES-GCM encrypted at rest, and never returned. Use
+`POST /api/admin/v1/builder/test` to test the saved connection. Release creation
+and retry load that enabled configuration and trigger Jenkins with the exact
+parameters `RELEASE_ID` and `PUBLISH_JOB_ID`; configure the Jenkins job to pass
+both unchanged to its deploy steps.
+
+Jenkins downloads the immutable input from:
+
+```text
+GET /api/internal/v1/releases/{releaseId}/bundle
+Authorization: Bearer $BLOG_BUNDLE_TOKEN
+Accept-Encoding: gzip
+```
+
+The response is canonical JSON (or gzip of those same bytes), `Content-Type:
+application/json`, `ETag: "sha256:..."`, `Cache-Control: no-store`, and `Vary:
+Accept-Encoding`. Save and compare the ETag/checksum as the release identity.
+The endpoint ignores Admin cookies; a Jenkins credential containing only the
+Bundle bearer token is sufficient.
+
+Jenkins reports a canonical JSON callback to
+`POST /api/internal/v1/jenkins/callback`. Its body must contain exactly
+`releaseId`, `publishJobId`, `buildNumber`, `stage`, `status`, `errorSummary`,
+`timestamp`, and `nonce`, in the service's canonical JSON form. Set
+`X-Jenkins-Signature: sha256=<hex>` where the hex digest is HMAC-SHA256 over:
+
+```text
+unix timestamp + "\n" + nonce + "\n" + exact canonical JSON body bytes
+```
+
+Timestamps must be within five minutes, and nonce values are replay-protected in
+Redis for five minutes. Accepted transitions are `pending -> queued (queue) ->
+building (build) -> deploying (deploy) -> success|failed`; failure is also
+accepted from queue or build with the corresponding stage. Re-sending the exact
+same nonce/body is idempotent. Do not invent a new nonce for a retried HTTP
+delivery of the same callback.
+
+At process startup, `Application.Reconcile` reads
+`BLOG_CURRENT_RELEASE_JSON_PATH`. The file is an artifact produced by deployment
+and must contain the deployed release ID, checksum, build number, and timestamp.
+If it is missing, startup proceeds without reconciliation. If it is malformed,
+references an unknown release/build, or its checksum mismatches the immutable
+release, publication mutation is blocked with reconciliation-required status:
+investigate the deployed artifact and database/Jenkins history before changing
+state. Do not delete or rewrite it to bypass the check.
+
+The service never deploys files, switches symlinks, writes `release.json`,
+reloads Nginx, or opens SSH sessions. Stage 6 owns the Jenkins, Nginx, and SSH
+pipelines, including filesystem deployment and production rollback; this service
+only creates immutable release data and receives authenticated orchestration
+events.
 
 ## Generate, test, and build
 

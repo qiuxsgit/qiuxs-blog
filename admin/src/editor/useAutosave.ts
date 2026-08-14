@@ -100,6 +100,11 @@ export function isRevisionConflict(error: unknown): error is ApiProblem {
   return error instanceof ApiProblem && error.status === 409 && error.code === "revision_conflict";
 }
 
+/** Fetch can reject with DOMException, while test doubles and adapters may use a plain object. */
+export function isAbortError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
+}
+
 export function shouldBlockNavigation(state: SaveState): boolean {
   return state.kind !== "saved";
 }
@@ -198,7 +203,7 @@ export function useAutosave(options: AutosaveOptions) {
     timer.current = setTimeout(run, 0);
   }, [run]);
 
-  const reload = useCallback(async (confirmed = false) => {
+  const reload = useCallback(async (confirmed = false): Promise<ArticleDetail | undefined> => {
     if (conflictReloadDecision(confirmed) !== "reload") return undefined;
     const requestEpoch = epoch.current;
     const controller = new AbortController();
@@ -209,7 +214,8 @@ export function useAutosave(options: AutosaveOptions) {
       if (mounted.current && isCurrentAutosaveEpoch(requestEpoch, epoch.current)) update({ type: "reload", detail, savedAt: new Date() });
       return detail;
     } catch (error) {
-      if (mounted.current && isCurrentAutosaveEpoch(requestEpoch, epoch.current) && !(error instanceof DOMException && error.name === "AbortError")) update({ type: "reload_failure", problem: operationProblem(error, "Unable to reload article", "reload_article_failed") });
+      if (isAbortError(error)) return undefined;
+      if (mounted.current && isCurrentAutosaveEpoch(requestEpoch, epoch.current)) update({ type: "reload_failure", problem: operationProblem(error, "Unable to reload article", "reload_article_failed") });
       throw error;
     } finally {
       if (isCurrentAutosaveEpoch(requestEpoch, epoch.current)) reloadAbort.current = undefined;

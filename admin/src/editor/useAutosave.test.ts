@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiProblem } from "../api/problem";
 import { articleDetail, draftView } from "../test/fixtures";
-import { autosaveInitialKey, createAutosaveState, autosaveReducer, copyLocalMarkdown, conflictReloadDecision, isCurrentAutosaveEpoch, isRevisionConflict, nextAutosaveDelay, reduceForAutosaveEpoch, reduceReloadForAutosaveEpoch, shouldBlockNavigation, type SaveState } from "./useAutosave";
+import { autosaveInitialKey, createAutosaveState, autosaveReducer, copyLocalMarkdown, conflictReloadDecision, isAbortError, isCurrentAutosaveEpoch, isRevisionConflict, nextAutosaveDelay, reduceForAutosaveEpoch, reduceReloadForAutosaveEpoch, shouldBlockNavigation, type SaveState } from "./useAutosave";
 import type { EditorDocument } from "./editor-document";
 
 const local: EditorDocument = { title: "Draft", summary: "", coverMediaId: null, contentMd: "# local\n", tagIds: [31] };
@@ -36,6 +36,14 @@ describe("autosave state machine", () => {
     const failed = autosaveReducer(conflict, { type: "reload_failure", problem: new ApiProblem(503, "network_error", "client", "Reload failed") });
     expect(failed.state.kind).toBe("conflict");
     expect((failed.state as Extract<SaveState, { kind: "conflict" }>).problem?.title).toBe("Reload failed");
+  });
+
+  it("recognizes browser and adapter AbortErrors without class-specific checks", () => {
+    expect(isAbortError(new DOMException("cancelled", "AbortError"))).toBe(true);
+    expect(isAbortError({ name: "AbortError" })).toBe(true);
+    expect(isAbortError(new Error("cancelled"))).toBe(false);
+    expect(isAbortError({ name: "NetworkError" })).toBe(false);
+    expect(isAbortError(null)).toBe(false);
   });
 
   it("enforces the exact debounce boundary and schedules newer work after settlement", () => {

@@ -7,13 +7,13 @@ export function RouteErrorPage() {
   const error = useRouteError();
 
   if (error instanceof ApiProblem) {
-    return <main className="route-error" id="main-content"><ProblemNotice problem={error} /></main>;
+    return <section className="route-error"><ProblemNotice problem={error} /></section>;
   }
   const message = isRouteErrorResponse(error) ? error.statusText : "The requested page could not be loaded.";
   return (
-    <main className="route-error" id="main-content">
+    <section className="route-error">
       <h1>Unable to load this page</h1>
       <p>{message || "The requested page could not be loaded."}</p>
-    </main>
+    </section>
   );
 }

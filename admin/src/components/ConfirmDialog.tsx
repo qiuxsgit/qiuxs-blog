@@ -8,39 +8,60 @@ interface ConfirmDialogProps extends PropsWithChildren {
   title: string;
 }
 
+const tabbableSelector = "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
+
+function tabbableChildren(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(tabbableSelector))
+    .filter((element) => element.tabIndex >= 0 && element.getAttribute("aria-hidden") !== "true");
+}
+
 export function ConfirmDialog({ children, confirmLabel, onCancel, onConfirm, open, title }: ConfirmDialogProps) {
+  const dialog = useRef<HTMLElement>(null);
   const cancelButton = useRef<HTMLButtonElement>(null);
-  const confirmButton = useRef<HTMLButtonElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      opener.current?.focus();
+      opener.current = null;
+      return;
+    }
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     cancelButton.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onCancel();
+        onCancelRef.current();
+        return;
       }
-      if (event.key === "Tab") {
-        const backwards = event.shiftKey;
-        if ((!backwards && document.activeElement === confirmButton.current) || (backwards && document.activeElement === cancelButton.current)) {
-          event.preventDefault();
-          (backwards ? confirmButton : cancelButton).current?.focus();
-        }
+      if (event.key !== "Tab" || !dialog.current) return;
+      const targets = tabbableChildren(dialog.current);
+      if (targets.length === 0) return;
+      const first = targets[0]!;
+      const last = targets.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onCancel, open]);
+  }, [open]);
 
   if (!open) return null;
   return (
     <div className="dialog-backdrop">
-      <section aria-labelledby="confirm-dialog-title" aria-modal="true" className="confirm-dialog" role="alertdialog">
+      <section aria-labelledby="confirm-dialog-title" aria-modal="true" className="confirm-dialog" ref={dialog} role="alertdialog">
         <h2 id="confirm-dialog-title">{title}</h2>
         <div className="dialog-copy">{children}</div>
         <div className="dialog-actions">
           <button className="button button-secondary touch-target" onClick={onCancel} ref={cancelButton} type="button">Cancel</button>
-          <button className="button button-danger touch-target" onClick={onConfirm} ref={confirmButton} type="button">{confirmLabel}</button>
+          <button className="button button-danger touch-target" onClick={onConfirm} type="button">{confirmLabel}</button>
         </div>
       </section>
     </div>

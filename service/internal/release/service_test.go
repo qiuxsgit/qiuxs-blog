@@ -286,6 +286,46 @@ func TestOrchestratorSamplesTriggerFailureAfterAttemptAndClampsDatabaseClockSkew
 	}
 }
 
+func TestOrchestratorRejectsCorruptTriggerFailureTimestamps(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	for name, mutate := range map[string]func(*PublishJob){
+		"changed created at": func(job *PublishJob) { job.CreatedAt = job.CreatedAt.Add(-time.Second) },
+		"non UTC created at": func(job *PublishJob) {
+			job.CreatedAt = job.CreatedAt.In(time.FixedZone("same-instant", 8*60*60))
+		},
+		"submicro created at": func(job *PublishJob) { job.CreatedAt = job.CreatedAt.Add(time.Nanosecond) },
+		"non UTC finished at": func(job *PublishJob) {
+			local := job.FinishedAt.In(time.FixedZone("same-instant", 8*60*60))
+			job.FinishedAt = &local
+		},
+		"submicro finished at": func(job *PublishJob) {
+			finished := job.FinishedAt.Add(time.Nanosecond)
+			job.FinishedAt = &finished
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repository := newOrchestratorRepository(t, now, nil)
+			failed := PublishJob{
+				ID: 12, ReleaseID: 7, BuilderID: 9, Status: JobFailed, Stage: "trigger",
+				ErrorSummary: "Jenkins trigger failed", CreatedAt: repository.createJob.CreatedAt, FinishedAt: &now,
+			}
+			mutate(&failed)
+			repository.failResult = &failed
+			service, err := NewService(repository)
+			require.NoError(t, err)
+			provider := &orchestratorBuilderProvider{target: BuilderTarget{BuilderID: 9, Trigger: func(context.Context, int64, int64) (int64, error) {
+				return 0, errors.New("trigger failed")
+			}}}
+			orchestrator, err := NewOrchestrator(service, provider, missingArtifactReader, func() time.Time { return now })
+			require.NoError(t, err)
+
+			_, _, err = orchestrator.Publish(context.Background(), CreateCommand{Mode: PublishSettings})
+			require.EqualError(t, err, "validate Jenkins trigger failure failed")
+			require.ErrorIs(t, err, ErrDependencyUnavailable)
+		})
+	}
+}
+
 func TestOrchestratorRetryUsesNewJobWithoutChangingImmutableRelease(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	repository := newOrchestratorRepository(t, now, nil)
@@ -434,6 +474,7 @@ type orchestratorRepository struct {
 	failedContextErr  error
 	failedHasDeadline bool
 	failErr           error
+	failResult        *PublishJob
 }
 
 func newOrchestratorRepository(t *testing.T, now time.Time, order *[]string) *orchestratorRepository {
@@ -470,6 +511,9 @@ func (r *orchestratorRepository) FailTriggerLocked(ctx context.Context, jobID in
 	_, r.failedHasDeadline = ctx.Deadline()
 	if r.failErr != nil {
 		return PublishJob{}, false, r.failErr
+	}
+	if r.failResult != nil {
+		return clonePublishJob(*r.failResult), false, nil
 	}
 	return PublishJob{ID: jobID, ReleaseID: 7, BuilderID: 9, Status: JobFailed, Stage: "trigger", ErrorSummary: summary, CreatedAt: r.createJob.CreatedAt, FinishedAt: &at}, false, nil
 }

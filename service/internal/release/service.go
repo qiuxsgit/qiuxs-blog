@@ -143,8 +143,10 @@ func (o *Orchestrator) trigger(ctx context.Context, target BuilderTarget, releas
 func validTriggerFailure(failed, initial PublishJob, releaseID int64, at time.Time) bool {
 	return failed.ID == initial.ID && failed.ReleaseID == releaseID && failed.BuilderID == initial.BuilderID &&
 		failed.Status == JobFailed && failed.Stage == "trigger" && failed.BuildNumber == nil &&
-		failed.ErrorSummary == "Jenkins trigger failed" && !failed.CreatedAt.IsZero() &&
-		failed.CreatedAt.Location() == time.UTC && failed.FinishedAt != nil && failed.FinishedAt.Equal(at)
+		failed.ErrorSummary == "Jenkins trigger failed" && failed.CreatedAt.Equal(initial.CreatedAt) &&
+		failed.CreatedAt.Location() == time.UTC && failed.CreatedAt.Nanosecond()%1_000 == 0 &&
+		failed.FinishedAt != nil && failed.FinishedAt.Equal(at) && failed.FinishedAt.Location() == time.UTC &&
+		failed.FinishedAt.Nanosecond()%1_000 == 0
 }
 
 func safeExternalCause(err error) error {

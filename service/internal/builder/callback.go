@@ -113,6 +113,10 @@ func (v *CallbackVerifier) VerifyAndClaim(ctx context.Context, raw []byte, signa
 	if err != nil {
 		return CallbackPayload{}, false, builderDomain("decode Jenkins callback", ErrInvalidCallback)
 	}
+	canonicalRaw, err := marshalCanonicalCallback(payload)
+	if err != nil || !bytes.Equal(raw, canonicalRaw) {
+		return CallbackPayload{}, false, builderDomain("decode Jenkins callback", ErrInvalidCallback)
+	}
 	now := v.now()
 	if now.IsZero() {
 		return CallbackPayload{}, false, builderDependency("read Jenkins callback clock", errors.New("callback clock is invalid"))
@@ -153,6 +157,16 @@ func (v *CallbackVerifier) VerifyAndClaim(ctx context.Context, raw []byte, signa
 		return payload, true, nil
 	}
 	return CallbackPayload{}, false, builderDomain("validate Jenkins callback replay", ErrCallbackReplay)
+}
+
+func marshalCanonicalCallback(payload CallbackPayload) ([]byte, error) {
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(payload); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(encoded.Bytes(), []byte{'\n'}), nil
 }
 
 func (v *CallbackVerifier) validate(ctx context.Context) error {

@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -63,7 +64,7 @@ func TestCallbackVerifierClaimsNonceAndBindsExactPayload(t *testing.T) {
 	require.NotContains(t, err.Error(), signature)
 }
 
-func TestCallbackVerifierAcceptsInclusiveTimestampWindowWhitespaceAndConcurrency(t *testing.T) {
+func TestCallbackVerifierAcceptsInclusiveTimestampWindowAndConcurrency(t *testing.T) {
 	_, client := callbackRedis(t)
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	key := keyWithByte('h')
@@ -72,8 +73,7 @@ func TestCallbackVerifierAcceptsInclusiveTimestampWindowWhitespaceAndConcurrency
 
 	for index, timestamp := range []time.Time{now.Add(-5 * time.Minute), now.Add(5 * time.Minute)} {
 		payload := validTestCallbackPayload(timestamp, "boundary_nonce_"+strconv.Itoa(index))
-		raw := append([]byte(" \n\t"), marshalCallback(t, payload)...)
-		raw = append(raw, '\n')
+		raw := marshalCallback(t, payload)
 		got, duplicate, err := verifier.VerifyAndClaim(context.Background(), raw, signCallback(key, timestamp, payload.Nonce, raw))
 		require.NoError(t, err)
 		require.False(t, duplicate)
@@ -109,6 +109,52 @@ func TestCallbackVerifierAcceptsInclusiveTimestampWindowWhitespaceAndConcurrency
 		}
 	}
 	require.Equal(t, 1, firstClaims)
+}
+
+func TestCallbackVerifierRejectsNoncanonicalJSONBeforeClockHMACOrRedis(t *testing.T) {
+	server, client := callbackRedis(t)
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	key := keyWithByte('h')
+	clockCalls := 0
+	verifier, err := NewCallbackVerifier(key, client, func() time.Time {
+		clockCalls++
+		return now
+	})
+	require.NoError(t, err)
+	payload := validTestCallbackPayload(now, "nonce_1234567890")
+	canonical := string(marshalCallback(t, payload))
+	failed := payload
+	failed.Stage = "deploy"
+	failed.Status = release.JobFailed
+	failed.ErrorSummary = "<tag>/path"
+	canonicalFailed := string(marshalCallback(t, failed))
+
+	variants := map[string]struct {
+		payload CallbackPayload
+		raw     []byte
+	}{
+		"surrounding whitespace": {payload, []byte(" " + canonical)},
+		"interfield whitespace":  {payload, []byte(strings.Replace(canonical, ",", ", ", 1))},
+		"reordered keys": {payload, []byte(strings.Replace(
+			canonical, `{"releaseId":7,"publishJobId":12`, `{"publishJobId":12,"releaseId":7`, 1,
+		))},
+		"escaped key":        {payload, []byte(strings.Replace(canonical, `"releaseId"`, `"release\u0049d"`, 1))},
+		"escaped string":     {payload, []byte(strings.Replace(canonical, `nonce_1234567890`, `\u006eonce_1234567890`, 1))},
+		"escaped slash":      {failed, []byte(strings.Replace(canonicalFailed, `/path`, `\/path`, 1))},
+		"escaped html":       {failed, []byte(strings.NewReplacer(`<`, `\u003c`, `>`, `\u003e`).Replace(canonicalFailed))},
+		"timestamp offset":   {payload, []byte(strings.Replace(canonical, `2026-08-14T12:00:00Z`, `2026-08-14T12:00:00+00:00`, 1))},
+		"redundant fraction": {payload, []byte(strings.Replace(canonical, `2026-08-14T12:00:00Z`, `2026-08-14T12:00:00.000000000Z`, 1))},
+	}
+	for name, variant := range variants {
+		t.Run(name, func(t *testing.T) {
+			signature := signCallback(key, variant.payload.Timestamp, variant.payload.Nonce, variant.raw)
+			_, duplicate, verifyErr := verifier.VerifyAndClaim(context.Background(), variant.raw, signature)
+			require.ErrorIs(t, verifyErr, ErrInvalidCallback)
+			require.False(t, duplicate)
+			require.Zero(t, clockCalls)
+			require.Empty(t, server.Keys())
+		})
+	}
 }
 
 func TestCallbackVerifierRejectsMalformedOrInvalidPayloadBeforeRedis(t *testing.T) {
@@ -178,7 +224,7 @@ func TestCallbackVerifierRequiresExactSignatureOverExactRawBody(t *testing.T) {
 
 	alteredRaw := append(append([]byte(nil), raw...), '\n')
 	_, _, err = verifier.VerifyAndClaim(context.Background(), alteredRaw, validSignature)
-	require.ErrorIs(t, err, ErrCallbackUnauthorized)
+	require.ErrorIs(t, err, ErrInvalidCallback)
 	require.Empty(t, server.Keys())
 }
 
@@ -307,9 +353,12 @@ func validTestCallbackPayload(at time.Time, nonce string) CallbackPayload {
 
 func marshalCallback(t *testing.T, payload CallbackPayload) []byte {
 	t.Helper()
-	raw, err := json.Marshal(payload)
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	err := encoder.Encode(payload)
 	require.NoError(t, err)
-	return raw
+	return bytes.TrimSuffix(encoded.Bytes(), []byte{'\n'})
 }
 
 func signCallback(key []byte, timestamp time.Time, nonce string, raw []byte) string {

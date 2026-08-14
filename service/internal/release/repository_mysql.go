@@ -15,7 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/go-sql-driver/mysql"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/buildtarget"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/idgen"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/settings"
 )
@@ -25,15 +25,15 @@ const (
 	insertSiteStateSQL        = "INSERT INTO site_state (id, singleton_key, current_release_id, active_publish_job_id) VALUES (?, 1, NULL, NULL)"
 	insertReleaseSQL          = "INSERT INTO releases (id, site_snapshot_json, checksum, status) VALUES (?, ?, ?, 'queued')"
 	insertReleaseArticleSQL   = "INSERT INTO release_articles (id, release_id, article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-	insertPublishJobSQL       = "INSERT INTO publish_jobs (id, release_id, builder_id, status, stage, error_summary) VALUES (?, ?, ?, 'pending', 'pending', '')"
+	insertPublishJobSQL       = "INSERT INTO publish_jobs (id, release_id, builder_id, builder_name, builder_base_url, builder_username, builder_job_name, status, stage, error_summary) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', '')"
 	setActiveJobSQL           = "UPDATE site_state SET active_publish_job_id = ? WHERE singleton_key = ? AND active_publish_job_id IS NULL"
 	releaseSelectSQL          = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ?"
 	releaseForUpdateSQL       = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ? FOR UPDATE"
 	releaseListSQL            = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
 	releaseArticlesSelectSQL  = "SELECT article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json FROM release_articles WHERE release_id = ? ORDER BY article_id ASC LIMIT 100001"
-	jobsSelectSQL             = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? ORDER BY created_at DESC, id DESC"
-	jobForUpdateSQL           = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? AND release_id = ? FOR UPDATE"
-	jobByIDForUpdateSQL       = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? FOR UPDATE"
+	jobsSelectSQL             = "SELECT id, release_id, builder_id, builder_name, builder_base_url, builder_username, builder_job_name, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? ORDER BY created_at DESC, id DESC"
+	jobForUpdateSQL           = "SELECT id, release_id, builder_id, builder_name, builder_base_url, builder_username, builder_job_name, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? AND release_id = ? FOR UPDATE"
+	jobByIDForUpdateSQL       = "SELECT id, release_id, builder_id, builder_name, builder_base_url, builder_username, builder_job_name, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? FOR UPDATE"
 	updateJobSQL              = "UPDATE publish_jobs SET status = ?, stage = ?, build_number = ?, error_summary = ?, finished_at = ? WHERE id = ? AND status = ?"
 	updateReleaseFinalSQL     = "UPDATE releases SET status = ?, completed_at = ? WHERE id = ?"
 	publishArticlePointersSQL = "UPDATE articles a LEFT JOIN release_articles ra ON ra.release_id = ? AND ra.article_id = a.id SET a.published_revision_id = ra.revision_id, a.updated_at = ? WHERE a.published_revision_id IS NOT NULL OR ra.revision_id IS NOT NULL"
@@ -52,7 +52,6 @@ var (
 	releaseChecksumPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 	releaseSlugPattern     = regexp.MustCompile(`^[a-z0-9_-]{12}$`)
 	releaseTagSlugPattern  = regexp.MustCompile(`^t_[a-z0-9_-]{12}$`)
-	publishBuildUnique     = regexp.MustCompile(`(?i)(?:key ['\x60]?(?:[^'\x60.]+\.)?uk_publish_jobs_release_build['\x60]?|constraint ['\x60]?uk_publish_jobs_release_build['\x60]?)`)
 )
 
 const (
@@ -162,7 +161,8 @@ func (r *MySQLRepository) CreateLocked(ctx context.Context, command CreateComman
 	var jobID int64
 	if err := r.ids.Insert(ctx, publishJobsTable, func(id int64) error {
 		jobID = id
-		_, insertErr := tx.ExecContext(ctx, insertPublishJobSQL, id, releaseID, command.BuilderID)
+		target := command.BuilderTarget
+		_, insertErr := tx.ExecContext(ctx, insertPublishJobSQL, id, releaseID, command.BuilderID, target.Name, target.BaseURL, target.Username, target.JobName)
 		return insertErr
 	}); err != nil {
 		return Release{}, PublishJob{}, releaseDependency("insert publish job", err)
@@ -269,16 +269,16 @@ func (r *MySQLRepository) ListReleases(ctx context.Context, query ListQuery) ([]
 	return items, nil
 }
 
-func (r *MySQLRepository) LoadBundle(ctx context.Context, id int64) (Bundle, error) {
+func (r *MySQLRepository) LoadBundleSnapshot(ctx context.Context, id int64) (Aggregate, Bundle, error) {
 	if err := r.validate(ctx); err != nil {
-		return Bundle{}, err
+		return Aggregate{}, Bundle{}, err
 	}
 	if id <= 0 {
-		return Bundle{}, releaseDomain("load release bundle", ErrNotFound)
+		return Aggregate{}, Bundle{}, releaseDomain("load release bundle", ErrNotFound)
 	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
-		return Bundle{}, releaseDependency("begin release bundle read", err)
+		return Aggregate{}, Bundle{}, releaseDependency("begin release bundle read", err)
 	}
 	committed := false
 	defer func() {
@@ -286,27 +286,27 @@ func (r *MySQLRepository) LoadBundle(ctx context.Context, id int64) (Bundle, err
 			_ = tx.Rollback()
 		}
 	}()
-	rel, err := queryRelease(ctx, tx, id)
+	aggregate, err := loadAggregate(ctx, tx, id)
 	if err != nil {
-		return Bundle{}, err
+		return Aggregate{}, Bundle{}, err
 	}
 	articles, err := loadReleaseArticles(ctx, tx, id)
 	if err != nil {
-		return Bundle{}, err
+		return Aggregate{}, Bundle{}, err
 	}
-	bundle := assembleStoredBundle(rel, articles)
+	bundle := assembleStoredBundle(aggregate.Release, articles)
 	if err := tx.Commit(); err != nil {
-		return Bundle{}, releaseDependency("commit release bundle read", err)
+		return Aggregate{}, Bundle{}, releaseDependency("commit release bundle read", err)
 	}
 	committed = true
-	return bundle, nil
+	return cloneAggregate(aggregate), bundle, nil
 }
 
-func (r *MySQLRepository) CreateRetryLocked(ctx context.Context, releaseID int64) (Aggregate, PublishJob, error) {
+func (r *MySQLRepository) CreateRetryLocked(ctx context.Context, releaseID, builderID int64, target BuilderTargetSnapshot) (Aggregate, PublishJob, error) {
 	if err := r.validate(ctx); err != nil {
 		return Aggregate{}, PublishJob{}, err
 	}
-	if releaseID <= 0 {
+	if releaseID <= 0 || builderID <= 0 || !buildtarget.Valid(target) {
 		return Aggregate{}, PublishJob{}, releaseDomain("retry release", ErrNotFound)
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -337,7 +337,7 @@ func (r *MySQLRepository) CreateRetryLocked(ctx context.Context, releaseID int64
 	var jobID int64
 	if err := r.ids.Insert(ctx, publishJobsTable, func(id int64) error {
 		jobID = id
-		_, insertErr := tx.ExecContext(ctx, insertPublishJobSQL, id, releaseID, latest.BuilderID)
+		_, insertErr := tx.ExecContext(ctx, insertPublishJobSQL, id, releaseID, builderID, target.Name, target.BaseURL, target.Username, target.JobName)
 		return insertErr
 	}); err != nil {
 		return Aggregate{}, PublishJob{}, releaseDependency("insert retry publish job", err)
@@ -418,9 +418,6 @@ func (r *MySQLRepository) ApplyCallbackLocked(ctx context.Context, event Callbac
 	}
 	result, err := tx.ExecContext(ctx, updateJobSQL, event.Status, event.Stage, nullableInt64(build), event.ErrorSummary, finished, job.ID, job.Status)
 	if err != nil {
-		if isPublishBuildDuplicate(err) {
-			return PublishJob{}, false, releaseDomain("assign publish build", ErrConflict)
-		}
 		return PublishJob{}, false, releaseDependency("update publish job", err)
 	}
 	rows, err := result.RowsAffected()
@@ -783,7 +780,11 @@ func scanJob(scanner releaseScanner) (PublishJob, error) {
 	var job PublishJob
 	var build sql.NullInt64
 	var finished sql.NullTime
-	if err := scanner.Scan(&job.ID, &job.ReleaseID, &job.BuilderID, &job.Status, &job.Stage, &build, &job.ErrorSummary, &job.CreatedAt, &finished); err != nil {
+	if err := scanner.Scan(
+		&job.ID, &job.ReleaseID, &job.BuilderID,
+		&job.BuilderTarget.Name, &job.BuilderTarget.BaseURL, &job.BuilderTarget.Username, &job.BuilderTarget.JobName,
+		&job.Status, &job.Stage, &build, &job.ErrorSummary, &job.CreatedAt, &finished,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return PublishJob{}, sql.ErrNoRows
 		}
@@ -851,7 +852,7 @@ func loadReleaseArticles(ctx context.Context, queryer interface {
 }
 
 func validateCreateCommand(command CreateCommand) error {
-	if command.BuilderID <= 0 || command.RequestedBy < 0 {
+	if command.BuilderID <= 0 || !buildtarget.Valid(command.BuilderTarget) || command.RequestedBy < 0 {
 		return releaseDomain("create release", ErrInvalidSnapshot)
 	}
 	switch command.Mode {
@@ -1029,11 +1030,6 @@ func validateCallbackEvent(event CallbackEvent) error {
 	return nil
 }
 
-func isPublishBuildDuplicate(err error) bool {
-	var mysqlErr *mysql.MySQLError
-	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 && publishBuildUnique.MatchString(mysqlErr.Message)
-}
-
 func allowedTransition(from, to JobStatus) bool {
 	switch from {
 	case JobPending:
@@ -1089,7 +1085,7 @@ func validStoredRelease(item Release) bool {
 }
 
 func validStoredJob(job PublishJob) bool {
-	if job.ID <= 0 || job.ReleaseID <= 0 || job.BuilderID <= 0 || strings.TrimSpace(job.Stage) == "" || utf8.RuneCountInString(job.Stage) > 64 || job.CreatedAt.IsZero() || utf8.RuneCountInString(job.ErrorSummary) > 512 {
+	if job.ID <= 0 || job.ReleaseID <= 0 || job.BuilderID <= 0 || !buildtarget.Valid(job.BuilderTarget) || strings.TrimSpace(job.Stage) == "" || utf8.RuneCountInString(job.Stage) > 64 || job.CreatedAt.IsZero() || utf8.RuneCountInString(job.ErrorSummary) > 512 {
 		return false
 	}
 	if job.BuildNumber != nil && *job.BuildNumber <= 0 {

@@ -48,29 +48,30 @@ const (
 	flowRenameTag  = "UPDATE tags SET name = ?, updated_at = ? WHERE id = ?"
 	flowFindTagID  = "SELECT id, name, slug, created_at, updated_at FROM tags WHERE id = ?"
 
-	flowInsertArticle       = "INSERT INTO articles (id, slug, draft_revision_id, published_revision_id, state, created_at, updated_at) VALUES (?, ?, NULL, NULL, 'active', ?, ?)"
-	flowInsertInitialDraft  = "INSERT INTO article_revisions (id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at) VALUES (?, ?, 1, 'editing', 'draft', '', '', NULL, '', ?, 1, ?, ?)"
-	flowSetInitialDraft     = "UPDATE articles SET draft_revision_id = ?, updated_at = ? WHERE id = ? AND draft_revision_id IS NULL"
-	flowSelectArticle       = "SELECT " + flowArticleCols + " FROM articles WHERE id = ?"
-	flowTrashArticle        = "UPDATE articles SET state = 'trashed', updated_at = ? WHERE id = ? AND state = 'active' AND published_revision_id IS NULL"
-	flowUntrashArticle      = "UPDATE articles SET state = 'active', updated_at = ? WHERE id = ? AND state = 'trashed'"
-	flowSelectEditingDraft  = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE article_id = ? AND status = 'editing'"
-	flowSelectEditingAt     = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'editing'"
-	flowSelectDraftTags     = "SELECT tag_id, tag_name, tag_slug, position FROM article_revision_tags WHERE revision_id = ? ORDER BY position ASC"
-	flowSelectDraftMedia    = "SELECT arm.media_id, m.public_key, arm.purpose, arm.position FROM article_revision_media arm JOIN media m ON m.id = arm.media_id WHERE arm.revision_id = ? ORDER BY arm.position ASC"
-	flowUpdateDraft         = "UPDATE article_revisions SET title = ?, summary = ?, cover_media_id = ?, content_md = ?, content_hash = ?, lock_version = lock_version + 1, updated_at = ? WHERE article_id = ? AND status = 'editing' AND lock_version = ?"
-	flowSelectSavedIdentity = "SELECT id, lock_version, revision_no, created_at FROM article_revisions WHERE article_id = ? AND status = 'editing'"
-	flowDeleteDraftTags     = "DELETE FROM article_revision_tags WHERE revision_id = ?"
-	flowInsertDraftTag      = "INSERT INTO article_revision_tags (id, revision_id, tag_id, tag_name, tag_slug, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-	flowDeleteDraftMedia    = "DELETE FROM article_revision_media WHERE revision_id = ?"
-	flowInsertDraftMedia    = "INSERT INTO article_revision_media (id, revision_id, media_id, purpose, position, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-	flowTouchArticle        = "UPDATE articles SET updated_at = ? WHERE id = ? AND state = 'active'"
-	flowSelectCurrent       = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'editing' FOR UPDATE"
-	flowFreezeVersion       = "UPDATE article_revisions SET status = 'frozen', reason = 'manual_version', updated_at = ? WHERE id = ? AND status = 'editing' AND lock_version = ?"
-	flowInsertEditing       = "INSERT INTO article_revisions (id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at) VALUES (?, ?, ?, 'editing', 'draft', ?, ?, ?, ?, ?, 1, ?, ?)"
-	flowReplaceDraftPointer = "UPDATE articles SET draft_revision_id = ?, updated_at = ? WHERE id = ? AND draft_revision_id = ? AND state = 'active'"
-	flowSelectFrozen        = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'frozen'"
-	flowListFrozen          = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE article_id = ? AND status = 'frozen' ORDER BY revision_no DESC"
+	flowInsertArticle        = "INSERT INTO articles (id, slug, draft_revision_id, published_revision_id, state, created_at, updated_at) VALUES (?, ?, NULL, NULL, 'active', ?, ?)"
+	flowInsertInitialDraft   = "INSERT INTO article_revisions (id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at) VALUES (?, ?, 1, 'editing', 'draft', '', '', NULL, '', ?, 1, ?, ?)"
+	flowSetInitialDraft      = "UPDATE articles SET draft_revision_id = ?, updated_at = ? WHERE id = ? AND draft_revision_id IS NULL"
+	flowSelectArticle        = "SELECT " + flowArticleCols + " FROM articles WHERE id = ?"
+	flowTrashArticle         = "UPDATE articles SET state = 'trashed', updated_at = ? WHERE id = ? AND state = 'active' AND published_revision_id IS NULL"
+	flowUntrashArticle       = "UPDATE articles SET state = 'active', updated_at = ? WHERE id = ? AND state = 'trashed'"
+	flowSelectEditingDraft   = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE article_id = ? AND status = 'editing'"
+	flowSelectEditingAt      = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'editing'"
+	flowSelectDraftTags      = "SELECT tag_id, tag_name, tag_slug, position FROM article_revision_tags WHERE revision_id = ? ORDER BY position ASC"
+	flowSelectDraftMedia     = "SELECT arm.media_id, m.public_key, arm.purpose, arm.position FROM article_revision_media arm JOIN media m ON m.id = arm.media_id WHERE arm.revision_id = ? ORDER BY arm.position ASC"
+	flowUpdateDraft          = "UPDATE article_revisions SET title = ?, summary = ?, cover_media_id = ?, content_md = ?, content_hash = ?, lock_version = lock_version + 1, updated_at = ? WHERE article_id = ? AND status = 'editing' AND lock_version = ?"
+	flowSelectSavedIdentity  = "SELECT id, lock_version, revision_no, created_at FROM article_revisions WHERE article_id = ? AND status = 'editing'"
+	flowDeleteDraftTags      = "DELETE FROM article_revision_tags WHERE revision_id = ?"
+	flowInsertDraftTag       = "INSERT INTO article_revision_tags (id, revision_id, tag_id, tag_name, tag_slug, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+	flowDeleteDraftMedia     = "DELETE FROM article_revision_media WHERE revision_id = ?"
+	flowInsertDraftMedia     = "INSERT INTO article_revision_media (id, revision_id, media_id, purpose, position, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+	flowTouchArticle         = "UPDATE articles SET updated_at = ? WHERE id = ? AND state = 'active'"
+	flowSelectArticlePointer = "SELECT state, draft_revision_id FROM articles WHERE id = ? FOR UPDATE"
+	flowSelectCurrent        = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'editing' FOR UPDATE"
+	flowFreezeVersion        = "UPDATE article_revisions SET status = 'frozen', reason = 'manual_version', updated_at = ? WHERE id = ? AND status = 'editing' AND lock_version = ?"
+	flowInsertEditing        = "INSERT INTO article_revisions (id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at) VALUES (?, ?, ?, 'editing', 'draft', ?, ?, ?, ?, ?, 1, ?, ?)"
+	flowReplaceDraftPointer  = "UPDATE articles SET draft_revision_id = ?, updated_at = ? WHERE id = ? AND draft_revision_id = ? AND state = 'active'"
+	flowSelectFrozen         = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'frozen'"
+	flowListFrozen           = "SELECT " + flowRevisionCols + " FROM article_revisions WHERE article_id = ? AND status = 'frozen' ORDER BY revision_no DESC"
 
 	flowSelectSite = "SELECT id, site_name, author_name, author_bio, home_status, about_md, social_links_json, seo_default_title, seo_default_description, seo_default_image_media_id, filing_name, filing_number, lock_version, updated_at FROM site_settings WHERE singleton_key = 1"
 	flowInsertSite = "INSERT INTO site_settings (id, singleton_key, site_name, author_name, author_bio, home_status, about_md, social_links_json, seo_default_title, seo_default_description, seo_default_image_media_id, filing_name, filing_number, lock_version, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
@@ -200,6 +201,10 @@ func TestContentRevisionMediaAndHotlinkFlow(t *testing.T) {
 	flow.expectAdmin()
 	flow.expectResolvedContent("Go")
 	flow.mock.ExpectBegin()
+	flow.expectArticlePointer(1)
+	expectQuery(flow.mock, flowSelectCurrent).WithArgs(int64(1), int64(1)).WillReturnRows(flowRevisionRows().AddRow(
+		int64(1), int64(1), int64(1), "editing", "draft", "", "", nil, "", emptyHash, int64(1), flow.now, flow.now,
+	))
 	expectExec(flow.mock, flowUpdateDraft).WithArgs(flowDraftTitle, flowDraftSummary, int64(1), flowDraftBody, hashOne, flow.now, int64(1), int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectQuery(flow.mock, flowSelectSavedIdentity).WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"id", "lock_version", "revision_no", "created_at"}).AddRow(int64(1), int64(2), int64(1), flow.now))
 	expectExec(flow.mock, flowDeleteDraftTags).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 0))
@@ -221,7 +226,8 @@ func TestContentRevisionMediaAndHotlinkFlow(t *testing.T) {
 	flow.expectAdmin()
 	flow.expectResolvedContent("Go")
 	flow.mock.ExpectBegin()
-	expectExec(flow.mock, flowUpdateDraft).WithArgs(flowDraftTitle, flowDraftSummary, int64(1), flowDraftBody, hashOne, flow.now, int64(1), int64(1)).WillReturnResult(sqlmock.NewResult(0, 0))
+	flow.expectArticlePointer(1)
+	flow.expectRevisionScalar(flowSelectCurrent, []driverArg{int64(1), int64(1)}, 1, 1, 2, "editing", "draft", flowDraftTitle, flowDraftSummary, flowDraftBody, hashOne)
 	flow.mock.ExpectRollback()
 	response = flow.adminJSON(http.MethodPut, "/api/admin/v1/articles/1/draft", saveDraftBody(1, flowDraftTitle, flowDraftSummary, flowDraftBody))
 	requireProblem(t, response, http.StatusConflict, "revision_conflict")
@@ -233,6 +239,7 @@ func TestContentRevisionMediaAndHotlinkFlow(t *testing.T) {
 	flow.expectDraftRead(1, 1, 2, "editing", "draft", flowDraftTitle, flowDraftSummary, flowDraftBody, hashOne, "Go")
 	flow.expectActiveMediaResolution()
 	flow.mock.ExpectBegin()
+	flow.expectArticlePointer(1)
 	flow.expectRevisionScalar(flowSelectCurrent, []driverArg{int64(1), int64(1)}, 1, 1, 2, "editing", "draft", flowDraftTitle, flowDraftSummary, flowDraftBody, hashOne)
 	flow.expectStoredAssociations(1, "Go")
 	expectExec(flow.mock, flowFreezeVersion).WithArgs(flow.now, int64(1), int64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -278,6 +285,8 @@ func TestContentRevisionMediaAndHotlinkFlow(t *testing.T) {
 	flow.expectAdmin()
 	flow.expectResolvedContent("Golang")
 	flow.mock.ExpectBegin()
+	flow.expectArticlePointer(2)
+	flow.expectRevisionScalar(flowSelectCurrent, []driverArg{int64(2), int64(1)}, 2, 2, 1, "editing", "draft", flowDraftTitle, flowDraftSummary, flowDraftBody, hashOne)
 	expectExec(flow.mock, flowUpdateDraft).WithArgs(flowChangedTitle, flowChangedSummary, int64(1), flowChangedBody, hashTwo, flow.now, int64(1), int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectQuery(flow.mock, flowSelectSavedIdentity).WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"id", "lock_version", "revision_no", "created_at"}).AddRow(int64(2), int64(2), int64(2), flow.now))
 	expectExec(flow.mock, flowDeleteDraftTags).WithArgs(int64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -296,8 +305,9 @@ func TestContentRevisionMediaAndHotlinkFlow(t *testing.T) {
 	flow.expectAdmin()
 	flow.expectDraftRead(2, 2, 2, "editing", "draft", flowChangedTitle, flowChangedSummary, flowChangedBody, hashTwo, "Golang")
 	flow.mock.ExpectBegin()
-	flow.expectRevisionScalar(flowSelectFrozen, []driverArg{int64(1), int64(1)}, 1, 1, 2, "frozen", "manual_version", flowDraftTitle, flowDraftSummary, flowDraftBody, hashOne)
+	flow.expectArticlePointer(2)
 	flow.expectRevisionScalar(flowSelectCurrent, []driverArg{int64(2), int64(1)}, 2, 2, 2, "editing", "draft", flowChangedTitle, flowChangedSummary, flowChangedBody, hashTwo)
+	flow.expectRevisionScalar(flowSelectFrozen, []driverArg{int64(1), int64(1)}, 1, 1, 2, "frozen", "manual_version", flowDraftTitle, flowDraftSummary, flowDraftBody, hashOne)
 	flow.expectStoredAssociations(1, "Go")
 	expectExec(flow.mock, flowFreezeVersion).WithArgs(flow.now, int64(2), int64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectExec(flow.mock, flowInsertEditing).WithArgs(int64(3), int64(1), int64(3), flowDraftTitle, flowDraftSummary, int64(1), flowDraftBody, hashOne, flow.now, flow.now).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -625,6 +635,12 @@ func (flow *contentMediaFlow) expectRevisionScalar(statement string, args []driv
 	expectation.WithArgs(values...).WillReturnRows(flowRevisionRows().AddRow(
 		id, int64(1), revisionNo, status, reason, title, summary, int64(1), body, hash, lock, flow.now, flow.now,
 	))
+}
+
+func (flow *contentMediaFlow) expectArticlePointer(revisionID int64) {
+	expectQuery(flow.mock, flowSelectArticlePointer).WithArgs(int64(1)).WillReturnRows(
+		sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("active", revisionID),
+	)
 }
 
 func (flow *contentMediaFlow) expectStoredAssociations(revisionID int64, tagName string) {

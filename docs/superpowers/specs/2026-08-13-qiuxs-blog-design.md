@@ -302,11 +302,12 @@ https://qiuxs.com/posts/{slug}/
 `publish_jobs` 保存：
 
 - Release ID 和构建器 ID。
+- 本次任务使用的不可变非敏感构建器目标快照：名称、规范 HTTPS Base URL、用户名和 Job Name；不保存 Token 或密文。
 - 状态：`pending`、`queued`、`building`、`deploying`、`success` 或 `failed`。
 - Jenkins Build Number。
 - 当前阶段、错误摘要和时间字段。
 
-单行 `site_state` 保存 `current_release_id` 和 `active_publish_job_id`。创建发布时用事务及 `SELECT ... FOR UPDATE` 实现全局串行锁。
+单行 `site_state` 保存 `current_release_id` 和 `active_publish_job_id`。创建发布时用事务及 `SELECT ... FOR UPDATE` 实现全局串行锁。涉及同一文章的发布与修订写入统一按 `site_state`（仅发布）、文章指针、当前草稿、标签/媒体关联的顺序锁定；发布从这些 current locking read 的实际值重新计算规范内容 Hash，禁止冻结标量与关联关系的混合快照。
 
 ### 8.6 配置
 
@@ -527,7 +528,7 @@ nonce
 signature
 ```
 
-签名覆盖规范化请求体、timestamp 和 nonce。服务按 `release_id` 与 `publish_job_id` 锁定唯一发布尝试，回调接口幂等，相同状态重复送达不会制造额外副作用。Jenkins 对最终回调执行重试。
+签名覆盖规范化请求体、timestamp 和 nonce。服务按 `release_id` 与 `publish_job_id` 锁定唯一发布尝试，回调接口幂等，相同状态重复送达不会制造额外副作用。Redis 已认领 nonce 但数据库应用失败时不删除 nonce；相同规范请求体再次投递仍进入数据库行锁，由已提交状态判断是否重复。Jenkins 对最终回调执行重试。
 
 每份静态产物包含 `release.json`，记录 Release ID、Bundle 校验和、Build Number 和部署时间。Go 服务在启动和创建新发布前读取本机 `current/release.json`：若文件表明某个已知 Release 已完成切换但最终回调丢失，且校验和与数据库一致，则完成安全对账；不一致时禁止新发布并要求人工处理。
 

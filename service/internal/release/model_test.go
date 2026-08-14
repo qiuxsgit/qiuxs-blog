@@ -178,11 +178,11 @@ func (*repositoryContractFake) ListReleases(context.Context, ListQuery) ([]Aggre
 	return nil, errors.New("not implemented")
 }
 
-func (*repositoryContractFake) LoadBundle(context.Context, int64) (Bundle, error) {
-	return Bundle{}, errors.New("not implemented")
+func (*repositoryContractFake) LoadBundleSnapshot(context.Context, int64) (Aggregate, Bundle, error) {
+	return Aggregate{}, Bundle{}, errors.New("not implemented")
 }
 
-func (*repositoryContractFake) CreateRetryLocked(context.Context, int64) (Aggregate, PublishJob, error) {
+func (*repositoryContractFake) CreateRetryLocked(context.Context, int64, int64, BuilderTargetSnapshot) (Aggregate, PublishJob, error) {
 	return Aggregate{}, PublishJob{}, errors.New("not implemented")
 }
 

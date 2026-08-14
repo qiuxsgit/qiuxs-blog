@@ -96,6 +96,9 @@ func (p *JenkinsTargetProvider) Prepare(ctx context.Context) (release.BuilderTar
 	}
 	return release.BuilderTarget{
 		BuilderID: config.ID,
+		Snapshot: release.BuilderTargetSnapshot{
+			Name: config.Name, BaseURL: config.BaseURL, Username: config.Username, JobName: config.JobName,
+		},
 		Trigger: func(triggerContext context.Context, releaseID, publishJobID int64) (int64, error) {
 			return p.client.Trigger(triggerContext, config, p.box, releaseID, publishJobID)
 		},

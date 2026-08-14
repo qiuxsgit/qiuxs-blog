@@ -49,6 +49,9 @@ func TestReleaseHandlerAdminViewsContainNoSecretsAndUseCurrentAdmin(t *testing.T
 	require.Equal(t, int64(7), created.Release.Id)
 	require.Equal(t, created.Job, created.Release.LatestJob)
 	require.Equal(t, []PublishJobView{created.Job}, created.Release.Jobs)
+	require.Equal(t, BuilderTargetView{Name: "Production", BaseUrl: "https://jenkins.example.com", Username: "builder", JobName: "blog/deploy"}, created.Job.BuilderTarget)
+	require.NotContains(t, create.Body.String(), "token")
+	require.NotContains(t, create.Body.String(), "ciphertext")
 
 	list := serveReleaseRequest(router, http.MethodGet, "/api/admin/v1/releases?limit=2&offset=3", "", "")
 	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
@@ -137,12 +140,20 @@ func TestReleaseHandlerBundleNegotiatesGzipWithStableIdentityETag(t *testing.T) 
 	for _, test := range []struct {
 		name, acceptEncoding string
 		wantGzip             bool
+		wantStatus           int
 	}{
-		{name: "identity"},
-		{name: "gzip", acceptEncoding: "br, gzip", wantGzip: true},
-		{name: "case and quality", acceptEncoding: "GZip; q=0.5", wantGzip: true},
-		{name: "gzip disabled", acceptEncoding: "gzip;q=0"},
-		{name: "wildcard", acceptEncoding: "*;q=0.8", wantGzip: true},
+		{name: "identity", wantStatus: http.StatusOK},
+		{name: "gzip", acceptEncoding: "br, gzip", wantGzip: true, wantStatus: http.StatusOK},
+		{name: "identity has higher implicit quality", acceptEncoding: "GZip; q=0.5", wantStatus: http.StatusOK},
+		{name: "gzip disabled", acceptEncoding: "gzip;q=0", wantStatus: http.StatusOK},
+		{name: "identity outranks wildcard", acceptEncoding: "*;q=0.8", wantStatus: http.StatusOK},
+		{name: "explicit identity disabled", acceptEncoding: "identity;q=0, gzip;q=0.5", wantGzip: true, wantStatus: http.StatusOK},
+		{name: "all representations disabled", acceptEncoding: "identity;q=0, gzip;q=0, *;q=0", wantStatus: http.StatusNotAcceptable},
+		{name: "wildcard disables all unspecified representations", acceptEncoding: "*;q=0", wantStatus: http.StatusNotAcceptable},
+		{name: "duplicate uses best quality", acceptEncoding: "gzip;q=0, gzip;q=0.7, identity;q=0.5", wantGzip: true, wantStatus: http.StatusOK},
+		{name: "unknown parameter only invalidates its member", acceptEncoding: "gzip;level=1, identity;q=0.5", wantStatus: http.StatusOK},
+		{name: "duplicate parameter only invalidates its member", acceptEncoding: "gzip;q=0.7;q=0.9, identity;q=0.5", wantStatus: http.StatusOK},
+		{name: "invalid member leaves valid member", acceptEncoding: "br;q=bogus, gzip;q=0.7, identity;q=0", wantGzip: true, wantStatus: http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			router := gin.New()
@@ -155,9 +166,17 @@ func TestReleaseHandlerBundleNegotiatesGzipWithStableIdentityETag(t *testing.T) 
 			request.Header.Set("Authorization", "Bearer "+strings.Repeat("b", 32))
 			request.Header.Set("Accept-Encoding", test.acceptEncoding)
 			response := httptest.NewRecorder()
+			callsBefore := releaseService.calls
 			router.ServeHTTP(response, request)
 
-			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.Equal(t, test.wantStatus, response.Code, response.Body.String())
+			if test.wantStatus == http.StatusNotAcceptable {
+				requireProblemResponse(t, response, http.StatusNotAcceptable, "not_acceptable")
+				require.Equal(t, "Accept-Encoding", response.Header().Get("Vary"))
+				require.Equal(t, callsBefore, releaseService.calls)
+				return
+			}
+			require.Equal(t, callsBefore+1, releaseService.calls)
 			require.Equal(t, `"`+etag+`"`, response.Header().Get("ETag"))
 			require.Equal(t, "Accept-Encoding", response.Header().Get("Vary"))
 			require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
@@ -207,7 +226,19 @@ func TestRegisterInternalReleaseHandlersKeepsBundleAndCallbackOutsideAdminMiddle
 		Timestamp: testReleaseTime(), Nonce: "nonce_1234567890",
 	}}
 	router := gin.New()
-	router.Use(RequestID())
+	type correlation struct {
+		releaseID, publishJobID, buildNumber int64
+		result                               string
+	}
+	correlations := make([]correlation, 0, 3)
+	router.Use(RequestID(), func(c *gin.Context) {
+		c.Next()
+		releaseID, _ := ReleaseIDFromLogContext(c)
+		publishJobID, _ := PublishJobIDFromLogContext(c)
+		buildNumber, _ := JenkinsBuildNumberFromLogContext(c)
+		result, _ := ResultFromLogContext(c)
+		correlations = append(correlations, correlation{releaseID: releaseID, publishJobID: publishJobID, buildNumber: buildNumber, result: result})
+	})
 	RegisterInternalReleaseHandlers(router, system.handler, []byte(strings.Repeat("b", 32)), verifier)
 
 	cookieOnly := httptest.NewRequest(http.MethodGet, "/api/internal/v1/releases/not-a-number/bundle", nil)
@@ -232,6 +263,11 @@ func TestRegisterInternalReleaseHandlersKeepsBundleAndCallbackOutsideAdminMiddle
 	router.ServeHTTP(callbackResponse, callback)
 	require.Equal(t, http.StatusNoContent, callbackResponse.Code, callbackResponse.Body.String())
 	require.Equal(t, 1, verifier.calls)
+	require.Equal(t, []correlation{
+		{},
+		{releaseID: 7},
+		{releaseID: 7, publishJobID: 12, buildNumber: 41, result: "building"},
+	}, correlations)
 }
 
 func TestReleaseHandlerMapsDomainFailuresToDocumentedProblems(t *testing.T) {
@@ -320,7 +356,11 @@ func testStoredBuilder() builder.StoredConfig {
 }
 
 func testReleaseAggregate(now time.Time) release.Aggregate {
-	job := release.PublishJob{ID: 12, ReleaseID: 7, BuilderID: 9, Status: release.JobPending, Stage: "pending", CreatedAt: now}
+	job := release.PublishJob{
+		ID: 12, ReleaseID: 7, BuilderID: 9,
+		BuilderTarget: release.BuilderTargetSnapshot{Name: "Production", BaseURL: "https://jenkins.example.com", Username: "builder", JobName: "blog/deploy"},
+		Status:        release.JobPending, Stage: "pending", CreatedAt: now,
+	}
 	return release.Aggregate{Release: release.Release{ID: 7, Status: release.ReleaseQueued, Checksum: "sha256:" + strings.Repeat("a", 64), CreatedAt: now}, Jobs: []release.PublishJob{job}}
 }
 
@@ -372,12 +412,14 @@ func (r *releaseReaderStub) ListReleases(_ context.Context, query release.ListQu
 }
 
 type releaseBundleStub struct {
-	body []byte
-	etag string
-	err  error
+	body  []byte
+	etag  string
+	err   error
+	calls int
 }
 
 func (s *releaseBundleStub) Bundle(context.Context, int64) ([]byte, string, error) {
+	s.calls++
 	return append([]byte(nil), s.body...), s.etag, s.err
 }
 

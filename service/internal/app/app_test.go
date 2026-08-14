@@ -423,6 +423,41 @@ func TestBuildAccessLogUsesRouteTemplatesNumericIDsAndRedactsSensitiveRequestDat
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestAccessLogIncludesOnlyValidatedReleaseCorrelation(t *testing.T) {
+	var logs bytes.Buffer
+	router := gin.New()
+	router.Use(httpapi.RequestID(), accessLog(slog.New(slog.NewJSONHandler(&logs, nil))))
+	router.GET("/safe", func(c *gin.Context) {
+		c.Set("release_id", int64(7))
+		c.Set("publish_job_id", int64(12))
+		c.Set("jenkins_build_number", int64(41))
+		c.Set("result", "success")
+		c.Status(http.StatusNoContent)
+	})
+	router.GET("/unsafe", func(c *gin.Context) {
+		c.Set("release_id", int64(-7))
+		c.Set("publish_job_id", "publish-job-secret")
+		c.Set("jenkins_build_number", int64(0))
+		c.Set("result", "callback-error-secret")
+		c.Status(http.StatusNoContent)
+	})
+
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/safe", nil))
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/unsafe", nil))
+
+	entries := decodeLogEntries(t, logs.String())
+	require.Len(t, entries, 2)
+	require.Equal(t, float64(7), entries[0]["release_id"])
+	require.Equal(t, float64(12), entries[0]["publish_job_id"])
+	require.Equal(t, float64(41), entries[0]["jenkins_build_number"])
+	require.Equal(t, "success", entries[0]["result"])
+	for _, key := range []string{"release_id", "publish_job_id", "jenkins_build_number", "result"} {
+		require.NotContains(t, entries[1], key)
+	}
+	require.NotContains(t, logs.String(), "publish-job-secret")
+	require.NotContains(t, logs.String(), "callback-error-secret")
+}
+
 func TestBuildTrustsNoForwardedClientIP(t *testing.T) {
 	router := buildTestRouter(t)
 	router.GET("/client-ip", func(c *gin.Context) {

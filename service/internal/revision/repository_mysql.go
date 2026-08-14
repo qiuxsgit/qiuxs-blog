@@ -124,6 +124,14 @@ func (r *MySQLRepository) SaveDraft(ctx context.Context, articleID, lockVersion 
 		}
 	}()
 
+	current, err := lockActiveEditingDraft(ctx, tx, articleID, 0, "lock current draft for save")
+	if err != nil {
+		return Draft{}, err
+	}
+	if current.LockVersion != lockVersion {
+		return Draft{}, ErrConflict
+	}
+
 	result, err := tx.ExecContext(ctx, draftUpdateStatement,
 		content.Title, content.Summary, preparedCoverID(content.Cover), content.ContentMD, content.ContentHash,
 		at, articleID, lockVersion,
@@ -147,7 +155,7 @@ func (r *MySQLRepository) SaveDraft(ctx context.Context, articleID, lockVersion 
 	if err := tx.QueryRowContext(ctx, savedDraftIdentitySelect, articleID).Scan(&draftID, &savedLock, &revisionNo, &createdAt); err != nil {
 		return Draft{}, revisionSafeWrap("read saved draft identity", err)
 	}
-	if savedLock != lockVersion+1 || draftID <= 0 || revisionNo <= 0 {
+	if draftID != current.ID || savedLock != lockVersion+1 || revisionNo != current.RevisionNo || !createdAt.Equal(current.CreatedAt) {
 		return Draft{}, revisionSafeWrap("read saved draft identity", errors.New("saved draft identity mismatch"))
 	}
 
@@ -231,7 +239,7 @@ func (r *MySQLRepository) CreateVersion(ctx context.Context, articleID, currentR
 		}
 	}()
 
-	current, err := scanStoredRevision(tx.QueryRowContext(ctx, currentDraftForUpdateSelect, currentRevisionID, articleID), StatusEditing, ErrConflict, "lock current draft for version")
+	current, err := lockActiveEditingDraft(ctx, tx, articleID, currentRevisionID, "lock current draft for version")
 	if err != nil {
 		return Version{}, Draft{}, err
 	}
@@ -344,22 +352,19 @@ func (r *MySQLRepository) RestoreVersion(ctx context.Context, articleID, revisio
 		}
 	}()
 
+	current, err := lockActiveEditingDraft(ctx, tx, articleID, currentRevisionID, "lock current draft for restore")
+	if err != nil {
+		return Draft{}, err
+	}
+	if current.LockVersion != lockVersion {
+		return Draft{}, ErrConflict
+	}
 	target, err := scanStoredRevision(
 		tx.QueryRowContext(ctx, frozenVersionSelect, revisionID, articleID),
 		StatusFrozen, ErrNotFrozen, "read frozen restore target",
 	)
 	if err != nil {
 		return Draft{}, err
-	}
-	current, err := scanStoredRevision(
-		tx.QueryRowContext(ctx, currentDraftForUpdateSelect, currentRevisionID, articleID),
-		StatusEditing, ErrConflict, "lock current draft for restore",
-	)
-	if err != nil {
-		return Draft{}, err
-	}
-	if current.LockVersion != lockVersion {
-		return Draft{}, ErrConflict
 	}
 	if err := r.loadAssociations(ctx, tx, &target); err != nil {
 		return Draft{}, err
@@ -413,6 +418,27 @@ func (r *MySQLRepository) loadAssociations(ctx context.Context, queryer revision
 		return invalidStoredAssociations()
 	}
 	return nil
+}
+
+func lockActiveEditingDraft(ctx context.Context, tx *sql.Tx, articleID, expectedRevisionID int64, operation string) (Draft, error) {
+	var state string
+	var currentID sql.NullInt64
+	if err := tx.QueryRowContext(ctx, articlePointerForUpdateSelect, articleID).Scan(&state, &currentID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Draft{}, ErrArticleInactive
+		}
+		return Draft{}, revisionSafeWrap(operation, err)
+	}
+	if state != "active" {
+		return Draft{}, ErrArticleInactive
+	}
+	if !currentID.Valid || currentID.Int64 <= 0 || expectedRevisionID > 0 && currentID.Int64 != expectedRevisionID {
+		return Draft{}, ErrConflict
+	}
+	return scanStoredRevision(
+		tx.QueryRowContext(ctx, currentDraftForUpdateSelect, currentID.Int64, articleID),
+		StatusEditing, ErrConflict, operation,
+	)
 }
 
 func (r *MySQLRepository) insertEditingCopy(ctx context.Context, tx *sql.Tx, source Draft, revisionNo int64, at time.Time) (Draft, error) {

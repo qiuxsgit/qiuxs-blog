@@ -89,8 +89,8 @@ func TestMySQLRepositoryVersionMutationsAcceptExactStoredAssociationLimits(t *te
 			updatedAt := at.Add(-time.Hour)
 			mock.ExpectBegin()
 			if operation == "restore" {
-				expectFrozenTarget(mock, 15, createdAt.Add(-2*time.Hour), updatedAt.Add(-2*time.Hour))
 				expectRestoreCurrentForUpdate(mock, 30, 3, 4, createdAt, updatedAt)
+				expectFrozenTarget(mock, 15, createdAt.Add(-2*time.Hour), updatedAt.Add(-2*time.Hour))
 			} else {
 				expectCurrentDraftForUpdate(mock, 3, createdAt, updatedAt)
 			}
@@ -147,11 +147,14 @@ func TestMySQLRepositoryVersionMutationsPreserveNonNilEmptyAssociationSlices(t *
 			title, summary, body := "Title", "Summary", "body"
 			associationRevisionID := int64(21)
 			if operation == "restore" {
-				mock.ExpectQuery(selectFrozenVersionSQL).WithArgs(int64(15), int64(11)).WillReturnRows(draftScalarRows().AddRow(
-					int64(15), int64(11), int64(1), "frozen", "manual_version", "Historic", "", nil, "historic body", testContentHash, int64(2), at.Add(-4*time.Hour), at.Add(-3*time.Hour),
-				))
+				mock.ExpectQuery(selectArticlePointerSQL).WithArgs(int64(11)).WillReturnRows(
+					sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("active", int64(30)),
+				)
 				mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(30), int64(11)).WillReturnRows(draftScalarRows().AddRow(
 					int64(30), int64(11), int64(3), "editing", "draft", "Current", "", nil, "current body", testContentHash, int64(4), at.Add(-2*time.Hour), at.Add(-time.Hour),
+				))
+				mock.ExpectQuery(selectFrozenVersionSQL).WithArgs(int64(15), int64(11)).WillReturnRows(draftScalarRows().AddRow(
+					int64(15), int64(11), int64(1), "frozen", "manual_version", "Historic", "", nil, "historic body", testContentHash, int64(2), at.Add(-4*time.Hour), at.Add(-3*time.Hour),
 				))
 				oldRevisionID = 30
 				lockVersion = 4
@@ -159,6 +162,7 @@ func TestMySQLRepositoryVersionMutationsPreserveNonNilEmptyAssociationSlices(t *
 				title, summary, body = "Historic", "", "historic body"
 				associationRevisionID = 15
 			} else {
+				expectActiveArticlePointer(mock, 21)
 				mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnRows(draftScalarRows().AddRow(
 					int64(21), int64(11), int64(2), "editing", "draft", title, summary, nil, body, testContentHash, lockVersion, at.Add(-2*time.Hour), at.Add(-time.Hour),
 				))
@@ -261,8 +265,8 @@ func TestMySQLRepositoryVersionMutationsRejectMalformedStoredAssociationsBeforeF
 				mock.ExpectBegin()
 				associationRevisionID := int64(21)
 				if operation == "restore" {
-					expectFrozenTarget(mock, 15, at.Add(-4*time.Hour), at.Add(-3*time.Hour))
 					expectRestoreCurrentForUpdate(mock, 30, 3, 4, at.Add(-2*time.Hour), at.Add(-time.Hour))
+					expectFrozenTarget(mock, 15, at.Add(-4*time.Hour), at.Add(-3*time.Hour))
 					associationRevisionID = 15
 				} else {
 					expectCurrentDraftForUpdate(mock, 3, at.Add(-2*time.Hour), at.Add(-time.Hour))
@@ -306,6 +310,7 @@ func TestMySQLRepositoryCreateVersionRejectsReplacementDraftWithSameLockBeforeAs
 	repository, mock, counter := newRevisionRepositoryTest(t, 1, 1)
 	at := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	mock.ExpectBegin()
+	expectActiveArticlePointer(mock, 21)
 	mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnError(sql.ErrNoRows)
 	mock.ExpectRollback()
 
@@ -327,6 +332,7 @@ func TestMySQLRepositoryCreateVersionRollsBackConditionalFailures(t *testing.T) 
 	}{
 		{name: "missing current", wantError: ErrConflict, setup: func(mock sqlmock.Sqlmock) {
 			mock.ExpectBegin()
+			expectActiveArticlePointer(mock, 21)
 			mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnError(sql.ErrNoRows)
 			mock.ExpectRollback()
 		}},
@@ -440,6 +446,7 @@ func TestMySQLRepositoryCreateVersionRollsBackAndSanitizesEveryDependencyStage(t
 		}},
 		{name: "current query", setup: func(mock sqlmock.Sqlmock) {
 			mock.ExpectBegin()
+			expectActiveArticlePointer(mock, 21)
 			mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnError(errors.New("current-secret"))
 			mock.ExpectRollback()
 		}},
@@ -535,8 +542,8 @@ func TestMySQLRepositoryRestoreVersionCopiesHistoricSnapshotAndPreservesCurrentW
 	currentUpdatedAt := currentCreatedAt.Add(time.Hour)
 	at := time.Date(2026, 8, 14, 13, 0, 0, 123000, time.FixedZone("CST", 8*60*60))
 	mock.ExpectBegin()
-	expectFrozenTarget(mock, 15, targetCreatedAt, targetUpdatedAt)
 	expectRestoreCurrentForUpdate(mock, 30, 3, 4, currentCreatedAt, currentUpdatedAt)
+	expectFrozenTarget(mock, 15, targetCreatedAt, targetUpdatedAt)
 	expectStoredVersionAssociations(mock, 15)
 	mock.ExpectExec(freezeManualVersionSQL).WithArgs(at.UTC(), int64(30), int64(4)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(insertEditingVersionSQL).WithArgs(
@@ -567,6 +574,7 @@ func TestMySQLRepositoryRestoreVersionRejectsInvalidTargetAndStaleCurrentBeforeI
 	t.Run("target not frozen or wrong article", func(t *testing.T) {
 		repository, mock, counter := newRevisionRepositoryTest(t, 1, 1)
 		mock.ExpectBegin()
+		expectRestoreCurrentForUpdate(mock, 30, 3, 4, at.Add(-2*time.Hour), at.Add(-time.Hour))
 		mock.ExpectQuery(selectFrozenVersionSQL).WithArgs(int64(15), int64(11)).WillReturnError(sql.ErrNoRows)
 		mock.ExpectRollback()
 
@@ -580,7 +588,6 @@ func TestMySQLRepositoryRestoreVersionRejectsInvalidTargetAndStaleCurrentBeforeI
 	t.Run("stale current lock", func(t *testing.T) {
 		repository, mock, counter := newRevisionRepositoryTest(t, 1, 1)
 		mock.ExpectBegin()
-		expectFrozenTarget(mock, 15, at.Add(-4*time.Hour), at.Add(-3*time.Hour))
 		expectRestoreCurrentForUpdate(mock, 30, 3, 5, at.Add(-2*time.Hour), at.Add(-time.Hour))
 		mock.ExpectRollback()
 
@@ -594,7 +601,7 @@ func TestMySQLRepositoryRestoreVersionRejectsInvalidTargetAndStaleCurrentBeforeI
 	t.Run("replacement draft with same lock", func(t *testing.T) {
 		repository, mock, counter := newRevisionRepositoryTest(t, 1, 1)
 		mock.ExpectBegin()
-		expectFrozenTarget(mock, 15, at.Add(-4*time.Hour), at.Add(-3*time.Hour))
+		expectActiveArticlePointer(mock, 30)
 		mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(30), int64(11)).WillReturnError(sql.ErrNoRows)
 		mock.ExpectRollback()
 
@@ -622,12 +629,13 @@ func TestMySQLRepositoryRestoreVersionRollsBackAndSanitizesEveryDistinctStage(t 
 		}},
 		{name: "target query", setup: func(mock sqlmock.Sqlmock) {
 			mock.ExpectBegin()
+			expectRestoreCurrentForUpdate(mock, 30, 3, 4, currentCreatedAt, currentUpdatedAt)
 			mock.ExpectQuery(selectFrozenVersionSQL).WithArgs(int64(15), int64(11)).WillReturnError(errors.New("target-secret"))
 			mock.ExpectRollback()
 		}},
 		{name: "current query", setup: func(mock sqlmock.Sqlmock) {
 			mock.ExpectBegin()
-			expectFrozenTarget(mock, 15, targetCreatedAt, targetUpdatedAt)
+			expectActiveArticlePointer(mock, 30)
 			mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(30), int64(11)).WillReturnError(errors.New("restore-current-secret"))
 			mock.ExpectRollback()
 		}},
@@ -1001,6 +1009,7 @@ func TestMySQLRepositorySaveDraftUsesOneTransactionAndSharedAssociationIDs(t *te
 	createdAt := at.UTC().Add(-time.Hour)
 	content := preparedRepositoryContent()
 	mock.ExpectBegin()
+	expectSaveDraftForUpdate(mock, 3, createdAt)
 	expectDraftUpdate(mock, content, at.UTC(), sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectSavedIdentitySQL).WithArgs(int64(11)).WillReturnRows(
 		sqlmock.NewRows([]string{"id", "lock_version", "revision_no", "created_at"}).AddRow(int64(21), int64(4), int64(2), createdAt),
@@ -1048,6 +1057,13 @@ func TestMySQLRepositorySaveDraftSupportsNullCoverAndEmptyAssociations(t *testin
 	content := PreparedContent{Title: "Title", ContentMD: "body", Tags: []tag.Snapshot{}, Media: []media.Reference{}}
 	content.ContentHash = ComputeHash(content)
 	mock.ExpectBegin()
+	mock.ExpectQuery(selectArticlePointerSQL).WithArgs(int64(11)).WillReturnRows(
+		sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("active", int64(21)),
+	)
+	mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnRows(draftScalarRows().AddRow(
+		int64(21), int64(11), int64(1), "editing", "draft", "Old", "", nil, "old body", ComputeHash(PreparedContent{Title: "Old", ContentMD: "old body"}),
+		int64(1), createdAt, createdAt,
+	))
 	mock.ExpectExec(updateEditingDraftSQL).
 		WithArgs("Title", "", nil, "body", content.ContentHash, at, int64(11), int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -1074,7 +1090,7 @@ func TestMySQLRepositorySaveDraftConflictStopsBeforeAssociationMutation(t *testi
 	at := time.Date(2026, 8, 14, 1, 0, 0, 0, time.UTC)
 	content := preparedRepositoryContent()
 	mock.ExpectBegin()
-	expectDraftUpdate(mock, content, at, sqlmock.NewResult(0, 0))
+	expectSaveDraftForUpdate(mock, 4, at.Add(-time.Hour))
 	mock.ExpectRollback()
 
 	_, err := repository.SaveDraft(context.Background(), 11, 3, content, at)
@@ -1095,6 +1111,7 @@ func TestMySQLRepositorySaveDraftRollsBackSQLAndAllocationFailures(t *testing.T)
 	}{
 		{name: "update", setup: func(mock sqlmock.Sqlmock) {
 			mock.ExpectBegin()
+			expectSaveDraftForUpdate(mock, 3, createdAt)
 			mock.ExpectExec(updateEditingDraftSQL).
 				WithArgs(content.Title, content.Summary, int64(91), content.ContentMD, content.ContentHash, at, int64(11), int64(3)).
 				WillReturnError(errors.New("update-secret"))
@@ -1102,17 +1119,20 @@ func TestMySQLRepositorySaveDraftRollsBackSQLAndAllocationFailures(t *testing.T)
 		}},
 		{name: "update rows", setup: func(mock sqlmock.Sqlmock) {
 			mock.ExpectBegin()
+			expectSaveDraftForUpdate(mock, 3, createdAt)
 			expectDraftUpdate(mock, content, at, sqlmock.NewErrorResult(errors.New("rows-secret")))
 			mock.ExpectRollback()
 		}},
 		{name: "identity query", setup: func(mock sqlmock.Sqlmock) {
 			mock.ExpectBegin()
+			expectSaveDraftForUpdate(mock, 3, createdAt)
 			expectDraftUpdate(mock, content, at, sqlmock.NewResult(0, 1))
 			mock.ExpectQuery(selectSavedIdentitySQL).WithArgs(int64(11)).WillReturnError(errors.New("identity-secret"))
 			mock.ExpectRollback()
 		}},
 		{name: "identity lock mismatch", setup: func(mock sqlmock.Sqlmock) {
 			mock.ExpectBegin()
+			expectSaveDraftForUpdate(mock, 3, createdAt)
 			expectDraftUpdate(mock, content, at, sqlmock.NewResult(0, 1))
 			mock.ExpectQuery(selectSavedIdentitySQL).WithArgs(int64(11)).WillReturnRows(
 				sqlmock.NewRows([]string{"id", "lock_version", "revision_no", "created_at"}).AddRow(int64(21), int64(9), int64(2), createdAt),
@@ -1409,6 +1429,7 @@ func expectDraftUpdate(mock sqlmock.Sqlmock, content PreparedContent, at time.Ti
 
 func expectSaveThroughIdentity(mock sqlmock.Sqlmock, content PreparedContent, at, createdAt time.Time) {
 	mock.ExpectBegin()
+	expectSaveDraftForUpdate(mock, 3, createdAt)
 	expectDraftUpdate(mock, content, at, sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(selectSavedIdentitySQL).WithArgs(int64(11)).WillReturnRows(
 		sqlmock.NewRows([]string{"id", "lock_version", "revision_no", "created_at"}).AddRow(int64(21), int64(4), int64(2), createdAt),
@@ -1458,6 +1479,7 @@ func expectNoStoredTags(mock sqlmock.Sqlmock) {
 }
 
 func expectCurrentDraftForUpdate(mock sqlmock.Sqlmock, lockVersion int64, createdAt, updatedAt time.Time) {
+	expectActiveArticlePointer(mock, 21)
 	mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnRows(draftScalarRows().AddRow(
 		int64(21), int64(11), int64(2), "editing", "draft", "Title", "Summary", int64(91), "body", testContentHash,
 		lockVersion, createdAt, updatedAt,
@@ -1472,9 +1494,25 @@ func expectFrozenTarget(mock sqlmock.Sqlmock, revisionID int64, createdAt, updat
 }
 
 func expectRestoreCurrentForUpdate(mock sqlmock.Sqlmock, revisionID, revisionNo, lockVersion int64, createdAt, updatedAt time.Time) {
+	expectActiveArticlePointer(mock, revisionID)
 	mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(revisionID, int64(11)).WillReturnRows(draftScalarRows().AddRow(
 		revisionID, int64(11), revisionNo, "editing", "draft", "Unsaved Current", "Current Summary", nil,
 		"current body", testContentHash, lockVersion, createdAt, updatedAt,
+	))
+}
+
+func expectActiveArticlePointer(mock sqlmock.Sqlmock, revisionID int64) {
+	mock.ExpectQuery(selectArticlePointerSQL).WithArgs(int64(11)).WillReturnRows(
+		sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("active", revisionID),
+	)
+
+}
+
+func expectSaveDraftForUpdate(mock sqlmock.Sqlmock, lockVersion int64, createdAt time.Time) {
+	expectActiveArticlePointer(mock, 21)
+	mock.ExpectQuery(selectCurrentForUpdateSQL).WithArgs(int64(21), int64(11)).WillReturnRows(draftScalarRows().AddRow(
+		int64(21), int64(11), int64(2), "editing", "draft", "Previous", "Previous summary", int64(91),
+		"previous body", testContentHash, lockVersion, createdAt, createdAt,
 	))
 }
 
@@ -1537,8 +1575,8 @@ func expectCreateVersionThroughCopies(mock sqlmock.Sqlmock, at, createdAt, updat
 
 func expectRestoreThroughCurrent(mock sqlmock.Sqlmock, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt time.Time) {
 	mock.ExpectBegin()
-	expectFrozenTarget(mock, 15, targetCreatedAt, targetUpdatedAt)
 	expectRestoreCurrentForUpdate(mock, 30, 3, 4, currentCreatedAt, currentUpdatedAt)
+	expectFrozenTarget(mock, 15, targetCreatedAt, targetUpdatedAt)
 }
 
 func expectRestoreThroughAssociations(mock sqlmock.Sqlmock, targetCreatedAt, targetUpdatedAt, currentCreatedAt, currentUpdatedAt time.Time) {

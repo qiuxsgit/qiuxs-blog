@@ -516,6 +516,18 @@ func accessLog(logger *slog.Logger) gin.HandlerFunc {
 		if articleID, ok := httpapi.ArticleIDFromLogContext(c); ok {
 			attributes = append(attributes, slog.Int64("article_id", articleID))
 		}
+		if releaseID, ok := httpapi.ReleaseIDFromLogContext(c); ok {
+			attributes = append(attributes, slog.Int64("release_id", releaseID))
+		}
+		if publishJobID, ok := httpapi.PublishJobIDFromLogContext(c); ok {
+			attributes = append(attributes, slog.Int64("publish_job_id", publishJobID))
+		}
+		if buildNumber, ok := httpapi.JenkinsBuildNumberFromLogContext(c); ok {
+			attributes = append(attributes, slog.Int64("jenkins_build_number", buildNumber))
+		}
+		if result, ok := httpapi.ResultFromLogContext(c); ok {
+			attributes = append(attributes, slog.String("result", result))
+		}
 		logger.LogAttrs(c.Request.Context(), slog.LevelInfo, "http request", attributes...)
 	}
 }

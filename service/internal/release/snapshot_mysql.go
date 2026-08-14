@@ -21,10 +21,11 @@ import (
 )
 
 const (
-	snapshotSiteSQL         = "SELECT site_name, author_bio, about_md, social_links_json, filing_name, filing_number FROM site_settings WHERE singleton_key = 1"
-	snapshotDraftSQL        = "SELECT a.id, a.slug, r.id, r.revision_no, r.title, r.summary, r.cover_media_id, r.content_md, r.content_hash, r.lock_version FROM articles a JOIN article_revisions r ON r.id = a.draft_revision_id AND r.article_id = a.id WHERE a.id = ? AND a.state = 'active' AND r.status = 'editing' FOR UPDATE"
-	snapshotTagsSQL         = "SELECT tag_id, tag_name, tag_slug, position FROM article_revision_tags WHERE revision_id = ? ORDER BY position ASC"
-	snapshotMediaSQL        = "SELECT arm.media_id, m.public_key, arm.purpose, arm.position FROM article_revision_media arm JOIN media m ON m.id = arm.media_id AND m.state = 'active' WHERE arm.revision_id = ? ORDER BY arm.position ASC"
+	snapshotSiteSQL         = "SELECT site_name, author_bio, about_md, social_links_json, filing_name, filing_number FROM site_settings WHERE singleton_key = 1 FOR UPDATE"
+	snapshotArticleSQL      = "SELECT slug, draft_revision_id FROM articles WHERE id = ? AND state = 'active' FOR UPDATE"
+	snapshotDraftSQL        = "SELECT id, revision_no, title, summary, cover_media_id, content_md, content_hash, lock_version FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'editing' FOR UPDATE"
+	snapshotTagsSQL         = "SELECT tag_id, tag_name, tag_slug, position FROM article_revision_tags WHERE revision_id = ? ORDER BY position ASC FOR UPDATE"
+	snapshotMediaSQL        = "SELECT arm.media_id, m.public_key, arm.purpose, arm.position FROM article_revision_media arm JOIN media m ON m.id = arm.media_id AND m.state = 'active' WHERE arm.revision_id = ? ORDER BY arm.position ASC FOR UPDATE"
 	freezeSnapshotSQL       = "UPDATE article_revisions SET status = 'frozen', reason = 'publish_snapshot', updated_at = ? WHERE id = ? AND status = 'editing' AND lock_version = ?"
 	insertSnapshotDraftSQL  = "INSERT INTO article_revisions (id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at) VALUES (?, ?, ?, 'editing', 'draft', ?, ?, ?, ?, ?, 1, ?, ?)"
 	insertSnapshotTagSQL    = "INSERT INTO article_revision_tags (id, revision_id, tag_id, tag_name, tag_slug, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -122,11 +123,14 @@ func loadMutableSiteSnapshot(ctx context.Context, executor SnapshotExecutor) (Si
 }
 
 func (s *MySQLSnapshotSource) freezeArticle(ctx context.Context, executor SnapshotExecutor, articleID int64) (ArticleSnapshot, error) {
-	var article ArticleSnapshot
+	article := ArticleSnapshot{ArticleID: articleID}
 	var revisionNo, lockVersion int64
 	var cover sql.NullInt64
-	if err := executor.QueryRowContext(ctx, snapshotDraftSQL, articleID).Scan(
-		&article.ArticleID, &article.Slug, &article.RevisionID, &revisionNo,
+	if err := executor.QueryRowContext(ctx, snapshotArticleSQL, articleID).Scan(&article.Slug, &article.RevisionID); err != nil {
+		return ArticleSnapshot{}, err
+	}
+	if err := executor.QueryRowContext(ctx, snapshotDraftSQL, article.RevisionID, articleID).Scan(
+		&article.RevisionID, &revisionNo,
 		&article.Title, &article.Summary, &cover, &article.ContentMarkdown, &article.ContentHash, &lockVersion,
 	); err != nil {
 		return ArticleSnapshot{}, err
@@ -155,6 +159,18 @@ func (s *MySQLSnapshotSource) freezeArticle(ctx context.Context, executor Snapsh
 	if !validSnapshotAssociations(tags, references, cover, publicKeys) {
 		return ArticleSnapshot{}, errors.New("stored publish draft associations are invalid")
 	}
+	var coverMedia *media.Media
+	if cover.Valid {
+		coverMedia = &media.Media{ID: cover.Int64, PublicKey: references[0].PublicKey}
+	}
+	actualHash := revision.ComputeHash(revision.PreparedContent{
+		Title: article.Title, Summary: article.Summary, Cover: coverMedia, ContentMD: article.ContentMarkdown,
+		Tags: tags, Media: references,
+	})
+	if actualHash != article.ContentHash {
+		return ArticleSnapshot{}, errors.New("stored publish draft content hash is invalid")
+	}
+	article.ContentHash = actualHash
 	at := s.now().UTC().Truncate(time.Microsecond)
 	if at.IsZero() {
 		return ArticleSnapshot{}, errors.New("release snapshot clock is invalid")

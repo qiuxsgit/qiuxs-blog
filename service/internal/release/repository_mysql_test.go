@@ -14,6 +14,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-sql-driver/mysql"
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/buildtarget"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/idgen"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/randomkey"
 	"github.com/stretchr/testify/require"
@@ -48,20 +49,48 @@ func TestCallbackRequiresCorrelatedJobAndPositiveBuildBeforeDatabaseAccess(t *te
 	}
 }
 
+func TestMySQLRepositoryLoadBundleSnapshotReadsEligibilityAndArticlesInOneRepeatableReadTransaction(t *testing.T) {
+	repo, mock, _, _ := newRepositoryTest(t)
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	snapshot := validPreparedSnapshot(now)
+	_, tagsJSON := snapshotJSON(t, snapshot)
+	build := int64(44)
+
+	mock.ExpectBegin()
+	expectReleaseQuery(mock, 7, snapshot, now, ReleaseQueued, nil)
+	expectJobsQuery(mock, 7, []jobRow{{
+		id: 12, releaseID: 7, builderID: 9, status: JobDeploying, stage: "deploy",
+		buildNumber: &build, createdAt: now,
+	}})
+	mock.ExpectQuery(testReleaseArticlesSelectSQL).WithArgs(int64(7)).WillReturnRows(
+		sqlmock.NewRows([]string{"article_id", "revision_id", "slug", "title", "summary", "content_md", "content_hash", "published_at", "tags_snapshot_json"}).
+			AddRow(int64(41), int64(71), "article_slug", "Title", "Summary", "Body", "sha256:"+strings.Repeat("b", 64), now, tagsJSON),
+	)
+	mock.ExpectCommit()
+
+	aggregate, bundle, err := repo.LoadBundleSnapshot(context.Background(), 7)
+
+	require.NoError(t, err)
+	require.Equal(t, JobDeploying, aggregate.Jobs[0].Status)
+	require.Equal(t, int64(7), bundle.ReleaseID)
+	require.Equal(t, snapshot.Checksum, bundle.Checksum)
+	require.Len(t, bundle.Articles, 1)
+}
+
 const (
 	testSiteStateForUpdateSQL     = "SELECT current_release_id, active_publish_job_id FROM site_state WHERE singleton_key = ? FOR UPDATE"
 	testInsertSiteStateSQL        = "INSERT INTO site_state (id, singleton_key, current_release_id, active_publish_job_id) VALUES (?, 1, NULL, NULL)"
 	testInsertReleaseSQL          = "INSERT INTO releases (id, site_snapshot_json, checksum, status) VALUES (?, ?, ?, 'queued')"
 	testInsertReleaseArticleSQL   = "INSERT INTO release_articles (id, release_id, article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-	testInsertPublishJobSQL       = "INSERT INTO publish_jobs (id, release_id, builder_id, status, stage, error_summary) VALUES (?, ?, ?, 'pending', 'pending', '')"
+	testInsertPublishJobSQL       = "INSERT INTO publish_jobs (id, release_id, builder_id, builder_name, builder_base_url, builder_username, builder_job_name, status, stage, error_summary) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', '')"
 	testSetActiveJobSQL           = "UPDATE site_state SET active_publish_job_id = ? WHERE singleton_key = ? AND active_publish_job_id IS NULL"
 	testReleaseSelectSQL          = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ?"
 	testReleaseForUpdateSQL       = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ? FOR UPDATE"
 	testReleaseListSQL            = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
 	testReleaseArticlesSelectSQL  = "SELECT article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json FROM release_articles WHERE release_id = ? ORDER BY article_id ASC LIMIT 100001"
-	testJobsSelectSQL             = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? ORDER BY created_at DESC, id DESC"
-	testJobForUpdateSQL           = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? AND release_id = ? FOR UPDATE"
-	testJobByIDForUpdateSQL       = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? FOR UPDATE"
+	testJobsSelectSQL             = "SELECT id, release_id, builder_id, builder_name, builder_base_url, builder_username, builder_job_name, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? ORDER BY created_at DESC, id DESC"
+	testJobForUpdateSQL           = "SELECT id, release_id, builder_id, builder_name, builder_base_url, builder_username, builder_job_name, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? AND release_id = ? FOR UPDATE"
+	testJobByIDForUpdateSQL       = "SELECT id, release_id, builder_id, builder_name, builder_base_url, builder_username, builder_job_name, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? FOR UPDATE"
 	testUpdateJobSQL              = "UPDATE publish_jobs SET status = ?, stage = ?, build_number = ?, error_summary = ?, finished_at = ? WHERE id = ? AND status = ?"
 	testUpdateReleaseFinalSQL     = "UPDATE releases SET status = ?, completed_at = ? WHERE id = ?"
 	testPublishArticlePointersSQL = "UPDATE articles a LEFT JOIN release_articles ra ON ra.release_id = ? AND ra.article_id = a.id SET a.published_revision_id = ra.revision_id, a.updated_at = ? WHERE a.published_revision_id IS NOT NULL OR ra.revision_id IS NOT NULL"
@@ -74,6 +103,7 @@ func TestMySQLRepositoryCreateLockedPersistsPreparedImmutableSnapshotWithSharedI
 	repo, mock, source, counter := newRepositoryTest(t)
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	snapshot := validPreparedSnapshot(now)
+	target := testBuilderTarget()
 	source.prepared = snapshot
 	siteJSON, articleTagsJSON := snapshotJSON(t, snapshot)
 
@@ -86,7 +116,7 @@ func TestMySQLRepositoryCreateLockedPersistsPreparedImmutableSnapshotWithSharedI
 		int64(1), int64(1), int64(41), int64(71), "article_slug", "Title", "Summary", "Body",
 		"sha256:"+strings.Repeat("b", 64), now, articleTagsJSON,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(testInsertPublishJobSQL).WithArgs(int64(1), int64(1), int64(9)).
+	mock.ExpectExec(testInsertPublishJobSQL).WithArgs(int64(1), int64(1), int64(9), target.Name, target.BaseURL, target.Username, target.JobName).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(testSetActiveJobSQL).WithArgs(int64(1), 1).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -94,13 +124,14 @@ func TestMySQLRepositoryCreateLockedPersistsPreparedImmutableSnapshotWithSharedI
 	expectJobsQuery(mock, 1, []jobRow{{id: 1, releaseID: 1, builderID: 9, status: JobPending, stage: "pending", createdAt: now}})
 	mock.ExpectCommit()
 
-	created, job, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9, RequestedBy: 3})
+	created, job, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9, BuilderTarget: target, RequestedBy: 3})
 
 	require.NoError(t, err)
 	require.Equal(t, int64(1), created.ID)
 	require.Equal(t, snapshot.Checksum, created.Checksum)
 	require.Equal(t, int64(1), job.ID)
 	require.Equal(t, int64(1), job.ReleaseID)
+	require.Equal(t, target, job.BuilderTarget)
 	require.Equal(t, []string{"idseq:releases", "idseq:release_articles", "idseq:publish_jobs"}, counter.keys)
 	require.Len(t, source.requests, 1)
 	require.IsType(t, (*sql.Tx)(nil), source.executors[0])
@@ -128,7 +159,7 @@ func TestMySQLRepositoryCreateLockedSnapshotSourceUsesSameTransactionAndRollsBac
 	).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectRollback()
 
-	_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9})
+	_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 
 	require.ErrorIs(t, err, ErrDependencyUnavailable)
 	require.Len(t, source.executors, 1)
@@ -145,7 +176,7 @@ func TestMySQLRepositoryCreateLockedCreatesMissingSingletonInsideTransaction(t *
 		WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(nil, nil))
 	mock.ExpectRollback()
 
-	_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9})
+	_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 
 	require.ErrorIs(t, err, ErrDependencyUnavailable)
 	require.NotContains(t, err.Error(), "snapshot-source-secret")
@@ -159,7 +190,7 @@ func TestMySQLRepositoryCreateLockedRejectsBusyAndInvalidPreparedSnapshotBeforeI
 		mock.ExpectQuery(testSiteStateForUpdateSQL).WithArgs(1).
 			WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(nil, int64(17)))
 		mock.ExpectRollback()
-		_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9})
+		_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 		require.ErrorIs(t, err, ErrBusy)
 		require.Empty(t, source.requests)
 		require.Empty(t, counter.keys)
@@ -173,7 +204,7 @@ func TestMySQLRepositoryCreateLockedRejectsBusyAndInvalidPreparedSnapshotBeforeI
 		mock.ExpectQuery(testSiteStateForUpdateSQL).WithArgs(1).
 			WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(nil, nil))
 		mock.ExpectRollback()
-		_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9})
+		_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 		require.ErrorIs(t, err, ErrInvalidSnapshot)
 		require.NotContains(t, err.Error(), "CHECKSUM-SECRET")
 		require.Empty(t, counter.keys)
@@ -187,7 +218,7 @@ func TestMySQLRepositoryCreateLockedRejectsBusyAndInvalidPreparedSnapshotBeforeI
 		expectSiteState(mock, nil, nil)
 		mock.ExpectRollback()
 
-		_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9})
+		_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 
 		require.ErrorIs(t, err, ErrInvalidSnapshot)
 		require.NotContains(t, err.Error(), source.prepared.Checksum)
@@ -204,7 +235,7 @@ func TestMySQLRepositoryCreateLockedHandlesIDFailuresHealingAndBusinessUniqueErr
 		expectSiteState(mock, nil, nil)
 		mock.ExpectRollback()
 
-		_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9})
+		_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 
 		require.ErrorIs(t, err, ErrDependencyUnavailable)
 		require.NotContains(t, err.Error(), "redis-counter-secret")
@@ -230,13 +261,14 @@ func TestMySQLRepositoryCreateLockedHandlesIDFailuresHealingAndBusinessUniqueErr
 		mock.ExpectExec(testInsertReleaseSQL).WithArgs(int64(1), string(siteJSON), source.prepared.Checksum).WillReturnError(primaryDuplicate())
 		mock.ExpectQuery(testMaxReleaseIDSQL).WillReturnRows(sqlmock.NewRows([]string{"MAX(id)"}).AddRow(int64(10)))
 		mock.ExpectExec(testInsertReleaseSQL).WithArgs(int64(11), string(siteJSON), source.prepared.Checksum).WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectExec(testInsertPublishJobSQL).WithArgs(int64(1), int64(11), int64(9)).WillReturnResult(sqlmock.NewResult(0, 1))
+		target := testBuilderTarget()
+		mock.ExpectExec(testInsertPublishJobSQL).WithArgs(int64(1), int64(11), int64(9), target.Name, target.BaseURL, target.Username, target.JobName).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectExec(testSetActiveJobSQL).WithArgs(int64(1), 1).WillReturnResult(sqlmock.NewResult(0, 1))
 		expectReleaseQuery(mock, 11, source.prepared, now, ReleaseQueued, nil)
 		expectJobsQuery(mock, 11, []jobRow{{id: 1, releaseID: 11, builderID: 9, status: JobPending, stage: "pending", createdAt: now}})
 		mock.ExpectCommit()
 
-		created, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9})
+		created, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 
 		require.NoError(t, err)
 		require.Equal(t, int64(11), created.ID)
@@ -257,7 +289,7 @@ func TestMySQLRepositoryCreateLockedHandlesIDFailuresHealingAndBusinessUniqueErr
 		).WillReturnError(&mysql.MySQLError{Number: 1062, Message: "Duplicate entry for key 'uk_release_articles_article'"})
 		mock.ExpectRollback()
 
-		_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9})
+		_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 
 		require.ErrorIs(t, err, ErrDependencyUnavailable)
 		require.Empty(t, counter.raises)
@@ -474,28 +506,33 @@ func TestMySQLRepositoryCreateRetryLockedReturnsUpdatedAggregateFromOneTransacti
 	repo, mock, _, counter := newRepositoryTest(t)
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	snapshot := validPreparedSnapshot(now)
+	oldTarget := testBuilderTarget()
+	newTarget := buildtarget.Snapshot{Name: "Disaster Recovery", BaseURL: "https://jenkins-dr.example.test", Username: "release", JobName: "blog/redeploy"}
+	oldBuild := int64(44)
 	failedAt := now.Add(-time.Minute)
 	mock.ExpectBegin()
 	mock.ExpectQuery(testSiteStateForUpdateSQL).WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(nil, nil))
 	expectReleaseQuery(mock, 7, snapshot, now.Add(-time.Hour), ReleaseFailed, &failedAt)
-	expectJobsQuery(mock, 7, []jobRow{{id: 11, releaseID: 7, builderID: 9, status: JobFailed, stage: "deploy", createdAt: now.Add(-time.Hour), finishedAt: &failedAt}})
-	mock.ExpectExec(testInsertPublishJobSQL).WithArgs(int64(1), int64(7), int64(9)).
+	expectJobsQuery(mock, 7, []jobRow{{id: 11, releaseID: 7, builderID: 9, builderTarget: oldTarget, status: JobFailed, stage: "deploy", buildNumber: &oldBuild, createdAt: now.Add(-time.Hour), finishedAt: &failedAt}})
+	mock.ExpectExec(testInsertPublishJobSQL).WithArgs(int64(1), int64(7), int64(9), newTarget.Name, newTarget.BaseURL, newTarget.Username, newTarget.JobName).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(testSetActiveJobSQL).WithArgs(int64(1), 1).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseQuery(mock, 7, snapshot, now.Add(-time.Hour), ReleaseFailed, &failedAt)
 	expectJobsQuery(mock, 7, []jobRow{
-		{id: 1, releaseID: 7, builderID: 9, status: JobPending, stage: "pending", createdAt: now},
-		{id: 11, releaseID: 7, builderID: 9, status: JobFailed, stage: "deploy", createdAt: now.Add(-time.Hour), finishedAt: &failedAt},
+		{id: 1, releaseID: 7, builderID: 9, builderTarget: newTarget, status: JobPending, stage: "pending", createdAt: now},
+		{id: 11, releaseID: 7, builderID: 9, builderTarget: oldTarget, status: JobFailed, stage: "deploy", buildNumber: &oldBuild, createdAt: now.Add(-time.Hour), finishedAt: &failedAt},
 	})
 	mock.ExpectCommit()
 
-	aggregate, created, err := repo.CreateRetryLocked(context.Background(), 7)
+	aggregate, created, err := repo.CreateRetryLocked(context.Background(), 7, 9, newTarget)
 
 	require.NoError(t, err)
 	require.NoError(t, aggregate.ValidateRetry(created))
 	require.Equal(t, []int64{1, 11}, []int64{aggregate.Jobs[0].ID, aggregate.Jobs[1].ID})
+	require.Equal(t, newTarget, aggregate.Jobs[0].BuilderTarget)
+	require.Equal(t, oldTarget, aggregate.Jobs[1].BuilderTarget)
 	require.Equal(t, []string{"idseq:publish_jobs"}, counter.keys)
 }
 
@@ -566,10 +603,8 @@ func TestMySQLRepositoryApplyCallbackLockedUsesExactAttemptIdentity(t *testing.T
 		repo, mock, _, _ := newRepositoryTest(t)
 		mock.ExpectBegin()
 		expectSiteState(mock, nil, int64(13))
-		mock.ExpectQuery(testJobForUpdateSQL).WithArgs(int64(12), int64(7)).WillReturnRows(
-			sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
-				AddRow(int64(12), int64(7), int64(9), JobFailed, "deploy", int64(44), "failed", now.Add(-time.Hour), now.Add(-time.Minute)),
-		)
+		finished := now.Add(-time.Minute)
+		expectJobForUpdate(mock, jobRow{id: 12, releaseID: 7, builderID: 9, status: JobFailed, stage: "deploy", buildNumber: &build, errorSummary: "failed", createdAt: now.Add(-time.Hour), finishedAt: &finished})
 		mock.ExpectCommit()
 
 		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "deploy", Status: JobFailed, ErrorSummary: "failed", Timestamp: now.Add(-time.Minute)})
@@ -583,10 +618,7 @@ func TestMySQLRepositoryApplyCallbackLockedUsesExactAttemptIdentity(t *testing.T
 		oldFinished := now.Add(-time.Hour)
 		mock.ExpectBegin()
 		expectSiteState(mock, int64(7), nil)
-		mock.ExpectQuery(testJobForUpdateSQL).WithArgs(int64(12), int64(7)).WillReturnRows(
-			sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
-				AddRow(int64(12), int64(7), int64(9), JobFailed, "deploy", int64(44), "failed", oldFinished.Add(-time.Minute), oldFinished),
-		)
+		expectJobForUpdate(mock, jobRow{id: 12, releaseID: 7, builderID: 9, status: JobFailed, stage: "deploy", buildNumber: &build, errorSummary: "failed", createdAt: oldFinished.Add(-time.Minute), finishedAt: &oldFinished})
 		mock.ExpectCommit()
 
 		job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "deploy", Status: JobFailed, ErrorSummary: "failed", Timestamp: oldFinished})
@@ -601,10 +633,8 @@ func TestMySQLRepositoryApplyCallbackLockedRejectsDelayedOldAttemptAgainstRetry(
 	repo, mock, _, _ := newRepositoryTest(t)
 	mock.ExpectBegin()
 	expectSiteState(mock, nil, int64(13))
-	mock.ExpectQuery(testJobForUpdateSQL).WithArgs(int64(12), int64(7)).WillReturnRows(
-		sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
-			AddRow(int64(12), int64(7), int64(9), JobFailed, "trigger", nil, "failed", now.Add(-time.Hour), now.Add(-time.Minute)),
-	)
+	finished := now.Add(-time.Minute)
+	expectJobForUpdate(mock, jobRow{id: 12, releaseID: 7, builderID: 9, status: JobFailed, stage: "trigger", errorSummary: "failed", createdAt: now.Add(-time.Hour), finishedAt: &finished})
 	mock.ExpectRollback()
 
 	_, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "build", Status: JobBuilding, Timestamp: now})
@@ -613,20 +643,23 @@ func TestMySQLRepositoryApplyCallbackLockedRejectsDelayedOldAttemptAgainstRetry(
 	require.False(t, duplicate)
 }
 
-func TestMySQLRepositoryApplyCallbackLockedMapsNamedBuildConflict(t *testing.T) {
+func TestMySQLRepositoryApplyCallbackLockedAllowsBuildNumberReusedByChangedBuilderAttempt(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	newTarget := buildtarget.Snapshot{Name: "Disaster Recovery", BaseURL: "https://jenkins-dr.example.test", Username: "release", JobName: "blog/redeploy"}
 	repo, mock, _, _ := newRepositoryTest(t)
 	mock.ExpectBegin()
 	expectSiteState(mock, nil, int64(13))
-	expectJobForUpdate(mock, jobRow{id: 13, releaseID: 7, builderID: 9, status: JobPending, stage: "pending", createdAt: now.Add(-time.Minute)})
+	expectJobForUpdate(mock, jobRow{id: 13, releaseID: 7, builderID: 9, builderTarget: newTarget, status: JobPending, stage: "pending", createdAt: now.Add(-time.Minute)})
 	mock.ExpectExec(testUpdateJobSQL).WithArgs(JobQueued, "queue", int64(44), "", nil, int64(13), JobPending).
-		WillReturnError(&mysql.MySQLError{Number: 1062, Message: "Duplicate entry 'private-build' for key 'uk_publish_jobs_release_build'"})
-	mock.ExpectRollback()
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
-	_, _, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 13, BuildNumber: 44, Stage: "queue", Status: JobQueued, Timestamp: now})
+	job, duplicate, err := repo.ApplyCallbackLocked(context.Background(), CallbackEvent{ReleaseID: 7, PublishJobID: 13, BuildNumber: 44, Stage: "queue", Status: JobQueued, Timestamp: now})
 
-	require.ErrorIs(t, err, ErrConflict)
-	require.NotContains(t, err.Error(), "private-build")
+	require.NoError(t, err)
+	require.False(t, duplicate)
+	require.Equal(t, newTarget, job.BuilderTarget)
+	require.Equal(t, int64(44), *job.BuildNumber)
 }
 
 func TestMySQLRepositoryFailTriggerLockedFinalizesExactActiveRetry(t *testing.T) {
@@ -834,7 +867,7 @@ func TestMySQLRepositoryRejectsNilDependenciesAndSanitizesFailures(t *testing.T)
 		"zero value":   {},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, _, callErr := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9})
+			_, _, callErr := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 			require.Error(t, callErr)
 			require.NotPanics(t, func() { _, _ = repo.FindRelease(context.Background(), 1) })
 		})
@@ -957,6 +990,7 @@ func releaseRowsNoTest(id int64, snapshot PreparedSnapshot, createdAt time.Time,
 
 type jobRow struct {
 	id, releaseID, builderID int64
+	builderTarget            buildtarget.Snapshot
 	status                   JobStatus
 	stage, errorSummary      string
 	buildNumber              *int64
@@ -965,9 +999,13 @@ type jobRow struct {
 }
 
 func expectJobsQuery(mock sqlmock.Sqlmock, releaseID int64, jobs []jobRow) {
-	rows := sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"})
+	rows := sqlmock.NewRows([]string{"id", "release_id", "builder_id", "builder_name", "builder_base_url", "builder_username", "builder_job_name", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"})
 	for _, job := range jobs {
-		rows.AddRow(job.id, job.releaseID, job.builderID, job.status, job.stage, job.buildNumber, job.errorSummary, job.createdAt, job.finishedAt)
+		target := job.builderTarget
+		if target == (buildtarget.Snapshot{}) {
+			target = testBuilderTarget()
+		}
+		rows.AddRow(job.id, job.releaseID, job.builderID, target.Name, target.BaseURL, target.Username, target.JobName, job.status, job.stage, job.buildNumber, job.errorSummary, job.createdAt, job.finishedAt)
 	}
 	mock.ExpectQuery(testJobsSelectSQL).WithArgs(releaseID).WillReturnRows(rows)
 }
@@ -978,15 +1016,27 @@ func expectSiteState(mock sqlmock.Sqlmock, current any, active any) {
 }
 
 func expectJobForUpdate(mock sqlmock.Sqlmock, job jobRow) {
+	target := job.builderTarget
+	if target == (buildtarget.Snapshot{}) {
+		target = testBuilderTarget()
+	}
 	mock.ExpectQuery(testJobForUpdateSQL).WithArgs(job.id, job.releaseID).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
-			AddRow(job.id, job.releaseID, job.builderID, job.status, job.stage, job.buildNumber, job.errorSummary, job.createdAt, job.finishedAt))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "release_id", "builder_id", "builder_name", "builder_base_url", "builder_username", "builder_job_name", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
+			AddRow(job.id, job.releaseID, job.builderID, target.Name, target.BaseURL, target.Username, target.JobName, job.status, job.stage, job.buildNumber, job.errorSummary, job.createdAt, job.finishedAt))
 }
 
 func expectJobByIDForUpdate(mock sqlmock.Sqlmock, job jobRow) {
+	target := job.builderTarget
+	if target == (buildtarget.Snapshot{}) {
+		target = testBuilderTarget()
+	}
 	mock.ExpectQuery(testJobByIDForUpdateSQL).WithArgs(job.id).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
-			AddRow(job.id, job.releaseID, job.builderID, job.status, job.stage, job.buildNumber, job.errorSummary, job.createdAt, job.finishedAt))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "release_id", "builder_id", "builder_name", "builder_base_url", "builder_username", "builder_job_name", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
+			AddRow(job.id, job.releaseID, job.builderID, target.Name, target.BaseURL, target.Username, target.JobName, job.status, job.stage, job.buildNumber, job.errorSummary, job.createdAt, job.finishedAt))
+}
+
+func testBuilderTarget() buildtarget.Snapshot {
+	return buildtarget.Snapshot{Name: "Production", BaseURL: "https://jenkins.example.test", Username: "ci", JobName: "blog/deploy"}
 }
 
 func validPreparedSnapshot(now time.Time) PreparedSnapshot {

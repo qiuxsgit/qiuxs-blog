@@ -86,10 +86,10 @@ func TestDevelopSQLReleaseRowsContainCompleteImmutableSnapshots(t *testing.T) {
 			"TAGS_SNAPSHOT_JSON JSON NOT NULL", "UNIQUE KEY UK_RELEASE_ARTICLES_ARTICLE (RELEASE_ID, ARTICLE_ID)",
 		},
 		"publish_jobs": {
-			"RELEASE_ID BIGINT NOT NULL", "BUILDER_ID BIGINT NOT NULL", "STATUS VARCHAR(16)", "STAGE VARCHAR(64)",
+			"RELEASE_ID BIGINT NOT NULL", "BUILDER_ID BIGINT NOT NULL", "BUILDER_NAME VARCHAR(100) NOT NULL",
+			"BUILDER_BASE_URL VARCHAR(2048)", "BUILDER_USERNAME VARCHAR(255) NOT NULL", "BUILDER_JOB_NAME VARCHAR(128)", "STATUS VARCHAR(16)", "STAGE VARCHAR(64)",
 			"BUILD_NUMBER BIGINT NULL", "ERROR_SUMMARY VARCHAR(512) NOT NULL", "CREATED_AT DATETIME(6) NOT NULL",
 			"UPDATED_AT DATETIME(6) NOT NULL", "FINISHED_AT DATETIME(6) NULL", "CONSTRAINT CHK_PUBLISH_JOBS_STATUS",
-			"UNIQUE KEY UK_PUBLISH_JOBS_RELEASE_BUILD (RELEASE_ID, BUILD_NUMBER)",
 		},
 		"site_state": {
 			"SINGLETON_KEY TINYINT NOT NULL DEFAULT 1", "CURRENT_RELEASE_ID BIGINT NULL", "ACTIVE_PUBLISH_JOB_ID BIGINT NULL",
@@ -115,6 +115,11 @@ func TestDevelopSQLReleaseRowsContainCompleteImmutableSnapshots(t *testing.T) {
 	require.NotContains(t, builder, "PLAINTEXT")
 	require.Contains(t, builder, "CONSTRAINT CHK_BUILDER_CONFIG_BASE_URL CHECK (REGEXP_LIKE(BASE_URL, '^HTTPS://[A-Z0-9.-]+(:[1-9][0-9]{0,4})?$', 'C'))")
 	require.Contains(t, builder, "CONSTRAINT CHK_BUILDER_CONFIG_JOB_NAME CHECK (REGEXP_LIKE(JOB_NAME, '^[A-ZA-Z0-9][A-ZA-Z0-9._/-]{0,127}$', 'C') AND JOB_NAME NOT LIKE '%//%')")
+
+	jobs := tableDefinition(t, normalized, "publish_jobs")
+	require.NotContains(t, jobs, "UNIQUE KEY UK_PUBLISH_JOBS_RELEASE_BUILD")
+	require.NotContains(t, jobs, "TOKEN")
+	require.NotContains(t, jobs, "CIPHERTEXT")
 }
 
 func TestDevelopSQLReleaseDomainsAndForeignKeysAreExactAndCaseSensitive(t *testing.T) {
@@ -133,6 +138,10 @@ func TestDevelopSQLReleaseDomainsAndForeignKeysAreExactAndCaseSensitive(t *testi
 			"CONSTRAINT chk_release_articles_hash CHECK (REGEXP_LIKE(content_hash, '^sha256:[a-f0-9]{64}$', 'c'))",
 		},
 		"publish_jobs": {
+			"builder_name VARCHAR(100) NOT NULL",
+			"builder_base_url VARCHAR(2048) CHARACTER SET ascii COLLATE ascii_bin NOT NULL",
+			"builder_username VARCHAR(255) NOT NULL",
+			"builder_job_name VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL",
 			"status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending'",
 			"stage VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending'",
 			"CONSTRAINT chk_publish_jobs_status CHECK (status IN ('pending', 'queued', 'building', 'deploying', 'success', 'failed'))",

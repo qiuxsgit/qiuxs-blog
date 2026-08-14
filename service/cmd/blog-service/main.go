@@ -143,7 +143,7 @@ func main() {
 		now:               time.Now,
 		httpClient:        &http.Client{Timeout: 5 * time.Second},
 		jenkinsHTTPClient: &http.Client{Timeout: 5 * time.Second},
-		openArtifact:      func(path string) (io.ReadCloser, error) { return os.Open(path) },
+		openArtifact:      openReleaseArtifact,
 		signals:           signals,
 		openMySQL:         platform.OpenMySQL,
 		closeMySQL:        func(db *sql.DB) error { return db.Close() },

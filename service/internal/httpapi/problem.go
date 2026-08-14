@@ -21,6 +21,7 @@ const problemContentType = "application/problem+json"
 
 var (
 	ErrInvalidRequest        = errors.New("invalid request")
+	ErrNotAcceptable         = errors.New("not acceptable")
 	ErrOriginForbidden       = errors.New("origin forbidden")
 	ErrNotFound              = errors.New("not found")
 	ErrDependencyUnavailable = errors.New("dependency unavailable")
@@ -52,6 +53,8 @@ func problemMapping(err error) (int, string, string) {
 	switch {
 	case errors.Is(err, ErrInvalidRequest):
 		return http.StatusBadRequest, "invalid_request", "Invalid request"
+	case errors.Is(err, ErrNotAcceptable):
+		return http.StatusNotAcceptable, "not_acceptable", "Not acceptable"
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		return http.StatusUnauthorized, "invalid_credentials", "Invalid credentials"
 	case errors.Is(err, auth.ErrUnauthenticated):

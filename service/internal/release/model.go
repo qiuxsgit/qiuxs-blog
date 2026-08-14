@@ -3,7 +3,11 @@ package release
 import (
 	"errors"
 	"time"
+
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/buildtarget"
 )
+
+type BuilderTargetSnapshot = buildtarget.Snapshot
 
 type ReleaseStatus string
 
@@ -74,15 +78,16 @@ type Release struct {
 }
 
 type PublishJob struct {
-	ID           int64
-	ReleaseID    int64
-	BuilderID    int64
-	Status       JobStatus
-	Stage        string
-	BuildNumber  *int64
-	ErrorSummary string
-	CreatedAt    time.Time
-	FinishedAt   *time.Time
+	ID            int64
+	ReleaseID     int64
+	BuilderID     int64
+	BuilderTarget BuilderTargetSnapshot
+	Status        JobStatus
+	Stage         string
+	BuildNumber   *int64
+	ErrorSummary  string
+	CreatedAt     time.Time
+	FinishedAt    *time.Time
 }
 
 // Aggregate is the observable immutable release and its complete publish-job
@@ -150,6 +155,7 @@ func publishJobsEqual(left, right PublishJob) bool {
 	return left.ID == right.ID &&
 		left.ReleaseID == right.ReleaseID &&
 		left.BuilderID == right.BuilderID &&
+		left.BuilderTarget == right.BuilderTarget &&
 		left.Status == right.Status &&
 		left.Stage == right.Stage &&
 		optionalInt64Equal(left.BuildNumber, right.BuildNumber) &&
@@ -209,10 +215,11 @@ type BundleArticle struct {
 }
 
 type CreateCommand struct {
-	Mode        PublishMode
-	ArticleID   int64
-	BuilderID   int64
-	RequestedBy int64
+	Mode          PublishMode
+	ArticleID     int64
+	BuilderID     int64
+	BuilderTarget BuilderTargetSnapshot
+	RequestedBy   int64
 }
 
 type SnapshotRequest struct {

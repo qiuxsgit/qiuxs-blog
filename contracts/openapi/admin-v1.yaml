@@ -519,6 +519,7 @@ paths:
         '400': {$ref: '#/components/responses/ProblemResponse'}
         '401': {$ref: '#/components/responses/ProblemResponse'}
         '404': {$ref: '#/components/responses/ProblemResponse'}
+        '406': {$ref: '#/components/responses/ProblemResponse'}
         '409': {$ref: '#/components/responses/ProblemResponse'}
         '503': {$ref: '#/components/responses/ProblemResponse'}
   /api/internal/v1/jenkins/callback:
@@ -980,17 +981,27 @@ components:
     PublishJobView:
       type: object
       additionalProperties: false
-      required: [id, releaseId, builderId, status, stage, buildNumber, errorSummary, createdAt, finishedAt]
+      required: [id, releaseId, builderId, builderTarget, status, stage, buildNumber, errorSummary, createdAt, finishedAt]
       properties:
         id: {type: integer, format: int64, minimum: 1}
         releaseId: {type: integer, format: int64, minimum: 1}
         builderId: {type: integer, format: int64, minimum: 1}
+        builderTarget: {$ref: '#/components/schemas/BuilderTargetView'}
         status: {type: string, enum: [pending, queued, building, deploying, success, failed]}
         stage: {type: string}
         buildNumber: {type: integer, format: int64, minimum: 1, nullable: true}
         errorSummary: {type: string, maxLength: 512}
         createdAt: {type: string, format: date-time}
         finishedAt: {type: string, format: date-time, nullable: true}
+    BuilderTargetView:
+      type: object
+      additionalProperties: false
+      required: [name, baseUrl, username, jobName]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100}
+        baseUrl: {type: string, format: uri, pattern: '^https://'}
+        username: {type: string, minLength: 1, maxLength: 255}
+        jobName: {type: string, minLength: 1, maxLength: 128}
     JenkinsCallbackRequest:
       type: object
       additionalProperties: false

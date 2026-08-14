@@ -174,6 +174,7 @@ func (h *ReleaseHandler) CreateRelease(c *gin.Context) {
 		WriteProblem(c, ErrDependencyUnavailable)
 		return
 	}
+	setReleaseJobLogContext(c, created.ID, job)
 	c.JSON(http.StatusAccepted, CreateReleaseResult{Release: view, Job: publishJobView(job)})
 }
 
@@ -185,6 +186,7 @@ func (h *ReleaseHandler) GetRelease(c *gin.Context, releaseID ReleaseId) {
 		WriteProblem(c, ErrInvalidRequest)
 		return
 	}
+	setReleaseLogContext(c, releaseID, 0, 0, "")
 	aggregate, err := h.reader.FindRelease(c.Request.Context(), releaseID)
 	if err != nil {
 		writeReleaseProblem(c, err)
@@ -195,6 +197,12 @@ func (h *ReleaseHandler) GetRelease(c *gin.Context, releaseID ReleaseId) {
 		WriteProblem(c, ErrDependencyUnavailable)
 		return
 	}
+	latest, err := aggregate.LatestJob()
+	if err != nil {
+		WriteProblem(c, ErrDependencyUnavailable)
+		return
+	}
+	setReleaseJobLogContext(c, aggregate.Release.ID, latest)
 	c.JSON(http.StatusOK, view)
 }
 
@@ -206,6 +214,7 @@ func (h *ReleaseHandler) RetryRelease(c *gin.Context, releaseID ReleaseId) {
 		WriteProblem(c, ErrInvalidRequest)
 		return
 	}
+	setReleaseLogContext(c, releaseID, 0, 0, "")
 	aggregate, job, err := h.operations.Retry(c.Request.Context(), releaseID)
 	if err != nil {
 		writeReleaseProblem(c, err)
@@ -216,6 +225,7 @@ func (h *ReleaseHandler) RetryRelease(c *gin.Context, releaseID ReleaseId) {
 		WriteProblem(c, ErrDependencyUnavailable)
 		return
 	}
+	setReleaseJobLogContext(c, aggregate.Release.ID, job)
 	c.JSON(http.StatusAccepted, RetryReleaseResult{Release: view, Job: publishJobView(job)})
 }
 
@@ -229,6 +239,7 @@ func (h *ReleaseHandler) AcceptJenkinsCallback(c *gin.Context) {
 		WriteProblem(c, ErrDependencyUnavailable)
 		return
 	}
+	setReleaseLogContext(c, payload.ReleaseID, payload.PublishJobID, payload.BuildNumber, payload.Status)
 	if _, _, err := h.operations.Callback(c.Request.Context(), payload.Event(), verifierDuplicate); err != nil {
 		writeReleaseProblem(c, err)
 		return
@@ -241,6 +252,15 @@ func (h *ReleaseHandler) GetReleaseBundle(c *gin.Context, releaseID ReleaseId) {
 		WriteProblem(c, ErrInvalidRequest)
 		return
 	}
+	if bundleTokenAuthenticated(c) {
+		setReleaseLogContext(c, releaseID, 0, 0, "")
+	}
+	c.Header("Vary", "Accept-Encoding")
+	encoding := selectBundleEncoding(c.Request.Header.Values("Accept-Encoding"))
+	if encoding == bundleEncodingNotAcceptable {
+		WriteProblem(c, ErrNotAcceptable)
+		return
+	}
 	body, etag, err := h.bundler.Bundle(c.Request.Context(), releaseID)
 	if err != nil {
 		writeReleaseProblem(c, err)
@@ -251,7 +271,7 @@ func (h *ReleaseHandler) GetReleaseBundle(c *gin.Context, releaseID ReleaseId) {
 		return
 	}
 	encoded := body
-	if acceptsGzip(c.Request.Header.Values("Accept-Encoding")) {
+	if encoding == bundleEncodingGzip {
 		var compressed bytes.Buffer
 		writer := gzip.NewWriter(&compressed)
 		if _, err := writer.Write(body); err != nil || writer.Close() != nil {
@@ -262,11 +282,18 @@ func (h *ReleaseHandler) GetReleaseBundle(c *gin.Context, releaseID ReleaseId) {
 		c.Header("Content-Encoding", "gzip")
 	}
 	c.Header("Content-Type", "application/json")
-	c.Header("Vary", "Accept-Encoding")
 	c.Header("ETag", `"`+etag+`"`)
 	c.Header("Cache-Control", "no-store")
 	c.Header("Content-Length", strconv.Itoa(len(encoded)))
 	c.Data(http.StatusOK, "application/json", encoded)
+}
+
+func setReleaseJobLogContext(c *gin.Context, releaseID int64, job release.PublishJob) {
+	buildNumber := int64(0)
+	if job.BuildNumber != nil {
+		buildNumber = *job.BuildNumber
+	}
+	setReleaseLogContext(c, releaseID, job.ID, buildNumber, job.Status)
 }
 
 func (h *ReleaseHandler) admin(c *gin.Context, allowQuery bool) (admin auth.Admin, ok bool) {
@@ -349,6 +376,10 @@ func releaseAggregateView(aggregate release.Aggregate) (ReleaseView, error) {
 func publishJobView(job release.PublishJob) PublishJobView {
 	return PublishJobView{
 		Id: job.ID, ReleaseId: job.ReleaseID, BuilderId: job.BuilderID,
+		BuilderTarget: BuilderTargetView{
+			Name: job.BuilderTarget.Name, BaseUrl: job.BuilderTarget.BaseURL,
+			Username: job.BuilderTarget.Username, JobName: job.BuilderTarget.JobName,
+		},
 		Status: PublishJobViewStatus(job.Status), Stage: job.Stage,
 		BuildNumber: copyInt64Pointer(job.BuildNumber), ErrorSummary: job.ErrorSummary,
 		CreatedAt: job.CreatedAt.UTC(), FinishedAt: utcTimePointer(job.FinishedAt),
@@ -363,40 +394,98 @@ func utcTimePointer(value *time.Time) *time.Time {
 	return &utc
 }
 
-func acceptsGzip(values []string) bool {
-	explicit := false
-	explicitQuality := 0.0
-	wildcardQuality := 0.0
+type bundleEncoding uint8
+
+const (
+	bundleEncodingNotAcceptable bundleEncoding = iota
+	bundleEncodingIdentity
+	bundleEncodingGzip
+)
+
+type encodingQuality struct {
+	value int
+	set   bool
+}
+
+func selectBundleEncoding(values []string) bundleEncoding {
+	qualities := map[string]encodingQuality{}
 	for _, value := range values {
 		for _, item := range strings.Split(value, ",") {
 			parts := strings.Split(strings.TrimSpace(item), ";")
 			coding := strings.ToLower(strings.TrimSpace(parts[0]))
-			quality := 1.0
+			if coding == "" {
+				continue
+			}
+			quality := 1000
+			valid := true
+			qualitySeen := false
 			for _, parameter := range parts[1:] {
 				name, encoded, found := strings.Cut(strings.TrimSpace(parameter), "=")
-				if !found || !strings.EqualFold(name, "q") {
-					quality = 0
-					continue
+				if !found || !strings.EqualFold(strings.TrimSpace(name), "q") || qualitySeen {
+					valid = false
+					break
 				}
-				parsed, err := strconv.ParseFloat(encoded, 64)
-				if err != nil || parsed < 0 || parsed > 1 {
-					quality = 0
-				} else {
-					quality = parsed
+				qualitySeen = true
+				parsed, ok := parseEncodingQuality(strings.TrimSpace(encoded))
+				if !ok {
+					valid = false
+					break
 				}
+				quality = parsed
 			}
-			switch coding {
-			case "gzip":
-				explicit, explicitQuality = true, quality
-			case "*":
-				wildcardQuality = quality
+			if !valid {
+				continue
+			}
+			current := qualities[coding]
+			if !current.set || quality > current.value {
+				qualities[coding] = encodingQuality{value: quality, set: true}
 			}
 		}
 	}
-	if explicit {
-		return explicitQuality > 0
+
+	wildcard := qualities["*"]
+	gzip := qualities["gzip"]
+	if !gzip.set && wildcard.set {
+		gzip = wildcard
 	}
-	return wildcardQuality > 0
+	identity := qualities["identity"]
+	if !identity.set {
+		identity = encodingQuality{value: 1000, set: true}
+		if wildcard.set && wildcard.value == 0 {
+			identity.value = 0
+		}
+	}
+	if gzip.value > 0 && gzip.value >= identity.value {
+		return bundleEncodingGzip
+	}
+	if identity.value > 0 {
+		return bundleEncodingIdentity
+	}
+	return bundleEncodingNotAcceptable
+}
+
+func parseEncodingQuality(value string) (int, bool) {
+	if value == "0" || value == "1" {
+		return int(value[0]-'0') * 1000, true
+	}
+	if len(value) < 2 || len(value) > 5 || value[1] != '.' || (value[0] != '0' && value[0] != '1') {
+		return 0, false
+	}
+	fraction := value[2:]
+	quality := 0
+	for _, digit := range fraction {
+		if digit < '0' || digit > '9' || value[0] == '1' && digit != '0' {
+			return 0, false
+		}
+		quality = quality*10 + int(digit-'0')
+	}
+	for range 3 - len(fraction) {
+		quality *= 10
+	}
+	if value[0] == '1' {
+		return 1000, true
+	}
+	return quality, true
 }
 
 func writeReleaseProblem(c *gin.Context, err error) {

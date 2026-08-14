@@ -221,6 +221,20 @@ release and snapshot but creates a new publish-job ID. A failed job clears only
 the active job lock; it cannot advance `current_release_id` or published article
 pointers.
 
+Release creation uses one explicit lock order: `site_state`, then the target
+`articles` pointer row, then its current editing `article_revisions` row, then
+the ordered tag and media association rows. Every one of these reads is a
+current `SELECT ... FOR UPDATE` read. Draft save, manual-version creation, and
+restore use the same article-before-draft-before-associations order. The release
+snapshot recomputes the existing canonical revision hash from the locked title,
+summary, cover, Markdown, tags, and media before freezing it. SQL contract tests
+verify the statements and order. Because sqlmock cannot prove InnoDB scheduling,
+the production DDL gate also requires a manual MySQL concurrency check: race a
+draft save against publish for the same article, confirm both transactions
+finish without a deadlock, and confirm the frozen revision contains either the
+complete before-save or complete after-save content and canonical hash, never a
+mixed scalar/tag/media state.
+
 Before using releases, run the manual SQL lifecycle above on a reviewed empty or
 disposable database, start MySQL and Redis, and configure the three release
 secrets. `BLOG_BUILDER_MASTER_KEY` is base64 material: decode it with Raw Std
@@ -236,6 +250,13 @@ and retry load that enabled configuration and trigger Jenkins with the exact
 parameters `RELEASE_ID` and `PUBLISH_JOB_ID`; configure the Jenkins job to pass
 both unchanged to its deploy steps.
 
+Each `publish_jobs` row also stores the immutable non-secret builder target used
+by that attempt: name, canonical HTTPS base URL, username, and job name. It never
+stores the token or token ciphertext. A retry snapshots the currently enabled
+builder into the new job without changing older jobs. Build numbers are
+correlated by the exact positive Release ID and Publish Job ID, so a later
+builder may reuse a Jenkins build number without rewriting history.
+
 Jenkins downloads the immutable input from:
 
 ```text
@@ -248,7 +269,11 @@ The response is canonical JSON (or gzip of those same bytes), `Content-Type:
 application/json`, `ETag: "sha256:..."`, `Cache-Control: no-store`, and `Vary:
 Accept-Encoding`. Save and compare the ETag/checksum as the release identity.
 The endpoint ignores Admin cookies; a Jenkins credential containing only the
-Bundle bearer token is sufficient.
+Bundle bearer token is sufficient. Eligibility and immutable bundle rows are
+read from one repeatable-read transaction. Encoding negotiation compares
+`gzip`, wildcard, and `identity` quality values; malformed members do not reject
+other acceptable members, while a request that assigns zero quality to every
+supported representation receives `406 Not Acceptable`.
 
 Jenkins reports a canonical JSON callback to
 `POST /api/internal/v1/jenkins/callback`. Its body must contain exactly
@@ -265,7 +290,10 @@ Redis for five minutes. Accepted transitions are `pending -> queued (queue) ->
 building (build) -> deploying (deploy) -> success|failed`; failure is also
 accepted from queue or build with the corresponding stage. Re-sending the exact
 same nonce/body is idempotent. Do not invent a new nonce for a retried HTTP
-delivery of the same callback.
+delivery of the same callback. A successfully claimed Redis nonce is never
+deleted after a database error: the same canonical body must be retried, and it
+will re-enter the row-locked callback application where committed state decides
+whether the delivery is new or already applied.
 
 At process startup, `Application.Reconcile` reads
 `BLOG_CURRENT_RELEASE_JSON_PATH`. The file is an artifact produced by deployment
@@ -275,6 +303,18 @@ references an unknown release/build, or its checksum mismatches the immutable
 release, publication mutation is blocked with reconciliation-required status:
 investigate the deployed artifact and database/Jenkins history before changing
 state. Do not delete or rewrite it to bypass the check.
+
+The production artifact opener permits a symlinked parent such as `current`, but
+the final `release.json` itself must remain the same regular file before and
+after opening. Directories, FIFOs, devices, final-component symlinks, and files
+replaced during the open are rejected; the nonblocking no-follow open also
+prevents startup from hanging on a FIFO. Publish and retry both reconcile this
+artifact before loading a builder or creating and triggering a job.
+
+Authenticated Release and verified Jenkins requests add only positive numeric
+`release_id`, `publish_job_id`, `jenkins_build_number` and an enumerated `result`
+to access logs. Callback bodies, error summaries, nonces, signatures, Jenkins
+URLs, encrypted tokens, and other credentials are never log fields.
 
 The service never deploys files, switches symlinks, writes `release.json`,
 reloads Nginx, or opens SSH sessions. Stage 6 owns the Jenkins, Nginx, and SSH

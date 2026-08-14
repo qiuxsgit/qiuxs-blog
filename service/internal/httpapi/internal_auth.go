@@ -15,6 +15,7 @@ import (
 const (
 	maxInternalCallbackBodyBytes = 16 * 1024
 	jenkinsCallbackContextKey    = "jenkins_callback_claim"
+	bundleTokenAuthenticatedKey  = "bundle_token_authenticated"
 )
 
 type jenkinsCallbackVerifier interface {
@@ -38,8 +39,18 @@ func RequireBundleToken(token []byte) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		c.Set(bundleTokenAuthenticatedKey, true)
 		c.Next()
 	}
+}
+
+func bundleTokenAuthenticated(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	value, exists := c.Get(bundleTokenAuthenticatedKey)
+	authenticated, ok := value.(bool)
+	return exists && ok && authenticated
 }
 
 // VerifyJenkinsCallback owns the callback body. It verifies one exact JSON

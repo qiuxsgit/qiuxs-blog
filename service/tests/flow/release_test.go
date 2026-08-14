@@ -65,18 +65,19 @@ const (
 	flowSiteStateForUpdate = "SELECT current_release_id, active_publish_job_id FROM site_state WHERE singleton_key = ? FOR UPDATE"
 	flowReleaseSelect      = "SELECT id, site_snapshot_json, checksum, status, created_at, completed_at FROM releases WHERE id = ?"
 	flowReleaseArticles    = "SELECT article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json FROM release_articles WHERE release_id = ? ORDER BY article_id ASC LIMIT 100001"
-	flowJobsSelect         = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? ORDER BY created_at DESC, id DESC"
-	flowJobForUpdate       = "SELECT id, release_id, builder_id, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? AND release_id = ? FOR UPDATE"
-	flowSnapshotSite       = "SELECT site_name, author_bio, about_md, social_links_json, filing_name, filing_number FROM site_settings WHERE singleton_key = 1"
-	flowSnapshotDraft      = "SELECT a.id, a.slug, r.id, r.revision_no, r.title, r.summary, r.cover_media_id, r.content_md, r.content_hash, r.lock_version FROM articles a JOIN article_revisions r ON r.id = a.draft_revision_id AND r.article_id = a.id WHERE a.id = ? AND a.state = 'active' AND r.status = 'editing' FOR UPDATE"
-	flowSnapshotTags       = "SELECT tag_id, tag_name, tag_slug, position FROM article_revision_tags WHERE revision_id = ? ORDER BY position ASC"
-	flowSnapshotMedia      = "SELECT arm.media_id, m.public_key, arm.purpose, arm.position FROM article_revision_media arm JOIN media m ON m.id = arm.media_id AND m.state = 'active' WHERE arm.revision_id = ? ORDER BY arm.position ASC"
+	flowJobsSelect         = "SELECT id, release_id, builder_id, builder_name, builder_base_url, builder_username, builder_job_name, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE release_id = ? ORDER BY created_at DESC, id DESC"
+	flowJobForUpdate       = "SELECT id, release_id, builder_id, builder_name, builder_base_url, builder_username, builder_job_name, status, stage, build_number, error_summary, created_at, finished_at FROM publish_jobs WHERE id = ? AND release_id = ? FOR UPDATE"
+	flowSnapshotSite       = "SELECT site_name, author_bio, about_md, social_links_json, filing_name, filing_number FROM site_settings WHERE singleton_key = 1 FOR UPDATE"
+	flowSnapshotArticle    = "SELECT slug, draft_revision_id FROM articles WHERE id = ? AND state = 'active' FOR UPDATE"
+	flowSnapshotDraft      = "SELECT id, revision_no, title, summary, cover_media_id, content_md, content_hash, lock_version FROM article_revisions WHERE id = ? AND article_id = ? AND status = 'editing' FOR UPDATE"
+	flowSnapshotTags       = "SELECT tag_id, tag_name, tag_slug, position FROM article_revision_tags WHERE revision_id = ? ORDER BY position ASC FOR UPDATE"
+	flowSnapshotMedia      = "SELECT arm.media_id, m.public_key, arm.purpose, arm.position FROM article_revision_media arm JOIN media m ON m.id = arm.media_id AND m.state = 'active' WHERE arm.revision_id = ? ORDER BY arm.position ASC FOR UPDATE"
 	flowFreezeSnapshot     = "UPDATE article_revisions SET status = 'frozen', reason = 'publish_snapshot', updated_at = ? WHERE id = ? AND status = 'editing' AND lock_version = ?"
 	flowInsertSnapshot     = "INSERT INTO article_revisions (id, article_id, revision_no, status, reason, title, summary, cover_media_id, content_md, content_hash, lock_version, created_at, updated_at) VALUES (?, ?, ?, 'editing', 'draft', ?, ?, ?, ?, ?, 1, ?, ?)"
 	flowReplaceDraft       = "UPDATE articles SET draft_revision_id = ?, updated_at = ? WHERE id = ? AND draft_revision_id = ? AND state = 'active'"
 	flowInsertRelease      = "INSERT INTO releases (id, site_snapshot_json, checksum, status) VALUES (?, ?, ?, 'queued')"
 	flowInsertReleaseArt   = "INSERT INTO release_articles (id, release_id, article_id, revision_id, slug, title, summary, content_md, content_hash, published_at, tags_snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-	flowInsertPublishJob   = "INSERT INTO publish_jobs (id, release_id, builder_id, status, stage, error_summary) VALUES (?, ?, ?, 'pending', 'pending', '')"
+	flowInsertPublishJob   = "INSERT INTO publish_jobs (id, release_id, builder_id, builder_name, builder_base_url, builder_username, builder_job_name, status, stage, error_summary) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', '')"
 	flowSetActive          = "UPDATE site_state SET active_publish_job_id = ? WHERE singleton_key = ? AND active_publish_job_id IS NULL"
 	flowUpdateJob          = "UPDATE publish_jobs SET status = ?, stage = ?, build_number = ?, error_summary = ?, finished_at = ? WHERE id = ? AND status = ?"
 	flowUpdateReleaseFinal = "UPDATE releases SET status = ?, completed_at = ? WHERE id = ?"
@@ -169,6 +170,12 @@ func (flow *releaseFlow) mutateDraftAndSettingsOutsideRelease() {
 	changedHash := revision.ComputeHash(changed)
 	flow.expectAdmin()
 	flow.mock.ExpectBegin()
+	expectReleaseQuery(flow.mock, flowSelectArticlePointer).WithArgs(int64(41)).WillReturnRows(
+		sqlmock.NewRows([]string{"state", "draft_revision_id"}).AddRow("active", int64(101)),
+	)
+	expectReleaseQuery(flow.mock, flowSelectCurrent).WithArgs(int64(101), int64(41)).WillReturnRows(flowRevisionRows().AddRow(
+		int64(101), int64(41), int64(2), "editing", "draft", "Immutable", "Snapshot", nil, "Body", flow.articleHash, int64(1), flow.now, flow.now,
+	))
 	expectReleaseExec(flow.mock, flowUpdateDraft).WithArgs(changed.Title, changed.Summary, nil, changed.ContentMD, changedHash, flow.now, int64(41), int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseQuery(flow.mock, flowSelectSavedIdentity).WithArgs(int64(41)).WillReturnRows(sqlmock.NewRows([]string{"id", "lock_version", "revision_no", "created_at"}).AddRow(int64(101), int64(2), int64(2), flow.now))
 	expectReleaseExec(flow.mock, flowDeleteDraftTags).WithArgs(int64(101)).WillReturnResult(sqlmock.NewResult(0, 0))
@@ -247,9 +254,13 @@ func (flow *releaseFlow) triggerCallback(created flowReleaseResult, stage string
 	require.Equal(flow.t, http.StatusNoContent, response.StatusCode)
 	require.NoError(flow.t, response.Body.Close())
 	if status == release.JobFailed {
-		// Same canonical body and nonce are accepted as an idempotent replay by
-		// Redis and do not consume an additional SQL callback expectation.
-		response, err = flow.client.Do(request.Clone(context.Background()))
+		// Redis marks the same canonical body as duplicate, but the request still
+		// reaches the database transaction where exact job state proves idempotency.
+		flow.expectCallbackDuplicate(status, stage, build)
+		replay := request.Clone(context.Background())
+		replay.Body, err = request.GetBody()
+		require.NoError(flow.t, err)
+		response, err = flow.client.Do(replay)
 		require.NoError(flow.t, err)
 		require.Equal(flow.t, http.StatusNoContent, response.StatusCode)
 		require.NoError(flow.t, response.Body.Close())
@@ -258,6 +269,17 @@ func (flow *releaseFlow) triggerCallback(created flowReleaseResult, stage string
 	if status == release.JobFailed {
 		flow.jobFinished, flow.releaseStatus, flow.releaseDone = flow.now, release.ReleaseFailed, flow.now
 	}
+}
+
+func (flow *releaseFlow) expectCallbackDuplicate(status release.JobStatus, stage string, build int64) {
+	flow.mock.ExpectBegin()
+	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(
+		sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.oldCurrentReleaseID, nil),
+	)
+	expectReleaseQuery(flow.mock, flowJobForUpdate).WithArgs(flow.jobID, flow.releaseID).WillReturnRows(
+		flow.jobRows(flow.jobID, status, stage, build, flow.now),
+	)
+	flow.mock.ExpectCommit()
 }
 
 func (flow *releaseFlow) retryAsAdmin(releaseID int64) flowReleaseResult {
@@ -311,7 +333,8 @@ func (flow *releaseFlow) expectCreate() {
 	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.oldCurrentReleaseID, nil))
 	expectReleaseQuery(flow.mock, flowReleaseSelect).WithArgs(flow.oldCurrentReleaseID).WillReturnRows(flow.releaseRows(flow.oldCurrentReleaseID, release.ReleaseSuccess, flow.now))
 	expectReleaseQuery(flow.mock, flowReleaseArticles).WithArgs(flow.oldCurrentReleaseID).WillReturnRows(flow.oldReleaseArticleRows())
-	expectReleaseQuery(flow.mock, flowSnapshotDraft).WithArgs(int64(41)).WillReturnRows(sqlmock.NewRows([]string{"id", "slug", "id", "revision_no", "title", "summary", "cover_media_id", "content_md", "content_hash", "lock_version"}).AddRow(int64(41), "article_slug", int64(71), int64(1), "Immutable", "Snapshot", nil, "Body", flow.articleHash, int64(1)))
+	expectReleaseQuery(flow.mock, flowSnapshotArticle).WithArgs(int64(41)).WillReturnRows(sqlmock.NewRows([]string{"slug", "draft_revision_id"}).AddRow("article_slug", int64(71)))
+	expectReleaseQuery(flow.mock, flowSnapshotDraft).WithArgs(int64(71), int64(41)).WillReturnRows(sqlmock.NewRows([]string{"id", "revision_no", "title", "summary", "cover_media_id", "content_md", "content_hash", "lock_version"}).AddRow(int64(71), int64(1), "Immutable", "Snapshot", nil, "Body", flow.articleHash, int64(1)))
 	expectReleaseQuery(flow.mock, flowSnapshotTags).WithArgs(int64(71)).WillReturnRows(sqlmock.NewRows([]string{"tag_id", "tag_name", "tag_slug", "position"}))
 	expectReleaseQuery(flow.mock, flowSnapshotMedia).WithArgs(int64(71)).WillReturnRows(sqlmock.NewRows([]string{"media_id", "public_key", "purpose", "position"}))
 	expectReleaseExec(flow.mock, flowFreezeSnapshot).WithArgs(flow.now, int64(71), int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -320,7 +343,7 @@ func (flow *releaseFlow) expectCreate() {
 	expectReleaseExec(flow.mock, flowInsertRelease).WithArgs(int64(101), flow.siteJSON, flow.checksum).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseExec(flow.mock, flowInsertReleaseArt).WithArgs(int64(101), int64(101), int64(41), int64(71), "article_slug", "Immutable", "Snapshot", "Body", "sha256:"+flow.articleHash, flow.now, "[]").WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseExec(flow.mock, flowInsertReleaseArt).WithArgs(int64(202), int64(101), int64(42), int64(17), "oldarticle42", "Old published", "Old snapshot", "Old body", "sha256:"+flow.articleHash, flow.oldArticlePublishedAt, "[]").WillReturnResult(sqlmock.NewResult(0, 1))
-	expectReleaseExec(flow.mock, flowInsertPublishJob).WithArgs(int64(101), int64(101), int64(9)).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectReleaseExec(flow.mock, flowInsertPublishJob).WithArgs(int64(101), int64(101), int64(9), "Production", "https://jenkins.example.test", "ci", "blog/deploy").WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseExec(flow.mock, flowSetActive).WithArgs(int64(101), 1).WillReturnResult(sqlmock.NewResult(0, 1))
 	flow.expectAggregateRows(flow.releaseID, release.ReleaseQueued, nil, []flowJob{{id: 101, status: release.JobPending, stage: "pending"}})
 	flow.mock.ExpectCommit()
@@ -335,9 +358,9 @@ type flowJob struct {
 
 func (flow *releaseFlow) expectAggregateRows(id int64, status release.ReleaseStatus, completed any, jobs []flowJob) {
 	expectReleaseQuery(flow.mock, flowReleaseSelect).WithArgs(id).WillReturnRows(flow.releaseRows(id, status, completed))
-	rows := sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"})
+	rows := sqlmock.NewRows([]string{"id", "release_id", "builder_id", "builder_name", "builder_base_url", "builder_username", "builder_job_name", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"})
 	for _, job := range jobs {
-		rows.AddRow(job.id, id, int64(9), job.status, job.stage, job.build, "", flow.now, job.finished)
+		rows.AddRow(job.id, id, int64(9), "Production", "https://jenkins.example.test", "ci", "blog/deploy", job.status, job.stage, job.build, "", flow.now, job.finished)
 	}
 	expectReleaseQuery(flow.mock, flowJobsSelect).WithArgs(id).WillReturnRows(rows)
 }
@@ -345,9 +368,6 @@ func (flow *releaseFlow) expectAggregateRows(id int64, status release.ReleaseSta
 func (flow *releaseFlow) expectBundleRead(releaseID int64) {
 	flow.mock.ExpectBegin()
 	flow.expectAggregateRows(releaseID, flow.releaseStatus, flow.releaseDone, []flowJob{{id: flow.jobID, status: flow.jobStatus, stage: flow.jobStage, build: flow.jobBuild, finished: flow.jobFinished}})
-	flow.mock.ExpectCommit()
-	flow.mock.ExpectBegin()
-	expectReleaseQuery(flow.mock, flowReleaseSelect).WithArgs(releaseID).WillReturnRows(flow.releaseRows(releaseID, flow.releaseStatus, flow.releaseDone))
 	expectReleaseQuery(flow.mock, flowReleaseArticles).WithArgs(releaseID).WillReturnRows(flow.newReleaseArticleRows())
 	flow.mock.ExpectCommit()
 }
@@ -375,7 +395,7 @@ func (flow *releaseFlow) expectRetry(releaseID int64) {
 	flow.mock.ExpectBegin()
 	expectReleaseQuery(flow.mock, flowSiteStateForUpdate).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"current_release_id", "active_publish_job_id"}).AddRow(flow.oldCurrentReleaseID, nil))
 	flow.expectAggregateRows(releaseID, release.ReleaseFailed, flow.now, []flowJob{{id: flow.jobID, status: release.JobFailed, stage: "deploy", build: int64(18), finished: flow.now}})
-	expectReleaseExec(flow.mock, flowInsertPublishJob).WithArgs(newJobID, releaseID, int64(9)).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectReleaseExec(flow.mock, flowInsertPublishJob).WithArgs(newJobID, releaseID, int64(9), "Production", "https://jenkins.example.test", "ci", "blog/deploy").WillReturnResult(sqlmock.NewResult(0, 1))
 	expectReleaseExec(flow.mock, flowSetActive).WithArgs(newJobID, 1).WillReturnResult(sqlmock.NewResult(0, 1))
 	flow.expectAggregateRows(releaseID, release.ReleaseFailed, flow.now, []flowJob{{id: newJobID, status: release.JobPending, stage: "pending"}, {id: flow.jobID, status: release.JobFailed, stage: "deploy", build: int64(18), finished: flow.now}})
 	flow.mock.ExpectCommit()
@@ -398,7 +418,8 @@ func (flow *releaseFlow) newReleaseArticleRows() *sqlmock.Rows {
 }
 
 func (flow *releaseFlow) jobRows(id int64, status release.JobStatus, stage string, build, finished any) *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"id", "release_id", "builder_id", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).AddRow(id, flow.releaseID, int64(9), status, stage, build, "", flow.now, finished)
+	return sqlmock.NewRows([]string{"id", "release_id", "builder_id", "builder_name", "builder_base_url", "builder_username", "builder_job_name", "status", "stage", "build_number", "error_summary", "created_at", "finished_at"}).
+		AddRow(id, flow.releaseID, int64(9), "Production", "https://jenkins.example.test", "ci", "blog/deploy", status, stage, build, "", flow.now, finished)
 }
 
 type flowJenkinsTransport struct{ flow *releaseFlow }

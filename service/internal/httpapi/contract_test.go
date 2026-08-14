@@ -292,7 +292,7 @@ func TestAdminContractDocumentsExactOperationResponseStatuses(t *testing.T) {
 		"listReleases":            {"200", "400", "401", "503"},
 		"getRelease":              {"200", "400", "401", "404", "503"},
 		"retryRelease":            {"202", "400", "401", "403", "404", "409", "412", "503"},
-		"getReleaseBundle":        {"200", "400", "401", "404", "409", "503"},
+		"getReleaseBundle":        {"200", "400", "401", "404", "406", "409", "503"},
 		"acceptJenkinsCallback":   {"204", "400", "401", "409", "503"},
 	}
 	for path, pathItem := range doc.Paths.Map() {
@@ -366,6 +366,15 @@ func TestAdminContractRequestShapesAreExactAndClosed(t *testing.T) {
 	callback := doc.Components.Schemas["JenkinsCallbackRequest"].Value
 	require.Equal(t, float64(1), *callback.Properties["publishJobId"].Value.Min)
 	require.Equal(t, float64(1), *callback.Properties["buildNumber"].Value.Min)
+
+	target := doc.Components.Schemas["BuilderTargetView"].Value
+	require.ElementsMatch(t, []string{"name", "baseUrl", "username", "jobName"}, target.Required)
+	require.ElementsMatch(t, target.Required, schemaPropertyNames(target))
+	require.NotContains(t, schemaPropertyNames(target), "token")
+	require.NotContains(t, schemaPropertyNames(target), "tokenCiphertext")
+	job := doc.Components.Schemas["PublishJobView"].Value
+	require.Contains(t, job.Required, "builderTarget")
+	require.Equal(t, "#/components/schemas/BuilderTargetView", job.Properties["builderTarget"].Ref)
 }
 
 func TestReleaseAdminReadsExposeOrderedJobHistoryAndPagination(t *testing.T) {

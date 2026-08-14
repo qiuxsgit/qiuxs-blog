@@ -198,7 +198,7 @@ func validAggregate(checksum string) Aggregate {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	return Aggregate{
 		Release: Release{ID: 7, Status: ReleaseQueued, Site: validPreparedSnapshot(now).Site, Checksum: checksum, CreatedAt: now},
-		Jobs:    []PublishJob{{ID: 12, ReleaseID: 7, BuilderID: 9, Status: JobDeploying, Stage: "deploy", BuildNumber: &build, CreatedAt: now}},
+		Jobs:    []PublishJob{{ID: 12, ReleaseID: 7, BuilderID: 9, BuilderTarget: testBuilderTarget(), Status: JobDeploying, Stage: "deploy", BuildNumber: &build, CreatedAt: now}},
 	}
 }
 
@@ -230,7 +230,11 @@ type repositorySpy struct {
 func (r *repositorySpy) CreateLocked(_ context.Context, command CreateCommand) (Release, PublishJob, error) {
 	r.createCalls++
 	r.lastCreate = command
-	return cloneRelease(r.createRelease), clonePublishJob(r.createJob), r.createErr
+	job := clonePublishJob(r.createJob)
+	if job.BuilderTarget == (BuilderTargetSnapshot{}) {
+		job.BuilderTarget = testBuilderTarget()
+	}
+	return cloneRelease(r.createRelease), job, r.createErr
 }
 func (r *repositorySpy) FindRelease(context.Context, int64) (Aggregate, error) {
 	r.findCalls++
@@ -239,16 +243,30 @@ func (r *repositorySpy) FindRelease(context.Context, int64) (Aggregate, error) {
 func (r *repositorySpy) ListReleases(context.Context, ListQuery) ([]Aggregate, error) {
 	return nil, errors.New("not configured")
 }
-func (r *repositorySpy) LoadBundle(context.Context, int64) (Bundle, error) {
+func (r *repositorySpy) LoadBundleSnapshot(context.Context, int64) (Aggregate, Bundle, error) {
 	r.loadCalls++
-	return r.bundle, r.bundleErr
+	return cloneAggregate(r.aggregate), r.bundle, r.bundleErr
 }
-func (r *repositorySpy) CreateRetryLocked(context.Context, int64) (Aggregate, PublishJob, error) {
-	return cloneAggregate(r.retryAggregate), clonePublishJob(r.retryJob), r.retryErr
+func (r *repositorySpy) CreateRetryLocked(context.Context, int64, int64, BuilderTargetSnapshot) (Aggregate, PublishJob, error) {
+	aggregate := cloneAggregate(r.retryAggregate)
+	for index := range aggregate.Jobs {
+		if aggregate.Jobs[index].BuilderTarget == (BuilderTargetSnapshot{}) {
+			aggregate.Jobs[index].BuilderTarget = testBuilderTarget()
+		}
+	}
+	job := clonePublishJob(r.retryJob)
+	if job.BuilderTarget == (BuilderTargetSnapshot{}) {
+		job.BuilderTarget = testBuilderTarget()
+	}
+	return aggregate, job, r.retryErr
 }
 func (r *repositorySpy) ApplyCallbackLocked(_ context.Context, event CallbackEvent) (PublishJob, bool, error) {
 	r.lastCallback = event
-	return clonePublishJob(r.callbackJob), r.callbackDup, r.callbackErr
+	job := clonePublishJob(r.callbackJob)
+	if job.BuilderTarget == (BuilderTargetSnapshot{}) {
+		job.BuilderTarget = testBuilderTarget()
+	}
+	return job, r.callbackDup, r.callbackErr
 }
 func (r *repositorySpy) FailTriggerLocked(context.Context, int64, string, time.Time) (PublishJob, bool, error) {
 	return PublishJob{}, false, errors.New("not configured")

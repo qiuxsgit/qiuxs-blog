@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/qiuxsgit/qiuxs-blog/service/internal/buildtarget"
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/settings"
 )
 
@@ -18,6 +19,7 @@ const triggerCompensationTimeout = 5 * time.Second
 
 type BuilderTarget struct {
 	BuilderID int64
+	Snapshot  BuilderTargetSnapshot
 	Trigger   func(context.Context, int64, int64) (int64, error)
 }
 
@@ -59,6 +61,7 @@ func (o *Orchestrator) Publish(ctx context.Context, command CreateCommand) (Rele
 		return Release{}, PublishJob{}, err
 	}
 	command.BuilderID = target.BuilderID
+	command.BuilderTarget = target.Snapshot
 	created, job, err := o.service.Create(ctx, command)
 	if err != nil {
 		return Release{}, PublishJob{}, err
@@ -74,11 +77,14 @@ func (o *Orchestrator) Retry(ctx context.Context, releaseID int64) (Aggregate, P
 	if err != nil {
 		return Aggregate{}, PublishJob{}, err
 	}
+	if _, err := o.service.Reconcile(ctx, o.artifact); err != nil {
+		return Aggregate{}, PublishJob{}, err
+	}
 	target, err := o.prepareBuilder(ctx)
 	if err != nil {
 		return Aggregate{}, PublishJob{}, err
 	}
-	aggregate, job, err := o.service.Retry(ctx, releaseID)
+	aggregate, job, err := o.service.Retry(ctx, releaseID, target.BuilderID, target.Snapshot)
 	if err != nil {
 		return Aggregate{}, PublishJob{}, err
 	}
@@ -88,15 +94,12 @@ func (o *Orchestrator) Retry(ctx context.Context, releaseID int64) (Aggregate, P
 	return aggregate, job, nil
 }
 
-func (o *Orchestrator) Callback(ctx context.Context, event CallbackEvent, verifierDuplicate bool) (PublishJob, bool, error) {
+func (o *Orchestrator) Callback(ctx context.Context, event CallbackEvent, _ bool) (PublishJob, bool, error) {
 	if err := o.validate(ctx); err != nil {
 		return PublishJob{}, false, err
 	}
 	if err := validateCallbackEvent(event); err != nil {
 		return PublishJob{}, false, err
-	}
-	if verifierDuplicate {
-		return PublishJob{}, true, nil
 	}
 	return o.service.ApplyCallback(ctx, event)
 }
@@ -106,7 +109,7 @@ func (o *Orchestrator) prepareBuilder(ctx context.Context) (BuilderTarget, error
 	if err != nil {
 		return BuilderTarget{}, releaseDependency("load release builder", safeExternalCause(err))
 	}
-	if target.BuilderID <= 0 || target.Trigger == nil {
+	if target.BuilderID <= 0 || !buildtarget.Valid(target.Snapshot) || target.Trigger == nil {
 		return BuilderTarget{}, releaseDependency("validate release builder", errors.New("release builder is invalid"))
 	}
 	return target, nil
@@ -193,26 +196,29 @@ func (s *Service) Create(ctx context.Context, command CreateCommand) (Release, P
 		return Release{}, PublishJob{}, err
 	}
 	if !validReleaseValue(created) || created.Status != ReleaseQueued || created.CompletedAt != nil ||
-		!validInitialJob(job, created.ID, command.BuilderID) {
+		!validInitialJob(job, created.ID, command.BuilderID, command.BuilderTarget) {
 		return Release{}, PublishJob{}, invalidStoredRelease("validate created release")
 	}
 	return cloneRelease(created), clonePublishJob(job), nil
 }
 
-func (s *Service) Retry(ctx context.Context, releaseID int64) (Aggregate, PublishJob, error) {
+func (s *Service) Retry(ctx context.Context, releaseID, builderID int64, target BuilderTargetSnapshot) (Aggregate, PublishJob, error) {
 	if err := s.validate(ctx); err != nil {
 		return Aggregate{}, PublishJob{}, err
 	}
 	if releaseID <= 0 {
 		return Aggregate{}, PublishJob{}, releaseDomain("retry release", ErrNotFound)
 	}
-	aggregate, created, err := s.repository.CreateRetryLocked(ctx, releaseID)
+	if builderID <= 0 || !buildtarget.Valid(target) {
+		return Aggregate{}, PublishJob{}, releaseDomain("retry release", ErrConflict)
+	}
+	aggregate, created, err := s.repository.CreateRetryLocked(ctx, releaseID, builderID, target)
 	if err != nil {
 		return Aggregate{}, PublishJob{}, err
 	}
 	if aggregate.Release.ID != releaseID || !validReleaseValue(aggregate.Release) ||
 		aggregate.Release.Status != ReleaseFailed || aggregate.ValidateRetry(created) != nil ||
-		!validInitialJob(created, releaseID, created.BuilderID) {
+		!validInitialJob(created, releaseID, builderID, target) {
 		return Aggregate{}, PublishJob{}, invalidStoredRelease("validate retried release")
 	}
 	return cloneAggregate(aggregate), clonePublishJob(created), nil
@@ -242,7 +248,7 @@ func (s *Service) Bundle(ctx context.Context, releaseID int64) ([]byte, string, 
 	if releaseID <= 0 {
 		return nil, "", releaseDomain("load release bundle", ErrNotFound)
 	}
-	aggregate, err := s.repository.FindRelease(ctx, releaseID)
+	aggregate, bundle, err := s.repository.LoadBundleSnapshot(ctx, releaseID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -255,10 +261,6 @@ func (s *Service) Bundle(ctx context.Context, releaseID int64) ([]byte, string, 
 	}
 	if !downloadableJobStatus(latest.Status) {
 		return nil, "", invalidStoredRelease("validate release bundle state")
-	}
-	bundle, err := s.repository.LoadBundle(ctx, releaseID)
-	if err != nil {
-		return nil, "", err
 	}
 	if bundle.ReleaseID != aggregate.Release.ID || bundle.Checksum != aggregate.Release.Checksum ||
 		!bundle.GeneratedAt.Equal(aggregate.Release.CreatedAt) || !bundleSiteMatchesRelease(bundle.Site, aggregate.Release.Site) {
@@ -340,15 +342,16 @@ func validReleaseValue(value Release) bool {
 	}
 }
 
-func validInitialJob(job PublishJob, releaseID, builderID int64) bool {
+func validInitialJob(job PublishJob, releaseID, builderID int64, target BuilderTargetSnapshot) bool {
 	return job.ID > 0 && job.ReleaseID == releaseID && builderID > 0 && job.BuilderID == builderID &&
+		job.BuilderTarget == target && buildtarget.Valid(job.BuilderTarget) &&
 		job.Status == JobPending && job.Stage == "pending" && job.BuildNumber == nil && job.ErrorSummary == "" &&
 		!job.CreatedAt.IsZero() && job.CreatedAt.Location() == time.UTC && job.CreatedAt.Nanosecond()%1000 == 0 && job.FinishedAt == nil
 }
 
 func validCallbackResult(job PublishJob, event CallbackEvent) bool {
 	if job.ID != event.PublishJobID || job.ReleaseID != event.ReleaseID || job.Status != event.Status ||
-		job.BuilderID <= 0 || job.Stage != event.Stage || job.BuildNumber == nil || *job.BuildNumber != event.BuildNumber ||
+		job.BuilderID <= 0 || !buildtarget.Valid(job.BuilderTarget) || job.Stage != event.Stage || job.BuildNumber == nil || *job.BuildNumber != event.BuildNumber ||
 		job.CreatedAt.IsZero() || job.CreatedAt.Location() != time.UTC || job.CreatedAt.Nanosecond()%1000 != 0 {
 		return false
 	}

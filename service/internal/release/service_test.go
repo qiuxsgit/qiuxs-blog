@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func TestReleaseServiceCreateValidatesThenReturnsDetachedCommittedValues(t *test
 	}
 	service, err := NewService(repository)
 	require.NoError(t, err)
-	command := CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9, RequestedBy: 3}
+	command := CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9, BuilderTarget: testBuilderTarget(), RequestedBy: 3}
 
 	releaseValue, job, err := service.Create(context.Background(), command)
 	require.NoError(t, err)
@@ -57,8 +58,8 @@ func TestReleaseServiceRejectsInvalidCreateAndCorruptCommittedResult(t *testing.
 
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	repository.createRelease = Release{ID: 7, Status: ReleaseQueued, Checksum: "sha256:" + strings.Repeat("a", 64), CreatedAt: now}
-	repository.createJob = PublishJob{ID: 12, ReleaseID: 8, BuilderID: 9, Status: JobPending, Stage: "pending", CreatedAt: now}
-	_, _, err = service.Create(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9})
+	repository.createJob = PublishJob{ID: 12, ReleaseID: 8, BuilderID: 9, BuilderTarget: testBuilderTarget(), Status: JobPending, Stage: "pending", CreatedAt: now}
+	_, _, err = service.Create(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 	require.ErrorIs(t, err, ErrDependencyUnavailable)
 }
 
@@ -75,7 +76,7 @@ func TestReleaseServiceRetryAndCallbackValidateIdentityAndDetachResults(t *testi
 	service, err := NewService(repository)
 	require.NoError(t, err)
 
-	result, created, err := service.Retry(context.Background(), 7)
+	result, created, err := service.Retry(context.Background(), 7, 9, testBuilderTarget())
 	require.NoError(t, err)
 	require.NoError(t, result.ValidateRetry(created))
 	result.Release.Site.SocialLinks = append(result.Release.Site.SocialLinks, SocialLink{Label: "x", URL: "https://example.com"})
@@ -92,7 +93,7 @@ func TestReleaseServiceRetryAndCallbackValidateIdentityAndDetachResults(t *testi
 	*job.BuildNumber = 99
 	require.Equal(t, int64(44), *repository.callbackJob.BuildNumber)
 
-	_, _, err = service.Retry(context.Background(), 0)
+	_, _, err = service.Retry(context.Background(), 0, 9, testBuilderTarget())
 	require.ErrorIs(t, err, ErrNotFound)
 	_, _, err = service.ApplyCallback(context.Background(), CallbackEvent{})
 	require.ErrorIs(t, err, ErrConflict)
@@ -106,7 +107,7 @@ func TestReleaseServiceRejectsCorruptRetryAndCallbackResults(t *testing.T) {
 	service, err := NewService(repository)
 	require.NoError(t, err)
 
-	_, _, err = service.Retry(context.Background(), 7)
+	_, _, err = service.Retry(context.Background(), 7, 9, testBuilderTarget())
 	require.ErrorIs(t, err, ErrDependencyUnavailable)
 
 	build := int64(44)
@@ -139,9 +140,8 @@ func TestReleaseServiceBundleUsesOnlyImmutableRowsAndReturnsCanonicalCopies(t *t
 	require.Equal(t, byte('{'), second[0])
 	require.Equal(t, 2, repository.loadCalls)
 
-	// Mutable Stage 2 state is not a Service dependency; only the repository's
-	// immutable release Bundle is read.
-	require.Equal(t, 2, repository.findCalls)
+	// Eligibility and immutable rows share one atomic repository read seam.
+	require.Zero(t, repository.findCalls)
 }
 
 func TestReleaseServiceBundleBlocksLatestFailureAndStoredCorruption(t *testing.T) {
@@ -159,7 +159,7 @@ func TestReleaseServiceBundleBlocksLatestFailureAndStoredCorruption(t *testing.T
 	repository.aggregate.Jobs[0].Status = JobFailed
 	_, _, err = service.Bundle(context.Background(), 7)
 	require.ErrorIs(t, err, ErrNotFound)
-	require.Zero(t, repository.loadCalls)
+	require.Equal(t, 1, repository.loadCalls)
 
 	repository.aggregate.Jobs[0].Status = JobDeploying
 	repository.bundle.Checksum = "sha256:" + strings.Repeat("f", 64)
@@ -178,13 +178,13 @@ func TestReleaseServiceNilSafetyAndRepositoryErrors(t *testing.T) {
 	_, err := NewService(typedNil)
 	require.Error(t, err)
 	var service *Service
-	_, _, err = service.Create(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9})
+	_, _, err = service.Create(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 	require.Error(t, err)
 
 	repository := &repositorySpy{createErr: releaseDependency("create release", errors.New("database-secret"))}
 	service, err = NewService(repository)
 	require.NoError(t, err)
-	_, _, err = service.Create(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9})
+	_, _, err = service.Create(context.Background(), CreateCommand{Mode: PublishSettings, BuilderID: 9, BuilderTarget: testBuilderTarget()})
 	require.ErrorIs(t, err, ErrDependencyUnavailable)
 	require.NotContains(t, err.Error(), "database-secret")
 	_, _, err = service.Bundle(nil, 7)
@@ -216,7 +216,7 @@ func TestOrchestratorPublishReconcilesLoadsBuilderCommitsThenTriggersExactAttemp
 	require.NoError(t, err)
 	require.Equal(t, int64(7), created.ID)
 	require.Equal(t, int64(12), job.ID)
-	require.Equal(t, CreateCommand{Mode: PublishSettings, BuilderID: 9, RequestedBy: 3}, repository.lastCreate)
+	require.Equal(t, CreateCommand{Mode: PublishSettings, BuilderID: 9, BuilderTarget: testBuilderTarget(), RequestedBy: 3}, repository.lastCreate)
 	require.Equal(t, []string{"reconcile", "builder", "create", "trigger"}, order)
 	require.Zero(t, repository.failCalls)
 }
@@ -328,7 +328,8 @@ func TestOrchestratorRejectsCorruptTriggerFailureTimestamps(t *testing.T) {
 
 func TestOrchestratorRetryUsesNewJobWithoutChangingImmutableRelease(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
-	repository := newOrchestratorRepository(t, now, nil)
+	order := make([]string, 0, 4)
+	repository := newOrchestratorRepository(t, now, &order)
 	failedAt := now.Add(-time.Minute)
 	repository.retryAggregate = validAggregate(repository.createRelease.Checksum)
 	repository.retryAggregate.Release = repository.createRelease
@@ -341,12 +342,16 @@ func TestOrchestratorRetryUsesNewJobWithoutChangingImmutableRelease(t *testing.T
 	repository.retryJob = repository.retryAggregate.Jobs[0]
 	service, err := NewService(repository)
 	require.NoError(t, err)
-	provider := &orchestratorBuilderProvider{target: BuilderTarget{BuilderID: 9, Trigger: func(_ context.Context, releaseID, jobID int64) (int64, error) {
+	provider := &orchestratorBuilderProvider{order: &order, target: BuilderTarget{BuilderID: 9, Trigger: func(_ context.Context, releaseID, jobID int64) (int64, error) {
+		order = append(order, "trigger")
 		require.Equal(t, int64(7), releaseID)
 		require.Equal(t, int64(13), jobID)
 		return 56, nil
 	}}}
-	orchestrator, err := NewOrchestrator(service, provider, missingArtifactReader, func() time.Time { return now })
+	orchestrator, err := NewOrchestrator(service, provider, func() (io.ReadCloser, error) {
+		order = append(order, "reconcile")
+		return nil, fs.ErrNotExist
+	}, func() time.Time { return now })
 	require.NoError(t, err)
 
 	aggregate, job, err := orchestrator.Retry(context.Background(), 7)
@@ -355,9 +360,47 @@ func TestOrchestratorRetryUsesNewJobWithoutChangingImmutableRelease(t *testing.T
 	require.Equal(t, repository.createRelease.Checksum, aggregate.Release.Checksum)
 	require.Equal(t, 1, repository.retryCalls)
 	require.Zero(t, repository.failCalls)
+	require.Equal(t, []string{"reconcile", "builder", "retry", "trigger"}, order)
 }
 
-func TestOrchestratorSkipsRepositoryForVerifierDuplicateAndDispatchesFirstExactly(t *testing.T) {
+func TestOrchestratorRetryBlocksOnArtifactReconciliationBeforeBuilderOrJob(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	validArtifact := `{"releaseId":7,"checksum":"sha256:` + strings.Repeat("a", 64) + `","buildNumber":44,"deployedAt":"2026-08-14T12:00:00Z"}`
+	mismatchedArtifact := `{"releaseId":7,"checksum":"sha256:` + strings.Repeat("b", 64) + `","buildNumber":44,"deployedAt":"2026-08-14T12:00:00Z"}`
+	for _, test := range []struct {
+		name         string
+		artifact     string
+		reconcileErr error
+	}{
+		{name: "malformed artifact", artifact: `{`},
+		{name: "checksum mismatch", artifact: mismatchedArtifact},
+		{name: "deployed failed attempt", artifact: validArtifact, reconcileErr: releaseDomain("reconcile deployed release", ErrReconciliationRequired)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newOrchestratorRepository(t, now, nil)
+			repository.aggregate = validAggregate("sha256:" + strings.Repeat("a", 64))
+			repository.reconcileErr = test.reconcileErr
+			service, err := NewService(repository)
+			require.NoError(t, err)
+			provider := &orchestratorBuilderProvider{target: BuilderTarget{BuilderID: 9, Trigger: func(context.Context, int64, int64) (int64, error) {
+				return 0, errors.New("must not trigger")
+			}}}
+			orchestrator, err := NewOrchestrator(service, provider, func() (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader(test.artifact)), nil
+			}, func() time.Time { return now })
+			require.NoError(t, err)
+
+			_, _, err = orchestrator.Retry(context.Background(), 7)
+
+			require.ErrorIs(t, err, ErrReconciliationRequired)
+			require.Zero(t, provider.prepareCalls)
+			require.Zero(t, repository.retryCalls)
+			require.Zero(t, repository.failCalls)
+		})
+	}
+}
+
+func TestOrchestratorDispatchesVerifierDuplicatesToRepositoryIdempotency(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	repository := newOrchestratorRepository(t, now, nil)
 	build := int64(44)
@@ -370,16 +413,17 @@ func TestOrchestratorSkipsRepositoryForVerifierDuplicateAndDispatchesFirstExactl
 
 	job, duplicate, err := orchestrator.Callback(context.Background(), event, true)
 	require.NoError(t, err)
-	require.True(t, duplicate)
-	require.Equal(t, PublishJob{}, job)
-	require.Zero(t, repository.callbackCalls)
+	require.False(t, duplicate)
+	require.Equal(t, int64(12), job.ID)
+	require.Equal(t, event, repository.lastCallback)
+	require.Equal(t, 1, repository.callbackCalls)
 
 	job, duplicate, err = orchestrator.Callback(context.Background(), event, false)
 	require.NoError(t, err)
 	require.False(t, duplicate)
 	require.Equal(t, int64(12), job.ID)
 	require.Equal(t, event, repository.lastCallback)
-	require.Equal(t, 1, repository.callbackCalls)
+	require.Equal(t, 2, repository.callbackCalls)
 
 	second := event
 	second.Nonce = "different_nonce_1"
@@ -387,7 +431,72 @@ func TestOrchestratorSkipsRepositoryForVerifierDuplicateAndDispatchesFirstExactl
 	_, duplicate, err = orchestrator.Callback(context.Background(), second, false)
 	require.NoError(t, err)
 	require.True(t, duplicate)
+	require.Equal(t, 3, repository.callbackCalls)
+}
+
+func TestOrchestratorRetriesSameCanonicalCallbackAfterRepositoryFailure(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	repository := newOrchestratorRepository(t, now, nil)
+	build := int64(44)
+	repository.callbackJob = PublishJob{ID: 12, ReleaseID: 7, BuilderID: 9, Status: JobQueued, Stage: "queue", BuildNumber: &build, CreatedAt: now}
+	repository.callbackErr = errors.New("database-secret")
+	service, err := NewService(repository)
+	require.NoError(t, err)
+	orchestrator, err := NewOrchestrator(service, &orchestratorBuilderProvider{}, missingArtifactReader, func() time.Time { return now })
+	require.NoError(t, err)
+	event := CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "queue", Status: JobQueued, Timestamp: now, Nonce: "nonce_1234567890"}
+
+	_, _, err = orchestrator.Callback(context.Background(), event, false)
+	require.Error(t, err)
+	repository.callbackErr = nil
+
+	job, duplicate, err := orchestrator.Callback(context.Background(), event, true)
+	require.NoError(t, err)
+	require.False(t, duplicate)
+	require.Equal(t, int64(12), job.ID)
 	require.Equal(t, 2, repository.callbackCalls)
+}
+
+func TestOrchestratorDispatchesConcurrentVerifierDuplicatesUnderRepositoryLock(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	build := int64(44)
+	repository := &concurrentCallbackRepository{repositorySpy: &repositorySpy{callbackJob: PublishJob{
+		ID: 12, ReleaseID: 7, BuilderID: 9, Status: JobQueued, Stage: "queue", BuildNumber: &build, CreatedAt: now,
+	}}}
+	service, err := NewService(repository)
+	require.NoError(t, err)
+	orchestrator, err := NewOrchestrator(service, &orchestratorBuilderProvider{}, missingArtifactReader, func() time.Time { return now })
+	require.NoError(t, err)
+	event := CallbackEvent{ReleaseID: 7, PublishJobID: 12, BuildNumber: 44, Stage: "queue", Status: JobQueued, Timestamp: now, Nonce: "nonce_1234567890"}
+
+	const attempts = 8
+	var group sync.WaitGroup
+	duplicates := make(chan bool, attempts)
+	errorsSeen := make(chan error, attempts)
+	for index := 0; index < attempts; index++ {
+		group.Add(1)
+		go func(verifierDuplicate bool) {
+			defer group.Done()
+			_, duplicate, callbackErr := orchestrator.Callback(context.Background(), event, verifierDuplicate)
+			duplicates <- duplicate
+			errorsSeen <- callbackErr
+		}(index > 0)
+	}
+	group.Wait()
+	close(duplicates)
+	close(errorsSeen)
+
+	for callbackErr := range errorsSeen {
+		require.NoError(t, callbackErr)
+	}
+	duplicateCount := 0
+	for duplicate := range duplicates {
+		if duplicate {
+			duplicateCount++
+		}
+	}
+	require.Equal(t, attempts-1, duplicateCount)
+	require.Equal(t, attempts, repository.calls())
 }
 
 func TestOrchestratorFailurePrecedenceAndNilSafety(t *testing.T) {
@@ -459,7 +568,11 @@ func (p *orchestratorBuilderProvider) Prepare(context.Context) (BuilderTarget, e
 	if p.order != nil {
 		*p.order = append(*p.order, "builder")
 	}
-	return p.target, p.err
+	target := p.target
+	if target.Snapshot == (BuilderTargetSnapshot{}) {
+		target.Snapshot = testBuilderTarget()
+	}
+	return target, p.err
 }
 
 type orchestratorRepository struct {
@@ -477,13 +590,37 @@ type orchestratorRepository struct {
 	failResult        *PublishJob
 }
 
+type concurrentCallbackRepository struct {
+	*repositorySpy
+	mu            sync.Mutex
+	callbackCalls int
+}
+
+func (r *concurrentCallbackRepository) ApplyCallbackLocked(_ context.Context, event CallbackEvent) (PublishJob, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.callbackCalls++
+	r.lastCallback = event
+	job := clonePublishJob(r.callbackJob)
+	if job.BuilderTarget == (BuilderTargetSnapshot{}) {
+		job.BuilderTarget = testBuilderTarget()
+	}
+	return job, r.callbackCalls > 1, r.callbackErr
+}
+
+func (r *concurrentCallbackRepository) calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.callbackCalls
+}
+
 func newOrchestratorRepository(t *testing.T, now time.Time, order *[]string) *orchestratorRepository {
 	t.Helper()
 	prepared := validPreparedSnapshot(now)
 	checksum := mustPreparedChecksum(t, prepared)
 	return &orchestratorRepository{repositorySpy: &repositorySpy{
 		createRelease: Release{ID: 7, Status: ReleaseQueued, Site: prepared.Site, Checksum: checksum, CreatedAt: now},
-		createJob:     PublishJob{ID: 12, ReleaseID: 7, BuilderID: 9, Status: JobPending, Stage: "pending", CreatedAt: now},
+		createJob:     PublishJob{ID: 12, ReleaseID: 7, BuilderID: 9, BuilderTarget: testBuilderTarget(), Status: JobPending, Stage: "pending", CreatedAt: now},
 	}, order: order}
 }
 
@@ -494,9 +631,24 @@ func (r *orchestratorRepository) CreateLocked(ctx context.Context, command Creat
 	return r.repositorySpy.CreateLocked(ctx, command)
 }
 
-func (r *orchestratorRepository) CreateRetryLocked(context.Context, int64) (Aggregate, PublishJob, error) {
+func (r *orchestratorRepository) CreateRetryLocked(_ context.Context, _ int64, builderID int64, target BuilderTargetSnapshot) (Aggregate, PublishJob, error) {
 	r.retryCalls++
-	return cloneAggregate(r.retryAggregate), clonePublishJob(r.retryJob), r.retryErr
+	if r.order != nil {
+		*r.order = append(*r.order, "retry")
+	}
+	aggregate := cloneAggregate(r.retryAggregate)
+	for index := range aggregate.Jobs {
+		if aggregate.Jobs[index].ID == r.retryJob.ID {
+			aggregate.Jobs[index].BuilderID = builderID
+			aggregate.Jobs[index].BuilderTarget = target
+		} else if aggregate.Jobs[index].BuilderTarget == (BuilderTargetSnapshot{}) {
+			aggregate.Jobs[index].BuilderTarget = testBuilderTarget()
+		}
+	}
+	job := clonePublishJob(r.retryJob)
+	job.BuilderID = builderID
+	job.BuilderTarget = target
+	return aggregate, job, r.retryErr
 }
 
 func (r *orchestratorRepository) ApplyCallbackLocked(ctx context.Context, event CallbackEvent) (PublishJob, bool, error) {
@@ -515,7 +667,7 @@ func (r *orchestratorRepository) FailTriggerLocked(ctx context.Context, jobID in
 	if r.failResult != nil {
 		return clonePublishJob(*r.failResult), false, nil
 	}
-	return PublishJob{ID: jobID, ReleaseID: 7, BuilderID: 9, Status: JobFailed, Stage: "trigger", ErrorSummary: summary, CreatedAt: r.createJob.CreatedAt, FinishedAt: &at}, false, nil
+	return PublishJob{ID: jobID, ReleaseID: 7, BuilderID: 9, BuilderTarget: r.createJob.BuilderTarget, Status: JobFailed, Stage: "trigger", ErrorSummary: summary, CreatedAt: r.createJob.CreatedAt, FinishedAt: &at}, false, nil
 }
 
 func int64Pointer(value int64) *int64 { return &value }

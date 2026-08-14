@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -19,7 +20,75 @@ import (
 	"github.com/qiuxsgit/qiuxs-blog/service/internal/config"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
+
+func TestOpenReleaseArtifactAcceptsRegularFileThroughSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	versions := filepath.Join(root, "versions", "v1")
+	require.NoError(t, os.MkdirAll(versions, 0o755))
+	want := []byte(`{"releaseId":7}`)
+	require.NoError(t, os.WriteFile(filepath.Join(versions, "release.json"), want, 0o600))
+	require.NoError(t, os.Symlink(versions, filepath.Join(root, "current")))
+
+	reader, err := openReleaseArtifact(filepath.Join(root, "current", "release.json"))
+	require.NoError(t, err)
+	got, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	require.Equal(t, want, got)
+}
+
+func TestOpenReleaseArtifactRejectsNonRegularFinalEntryWithoutBlocking(t *testing.T) {
+	root := t.TempDir()
+	regular := filepath.Join(root, "regular.json")
+	require.NoError(t, os.WriteFile(regular, []byte(`{}`), 0o600))
+	symlink := filepath.Join(root, "release-symlink.json")
+	require.NoError(t, os.Symlink(regular, symlink))
+	fifo := filepath.Join(root, "release-fifo.json")
+	require.NoError(t, unix.Mkfifo(fifo, 0o600))
+
+	for _, path := range []string{root, symlink, fifo, "/dev/null"} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			result := make(chan error, 1)
+			go func() {
+				reader, err := openReleaseArtifact(path)
+				if reader != nil {
+					_ = reader.Close()
+				}
+				result <- err
+			}()
+			select {
+			case err := <-result:
+				require.Error(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("secure artifact open blocked on a non-regular final entry")
+			}
+		})
+	}
+}
+
+func TestOpenReleaseArtifactDetectsReplacementRaceAndClosesDescriptor(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "release.json")
+	displaced := filepath.Join(root, "displaced.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"releaseId":7}`), 0o600))
+	var opened *os.File
+
+	reader, err := openReleaseArtifactWith(path, func(path string) (*os.File, error) {
+		require.NoError(t, os.Rename(path, displaced))
+		require.NoError(t, os.WriteFile(path, []byte(`{"releaseId":8}`), 0o600))
+		var openErr error
+		opened, openErr = openArtifactNoFollow(displaced)
+		return opened, openErr
+	})
+
+	require.Error(t, err)
+	require.Nil(t, reader)
+	require.NotNil(t, opened)
+	_, statErr := opened.Stat()
+	require.ErrorIs(t, statErr, os.ErrClosed)
+}
 
 func TestRunConfiguresServerAndShutsDownGracefully(t *testing.T) {
 	runtime, closes := validRuntime(t)

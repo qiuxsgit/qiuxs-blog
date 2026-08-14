@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { createMilkdownEditor, replaceMilkdownMarkdown } from "./milkdown-adapter";
+import { useEditorImageUpload } from "../media/useEditorImageUpload";
 
 export interface MarkdownEditorProps {
   value: string;
@@ -15,6 +16,9 @@ export function MarkdownEditor({ onChange, value }: MarkdownEditorProps) {
   const visualValueRef = useRef(value);
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
+  const imageUpload = useEditorImageUpload({
+    onInsert: (markdown) => onChangeRef.current(`${visualValueRef.current}${visualValueRef.current.length > 0 ? "\n" : ""}${markdown}`),
+  });
 
   useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
 
@@ -55,5 +59,13 @@ export function MarkdownEditor({ onChange, value }: MarkdownEditorProps) {
       <button className="editor-touch-target" onClick={() => setAttempt((current) => current + 1)} type="button">Retry visual editor</button>
     </div>}
     <div aria-label="Markdown canvas" className="markdown-canvas" ref={root} />
+    <label className="editor-touch-target">Add image<input accept="image/jpeg,image/png,image/webp,image/gif" hidden type="file" onChange={(event) => {
+      const file = event.currentTarget.files?.[0];
+      event.currentTarget.value = "";
+      if (file) void imageUpload.upload(file);
+    }} /></label>
+    {imageUpload.uploading && <p role="status">Uploading image: {imageUpload.progress}%</p>}
+    {imageUpload.error && <p role="alert">{imageUpload.error}</p>}
+    {imageUpload.uploading && <button className="editor-touch-target" onClick={imageUpload.cancel} type="button">Cancel upload</button>}
   </>;
 }

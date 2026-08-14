@@ -7,7 +7,7 @@ test-admin:
 	$(MAKE) -C admin test
 
 test-site:
-	cd site && npm test -- --run
+	cd site && npm test && npm run check
 
 test-deploy:
 	bash deploy/tests/deploy_scripts.sh

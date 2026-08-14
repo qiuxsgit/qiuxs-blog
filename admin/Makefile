@@ -18,5 +18,5 @@ build:
 	npm run check:node
 	npm run generate:api
 	git diff --exit-code -- src/api/generated/admin.ts
-	vite build
+	npm exec -- vite build
 	npm run verify:dist

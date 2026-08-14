@@ -178,6 +178,21 @@ func TestMySQLRepositoryCreateLockedRejectsBusyAndInvalidPreparedSnapshotBeforeI
 		require.NotContains(t, err.Error(), "CHECKSUM-SECRET")
 		require.Empty(t, counter.keys)
 	})
+
+	t.Run("well formed checksum mismatch", func(t *testing.T) {
+		repo, mock, source, counter := newRepositoryTest(t)
+		source.prepared = validPreparedSnapshot(time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC))
+		source.prepared.Checksum = "sha256:" + strings.Repeat("f", 64)
+		mock.ExpectBegin()
+		expectSiteState(mock, nil, nil)
+		mock.ExpectRollback()
+
+		_, _, err := repo.CreateLocked(context.Background(), CreateCommand{Mode: PublishArticle, ArticleID: 41, BuilderID: 9})
+
+		require.ErrorIs(t, err, ErrInvalidSnapshot)
+		require.NotContains(t, err.Error(), source.prepared.Checksum)
+		require.Empty(t, counter.keys)
+	})
 }
 
 func TestMySQLRepositoryCreateLockedHandlesIDFailuresHealingAndBusinessUniqueErrors(t *testing.T) {
@@ -975,23 +990,33 @@ func expectJobByIDForUpdate(mock sqlmock.Sqlmock, job jobRow) {
 }
 
 func validPreparedSnapshot(now time.Time) PreparedSnapshot {
-	return PreparedSnapshot{
+	snapshot := PreparedSnapshot{
 		Site: SiteSnapshot{Name: "Blog", AuthorBio: "Bio", AboutMarkdown: "About", FilingName: "ICP", FilingNumber: "ICP-1", SocialLinks: []SocialLink{}},
 		Articles: []ArticleSnapshot{{
 			ArticleID: 41, RevisionID: 71, Slug: "article_slug", Title: "Title", Summary: "Summary",
 			ContentMarkdown: "Body", ContentHash: "sha256:" + strings.Repeat("b", 64), PublishedAt: now,
 			Tags: []TagSnapshot{{ID: 5, Name: "Go", Slug: "t_abcdefghijkl"}},
 		}},
-		Checksum: "sha256:" + strings.Repeat("a", 64),
 	}
+	checksum, err := preparedSnapshotChecksum(snapshot)
+	if err != nil {
+		panic(err)
+	}
+	snapshot.Checksum = checksum
+	return snapshot
 }
 
 func emptyPreparedSnapshot() PreparedSnapshot {
-	return PreparedSnapshot{
+	snapshot := PreparedSnapshot{
 		Site:     SiteSnapshot{Name: "Blog", FilingName: "ICP", FilingNumber: "ICP-1", SocialLinks: []SocialLink{}},
 		Articles: []ArticleSnapshot{},
-		Checksum: "sha256:" + strings.Repeat("a", 64),
 	}
+	checksum, err := preparedSnapshotChecksum(snapshot)
+	if err != nil {
+		panic(err)
+	}
+	snapshot.Checksum = checksum
+	return snapshot
 }
 
 func snapshotJSON(t *testing.T, snapshot PreparedSnapshot) (string, string) {

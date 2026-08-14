@@ -127,6 +127,9 @@ func (r *MySQLRepository) CreateLocked(ctx context.Context, command CreateComman
 	if err := validatePreparedSnapshot(command, base, prepared); err != nil {
 		return Release{}, PublishJob{}, err
 	}
+	if err := verifyPreparedSnapshotChecksum(prepared); err != nil {
+		return Release{}, PublishJob{}, err
+	}
 	sort.Slice(prepared.Articles, func(i, j int) bool { return prepared.Articles[i].ArticleID < prepared.Articles[j].ArticleID })
 
 	siteJSON, err := json.Marshal(prepared.Site)

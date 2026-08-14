@@ -6,5 +6,6 @@
 - [Release、Jenkins 回调与运维指南](service/README.md#immutable-releases-and-jenkins-operation)
 - [Stage 2 内容与媒体实现计划](docs/superpowers/plans/2026-08-13-service-content-media.md)
 - [GFS 博客媒体契约](docs/contracts/gfs-blog-media.md)
+- [Admin 管理端构建与部署说明](admin/README.md)
 - [产品与架构设计](docs/superpowers/specs/2026-08-13-qiuxs-blog-design.md)
 - [项目路线图](docs/superpowers/plans/2026-08-13-qiuxs-blog-roadmap.md)

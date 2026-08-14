@@ -1,0 +1,44 @@
+import { describe, expect, it } from "vitest";
+import { defaults, buildPutRequest, validateSiteDraft, type SiteDraft } from "./site-model";
+
+const valid: SiteDraft = {
+  ...defaults,
+  siteName: "qiuxs",
+  authorName: "qiuxs",
+  authorBio: "",
+  homeStatus: "",
+  aboutMd: "# About",
+  socialLinks: [{ label: "GitHub", url: "https://github.com/qiuxs" }],
+  seoDefaultTitle: "",
+  seoDefaultDescription: "",
+  seoDefaultImageMediaId: null,
+  filingName: "长安休息室",
+  filingNumber: "浙ICP备17057726号-1",
+};
+
+describe("site settings pure model", () => {
+  it("uses the documented virtual defaults and fixed filing URL", () => {
+    expect(defaults).toMatchObject({ siteName: "qiuxs", filingName: "长安休息室", filingNumber: "浙ICP备17057726号-1", lockVersion: 0, id: null, updatedAt: null, filingUrl: "https://beian.miit.gov.cn/" });
+  });
+
+  it("builds the exact PUT body and omits readonly/cache fields", () => {
+    expect(buildPutRequest(valid)).toEqual({ lockVersion: 0, siteName: "qiuxs", authorName: "qiuxs", authorBio: "", homeStatus: "", aboutMd: "# About", socialLinks: [{ label: "GitHub", url: "https://github.com/qiuxs" }], seoDefaultTitle: "", seoDefaultDescription: "", seoDefaultImageMediaId: null, filingName: "长安休息室", filingNumber: "浙ICP备17057726号-1" });
+    expect(buildPutRequest(valid)).not.toHaveProperty("id");
+    expect(buildPutRequest(valid)).not.toHaveProperty("updatedAt");
+    expect(buildPutRequest(valid)).not.toHaveProperty("filingUrl");
+  });
+
+  it("counts rune limits and rejects blank filing fields", () => {
+    expect(validateSiteDraft({ ...valid, siteName: "😀".repeat(100) })).toEqual([]);
+    expect(validateSiteDraft({ ...valid, siteName: "😀".repeat(101) })).toContain("siteName");
+    expect(validateSiteDraft({ ...valid, filingName: "  " })).toContain("filingName");
+    expect(validateSiteDraft({ ...valid, filingNumber: "" })).toContain("filingNumber");
+  });
+
+  it("enforces Markdown bytes, encoded envelope bytes, and social URL rules", () => {
+    expect(validateSiteDraft({ ...valid, aboutMd: "a".repeat(2 * 1024 * 1024) })).toContain("request");
+    expect(validateSiteDraft({ ...valid, aboutMd: "a".repeat(2 * 1024 * 1024 + 1) })).toContain("aboutMd");
+    expect(validateSiteDraft({ ...valid, socialLinks: [{ label: "GitHub", url: "http://github.com" }] })).toContain("socialLinks");
+    expect(validateSiteDraft({ ...valid, socialLinks: [{ label: "GitHub", url: "https://github.com" }, { label: "github", url: "https://example.com" }] })).toContain("socialLinks");
+  });
+});

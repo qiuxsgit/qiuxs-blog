@@ -5,7 +5,7 @@ server {
     client_max_body_size 10m;
     location ~ /\. { deny all; }
     location = /healthz { add_header Content-Type text/plain; return 200 "ok\n"; }
-    location /api/ {
+    location ^~ /api/ {
         proxy_pass http://${BLOG_SERVICE_UPSTREAM};
         proxy_http_version 1.1;
         proxy_set_header Host $host;

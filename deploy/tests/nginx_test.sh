@@ -7,7 +7,7 @@ if "$root/deploy/scripts/render-nginx.sh" bad "$tmp/out" >/dev/null 2>&1; then e
 test -f "$tmp/out/blog-admin.conf"; test -f "$tmp/out/qiuxs.com.conf"
 rg -q 'root /web/deploy/blog-admin/current' "$tmp/out/blog-admin.conf"
 rg -q 'root /web/deploy/blog-site/current' "$tmp/out/qiuxs.com.conf"
-rg -q 'location /api/' "$tmp/out/blog-admin.conf"; rg -q 'location /api/ \{ return 404' "$tmp/out/qiuxs.com.conf"
-if awk '/location \/api\//,/}/' "$tmp/out/qiuxs.com.conf" | rg -q proxy_pass; then exit 1; fi
-rg -q 'location /img/proxy/' "$tmp/out/qiuxs.com.conf"; ! rg -q 'location /img/proxy/' "$tmp/out/blog-admin.conf"
+rg -q 'location \^~ /api/' "$tmp/out/blog-admin.conf"; rg -q 'location \^~ /api/ \{ return 404' "$tmp/out/qiuxs.com.conf"
+if awk '/location \^~ \/api\//,/}/' "$tmp/out/qiuxs.com.conf" | rg -q proxy_pass; then exit 1; fi
+rg -q 'location \^~ /img/proxy/' "$tmp/out/qiuxs.com.conf"; ! rg -q 'location \^~ /img/proxy/' "$tmp/out/blog-admin.conf"
 ! rg -q 'BLOG_SERVICE_UPSTREAM' "$tmp/out"; echo 'nginx contract passed'

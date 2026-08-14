@@ -5,14 +5,15 @@ pipeline {
     string(name: 'PUBLISH_JOB_ID', trim: true)
   }
   options { timestamps(); disableConcurrentBuilds() }
-  environment { DEPLOY_ROOT = '/web/deploy/blog-site'; DEPLOY_HOST = 'root@ngx1'; CALLBACK = credentials('blog-build-callback-url'); CALLBACK_SECRET = credentials('blog-build-callback-secret') }
+  environment { DEPLOY_ROOT = '/web/deploy/blog-site'; DEPLOY_HOST = 'root@ngx1'; CALLBACK = credentials('blog-build-callback-url'); CALLBACK_SECRET = credentials('blog-build-callback-secret'); SERVICE_URL = credentials('blog-service-url'); BUNDLE_TOKEN = credentials('blog-bundle-token') }
   stages {
-    stage('validate') { steps { sh '[[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ && "$PUBLISH_JOB_ID" =~ ^[1-9][0-9]*$ ]]' ; sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" building "$BUILD_NUMBER"' } }
-    stage('build') { steps { dir('site') { sh 'node --version | grep -F "v20.19.4"; npm ci; npm run build' } } }
-    stage('deploy') { steps { sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" deploying "$BUILD_NUMBER"'; sh 'deploy/scripts/deploy-static.sh "$DEPLOY_HOST" "$DEPLOY_ROOT" "$RELEASE_ID" site/dist 5' } }
+    stage('validate') { steps { sh '[[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ && "$PUBLISH_JOB_ID" =~ ^[1-9][0-9]*$ ]]' ; sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" queued "$BUILD_NUMBER"' } }
+    stage('bundle') { steps { sh 'mkdir -p site/.jenkins && curl --fail --silent --show-error --compressed --connect-timeout 5 --max-time 60 -H "Authorization: Bearer $BUNDLE_TOKEN" -D site/.jenkins/headers "$SERVICE_URL/api/internal/v1/releases/$RELEASE_ID/bundle" -o site/.jenkins/release.json'; sh 'grep -Eiq "^ETag:[[:space:]]*\\\"sha256:[0-9a-f]{64}\\\"" site/.jenkins/headers'; sh 'node -e "const fs=require(\"fs\"); const b=JSON.parse(fs.readFileSync(\"site/.jenkins/release.json\",\"utf8\")); if(String(b.releaseId)!==String(process.env.RELEASE_ID)||!/^sha256:[0-9a-f]{64}$/.test(b.checksum)) process.exit(1);"' } post { failure { sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" failed "$BUILD_NUMBER" queue || true' } } }
+    stage('build') { steps { sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" building "$BUILD_NUMBER"'; dir('site') { sh 'node --version | grep -F "v20.19.4"; npm ci; BLOG_BUNDLE_PATH="$PWD/.jenkins/release.json" npm run build; cp .jenkins/release.json dist/release.json; test -s dist/release.json' } } post { failure { sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" failed "$BUILD_NUMBER" build || true' } } }
+    stage('deploy') { steps { sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" deploying "$BUILD_NUMBER"'; sh 'DEPLOY_REQUIRE_RELEASE_JSON=1 deploy/scripts/deploy-static.sh "$DEPLOY_HOST" "$DEPLOY_ROOT" "$RELEASE_ID" site/dist 5' } post { failure { sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" failed "$BUILD_NUMBER" deploy || true' } } }
   }
   post {
     success { sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" success "$BUILD_NUMBER"' }
-    failure { sh 'deploy/scripts/site-callback.sh "$CALLBACK" "$CALLBACK_SECRET" "$RELEASE_ID" "$PUBLISH_JOB_ID" failed "$BUILD_NUMBER" || true' }
+    failure { echo 'Failure callback is emitted by the failing stage.' }
   }
 }

@@ -9,7 +9,9 @@ import {
   mapRevisionRows,
   reasonLabel,
   replaceArticleDraft,
+  restoreVersionDecision,
   restoreVersionRequest,
+  versionCapabilityFromAutosave,
   versionResultDraft,
 } from "./version-model";
 
@@ -29,12 +31,21 @@ describe("version model", () => {
     expect(() => restoreVersionRequest(Number.MAX_SAFE_INTEGER + 1)).toThrow();
   });
 
-  it("only allows version creation from a saved autosave state", () => {
+  it("only allows version creation from a saved, titled, non-blob autosave snapshot", () => {
+    const kinds: SaveState["kind"][] = ["dirty", "saving", "invalid", "failed", "conflict"];
     const saved: SaveState = { kind: "saved", lockVersion: 8, savedAt: new Date() };
-    expect(canCreateVersion(saved)).toBe(true);
-    expect(canCreateVersion({ kind: "dirty", lockVersion: 8 })).toBe(false);
-    expect(canCreateVersion({ kind: "saving", lockVersion: 8 })).toBe(false);
-    expect(canCreateVersion({ kind: "conflict", lockVersion: 8, local: {} as never })).toBe(false);
+    const capability = versionCapabilityFromAutosave(saved, { title: "Title", summary: "", coverMediaId: null, contentMd: "# body", tagIds: [] });
+    expect(canCreateVersion(capability, 8)).toBe(true);
+    for (const kind of kinds) expect(canCreateVersion({ ...capability, kind }, 8)).toBe(false);
+    expect(canCreateVersion({ ...capability, title: "   " }, 8)).toBe(false);
+    expect(canCreateVersion({ ...capability, contentMd: "![x](blob:https://local)" }, 8)).toBe(false);
+    expect(canCreateVersion(capability, 9)).toBe(false);
+  });
+
+  it("requires explicit restore confirmation", () => {
+    expect(restoreVersionDecision(false, 17)).toBeUndefined();
+    expect(restoreVersionDecision(true, 17)).toBe(17);
+    expect(() => restoreVersionDecision(true, 0)).toThrow();
   });
 
   it("preserves delivered ordering and every revision field", () => {

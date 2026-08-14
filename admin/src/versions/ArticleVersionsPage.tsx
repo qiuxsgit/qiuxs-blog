@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { useAuth } from "../auth/AuthProvider";
 import type { ArticleDetail } from "../api/admin-api";
@@ -13,8 +13,10 @@ import {
   mapRevisionRows,
   reasonLabel,
   replaceArticleDraft,
+  restoreVersionDecision,
   restoreVersionRequest,
   versionResultDraft,
+  type VersionCapability,
 } from "./version-model";
 
 function parseArticleId(value: string | undefined): number | undefined {
@@ -26,6 +28,8 @@ function parseArticleId(value: string | undefined): number | undefined {
 export function ArticleVersionsPage() {
   const { api } = useAuth();
   const articleId = parseArticleId(useParams().articleId);
+  const location = useLocation();
+  const capability = (location.state as { versionCapability?: VersionCapability } | null)?.versionCapability;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const article = useQuery({
@@ -72,18 +76,18 @@ export function ArticleVersionsPage() {
   if (article.isPending || versions.isPending) return <p aria-busy="true" role="status">Loading versions</p>;
 
   const rows = mapRevisionRows(versions.data.items);
-  const saved = canCreateVersion({ kind: "saved", lockVersion: article.data.draft.lockVersion, savedAt: new Date() });
+  const canVersion = capability !== undefined && canCreateVersion(capability, article.data.draft.lockVersion);
   return <section aria-labelledby="versions-heading">
     <div className="editor-heading">
       <h1 id="versions-heading">Article versions</h1>
-      <button className="button touch-target" disabled={!saved || create.isPending} onClick={() => create.mutate()} type="button">{create.isPending ? "Creating version" : "Create version"}</button>
+      <button className="button touch-target" disabled={!canVersion || create.isPending} onClick={() => create.mutate()} type="button">{create.isPending ? "Creating version" : "Create version"}</button>
     </div>
     {create.isError && <ProblemNotice problem={operationProblem(create.error, "Unable to create version", "create_version_failed")} />}
     {restore.isError && <ProblemNotice problem={operationProblem(restore.error, "Unable to restore version", "restore_version_failed")} />}
     {rows.length === 0 ? <p>No versions yet.</p> : <div className="version-list">
       {rows.map((version) => <article className="version-row" key={version.id}>
-        <div><h2>{version.title || "Untitled"}</h2><p>{reasonLabel(version.reason)} · revision {version.revisionNo} · {version.updatedAt}</p><p>{version.summary}</p></div>
-        <button className="touch-target" disabled={restore.isPending} onClick={() => restore.mutate({ revisionId: version.id })} type="button">Restore</button>
+        <div><h2>{version.title || "Untitled"}</h2><p>{reasonLabel(version.reason)} · revision {version.revisionNo} · lock {version.lockVersion}</p><p>{version.summary}</p><p>Created {version.createdAt} · updated {version.updatedAt} · hash {version.contentHash}</p><p>Tags: {version.tags.map((tag) => tag.name).join(", ") || "None"} · Media: {version.media.map((media) => media.mediaId).join(", ") || "None"}</p><details><summary>Markdown snapshot</summary><pre>{version.contentMd}</pre></details></div>
+        <button className="touch-target" disabled={restore.isPending} onClick={() => { const selected = restoreVersionDecision(window.confirm("Restore this immutable version into the current draft?"), version.id); if (selected !== undefined) restore.mutate({ revisionId: selected }); }} type="button">Restore</button>
       </article>)}
     </div>}
   </section>;

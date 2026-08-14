@@ -20,6 +20,7 @@ import {
   validateTagName,
   type EditorDocument,
 } from "./editor-document";
+import { versionCapabilityFromAutosave } from "../versions/version-model";
 import "../styles/editor.css";
 
 type Mode = "visual" | "source";
@@ -167,6 +168,7 @@ export function ArticleEditorPage() {
     <section aria-labelledby="editor-heading" className="article-editor">
       <div className="editor-heading">
         <h1 id="editor-heading">Edit article</h1>
+        <button className="button touch-target" onClick={() => navigate(`/articles/${articleId}/versions`, { state: { versionCapability: versionCapabilityFromAutosave(autosave.state, document) } })} type="button">Versions</button>
         <button className="button touch-target" disabled={autosave.state.kind === "saving"} onClick={submitSave} type="button">
           {autosave.state.kind === "saving" ? "Saving draft" : "Save draft"}
         </button>

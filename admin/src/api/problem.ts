@@ -2,6 +2,7 @@ import type { Problem } from "./admin-api";
 
 export class ApiProblem extends Error {
   readonly status: number;
+  readonly title: string;
   readonly code: string;
   readonly requestId: string;
   readonly type: string;
@@ -10,12 +11,13 @@ export class ApiProblem extends Error {
     status: number,
     code: string,
     requestId: string,
-    message: string,
+    title: string,
     type = "about:blank",
   ) {
-    super(message);
+    super(title);
     this.name = "ApiProblem";
     this.status = status;
+    this.title = title;
     this.code = code;
     this.requestId = requestId;
     this.type = type;

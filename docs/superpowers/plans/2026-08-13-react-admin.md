@@ -602,13 +602,13 @@ git commit -m "feat(admin): add session protected routing"
 - Modify: `admin/src/app/AppRouter.tsx`
 - Modify: `admin/src/api/query-keys.ts`
 
-**Interfaces:** Consumes `listArticles`, bodyless `createArticle`, void `trashArticle`/`untrashArticle`, `createRelease`, `ArticleSummary`, and hierarchical query keys. Produces active/trash views, safe lifecycle actions, and `syncReleaseCache(queryClient, release): Promise<void>` for every later Release caller.
+**Interfaces:** Consumes `listArticles`, bodyless `createArticle`, void `trashArticle`/`untrashArticle`, `createRelease`, `ArticleSummary`, and hierarchical query keys. Produces active/trash views, safe lifecycle actions, and `syncReleaseCache(queryClient, release, source): Promise<void>` for every later Release caller, where source is `create`, `retry`, or `poll`.
 
 - [ ] **Step 1: Write failing list/lifecycle tests**
 
 Cover loading, empty, retryable failure, exact `draftTitle`/timestamps/state, active and trashed URL filters, bodyless creation, edit navigation, unpublished trash, published trash blocked, untrash 204, unpublish Release creation, duplicate-action disabling, and narrow action menu.
 
-In `release-cache.test.ts`, prove every Release result seeds `queryKeys.release(release.id)` and invalidates all queries under `queryKeys.releaseListsRoot` without invalidating the seeded detail; a result with `status === "success"` additionally invalidates the whole `queryKeys.articlesRoot`, covering all article lists and details without needing an article ID or Release mode.
+In `release-cache.test.ts`, prove every Release result seeds `queryKeys.release(release.id)`. A `create` source invalidates all queries under `queryKeys.releaseListsRoot` exactly once without invalidating the seeded detail. A `retry` or `poll` source uses `setQueriesData` to immutably replace the matching Release in every cached list and never invalidates/refetches a Release list. Every source with `status === "success"` additionally invalidates the whole `queryKeys.articlesRoot`, covering all article lists and details without needing an article ID or Release mode.
 
 ```tsx
 await user.click(screen.getByRole("button", { name: "Confirm unpublish" }));
@@ -617,9 +617,9 @@ expect(createRelease).toHaveBeenCalledWith({ mode: "unpublish_article", articleI
 
 - [ ] **Step 2: Verify red**
 
-Run: `cd admin && npm test -- --run src/articles/ArticleListPage.test.tsx`
+Run: `cd admin && npm test -- --run src/articles/ArticleListPage.test.tsx src/publishing/release-cache.test.ts`
 
-Expected: FAIL because the list and actions are absent.
+Expected: FAIL because the list, actions, and Release cache helper are absent.
 
 - [ ] **Step 3: Implement exact query/display semantics**
 
@@ -630,10 +630,34 @@ Accept only `?state=active` or `?state=trashed`; invalid/missing becomes active.
 `createArticle()` validates `detail.id` and navigates to edit. Confirm trash/untrash, call the void operations, then invalidate list/detail queries. Block trash when `publishedRevisionId` is non-null. Implement the shared cache rule exactly:
 
 ```ts
-export async function syncReleaseCache(queryClient: QueryClient, release: ReleaseView): Promise<void> {
+export type ReleaseCacheSource = "create" | "retry" | "poll";
+
+export async function syncReleaseCache(
+  queryClient: QueryClient,
+  release: ReleaseView,
+  source: ReleaseCacheSource,
+): Promise<void> {
   const releaseId = requireEntityId(release.id, "release.id");
   queryClient.setQueryData(queryKeys.release(releaseId), release);
-  const invalidations = [queryClient.invalidateQueries({ queryKey: queryKeys.releaseListsRoot })];
+
+  const invalidations: Promise<void>[] = [];
+  if (source === "create") {
+    invalidations.push(queryClient.invalidateQueries({ queryKey: queryKeys.releaseListsRoot }));
+  } else {
+    queryClient.setQueriesData<ReleaseList>(
+      { queryKey: queryKeys.releaseListsRoot },
+      (current) => {
+        if (current === undefined) return current;
+        let matched = false;
+        const items = current.items.map((item) => {
+          if (item.id !== releaseId) return item;
+          matched = true;
+          return release;
+        });
+        return matched ? { ...current, items } : current;
+      },
+    );
+  }
   if (release.status === "success") {
     invalidations.push(queryClient.invalidateQueries({ queryKey: queryKeys.articlesRoot }));
   }
@@ -641,13 +665,13 @@ export async function syncReleaseCache(queryClient: QueryClient, release: Releas
 }
 ```
 
-Unpublish calls `createRelease({ mode: "unpublish_article", articleId })`, awaits `syncReleaseCache(queryClient, result.release)`, then navigates to `/publishing?release=<release.id>` without claiming the article is offline before Release success.
+Unpublish calls `createRelease({ mode: "unpublish_article", articleId })`, awaits `syncReleaseCache(queryClient, result.release, "create")`, then navigates to `/publishing?release=<release.id>` without claiming the article is offline before Release success.
 
 - [ ] **Step 5: Verify green**
 
 ```bash
 cd admin
-npm test -- --run src/articles/ArticleListPage.test.tsx
+npm test -- --run src/articles/ArticleListPage.test.tsx src/publishing/release-cache.test.ts
 npm run typecheck
 ```
 
@@ -997,17 +1021,17 @@ expect(retryRelease).toHaveBeenCalledWith(71);
 
 Assert retry result keeps `release.id === 71`, returns a different `job.id`, makes returned `release.latestJob` equal the new job, and retains older jobs. Assert the UI has no control for an unsupported active-job mutation.
 
-For create, assert the returned Release is immediately readable from its detail key and every Release-list key is invalidated. For retry and each poll response, assert detail replacement plus all-list invalidation. For any returned successful Release, assert broad `articlesRoot` invalidation; assert no cache path reads mode/article ID from ReleaseView.
+For create, assert the returned Release is immediately readable from its detail key and every Release-list key is invalidated once. For retry and each poll response, assert detail replacement plus immutable matching-row updates through `setQueriesData`, with no Release-list invalidation. Start one active list query, deliver at least two detail poll responses with fake timers, and assert the `listReleases` request count remains exactly one while the cached row advances. For any returned successful Release, assert broad `articlesRoot` invalidation; assert no cache path reads mode/article ID from ReleaseView.
 
 - [ ] **Step 2: Verify red**
 
-Run: `cd admin && npm test -- --run src/publishing/PublishingPage.test.tsx`
+Run: `cd admin && npm test -- --run src/publishing/PublishingPage.test.tsx src/publishing/release-cache.test.ts`
 
 Expected: FAIL because Release UI and status functions are absent.
 
 - [ ] **Step 3: Implement list, selection, and polling**
 
-Call `listReleases({ limit, offset })`; render only `ReleaseList.items`. Enable Previous when offset is positive and Next only when the current item count equals limit. Selection uses `/publishing?release=<positive id>`. Poll `getRelease(id)` every 3,000 ms while `isActiveJobStatus(release.latestJob.status)`, await `syncReleaseCache(queryClient, polledRelease)` on every response, and stop for success/failed latest jobs. The list query itself never polls.
+Call `listReleases({ limit, offset })`; render only `ReleaseList.items`. Enable Previous when offset is positive and Next only when the current item count equals limit. Selection uses `/publishing?release=<positive id>`. Poll `getRelease(id)` every 3,000 ms while `isActiveJobStatus(release.latestJob.status)`, await `syncReleaseCache(queryClient, polledRelease, "poll")` on every response, and stop for success/failed latest jobs. The list query itself never polls, and detail polling never invalidates or refetches it.
 
 Render Release ID, Release status, checksum, created/completed timestamps, then latest Job and all retry attempts. Keep `release.id`, `job.id`, and `job.releaseId` visibly distinct. Show `builderTarget.name/baseUrl/username/jobName` as non-editable text/link and never infer a token. Since ReleaseView exposes no creation mode or article ID, a reloaded row is labelled only by its Release-backed data.
 
@@ -1015,15 +1039,15 @@ Use exact non-color labels: Release `queued` → “Release queued”, `success`
 
 - [ ] **Step 4: Implement creation and retry actions**
 
-Editor Publish is enabled only for a saved draft with a nonblank title and no `blob:`. It calls `createRelease({ mode: "publish_article", articleId })`; unpublish continues to use the matching request from Task 5; the Publishing page's “Publish saved site settings” calls `createRelease({ mode: "publish_settings", articleId: null })`. Every caller awaits `syncReleaseCache(queryClient, result.release)` before selecting the validated Release ID. Do not claim public success until Release/Job success is returned.
+Editor Publish is enabled only for a saved draft with a nonblank title and no `blob:`. It calls `createRelease({ mode: "publish_article", articleId })`; unpublish continues to use the matching request from Task 5; the Publishing page's “Publish saved site settings” calls `createRelease({ mode: "publish_settings", articleId: null })`. Every creation caller awaits `syncReleaseCache(queryClient, result.release, "create")` before selecting the validated Release ID. Do not claim public success until Release/Job success is returned.
 
-Retry is available for a failed aggregate/latest job and calls `retryRelease(release.id)`. Await `syncReleaseCache(queryClient, result.release)` and focus `result.job`. On `409 release_conflict`, show the generic global-serialization notice and keep the current selection; on `412 precondition_failed`, state that service reconciliation or saved builder prerequisites require operator action. Every other code uses the generic Problem display. Article invalidation comes only from observing `release.status === "success"`; never infer an article ID or mode.
+Retry is available for a failed aggregate/latest job and calls `retryRelease(release.id)`. Await `syncReleaseCache(queryClient, result.release, "retry")` and focus `result.job`. On `409 release_conflict`, show the generic global-serialization notice and keep the current selection; on `412 precondition_failed`, state that service reconciliation or saved builder prerequisites require operator action. Every other code uses the generic Problem display. Article invalidation comes only from observing `release.status === "success"`; never infer an article ID or mode.
 
 - [ ] **Step 5: Verify green**
 
 ```bash
 cd admin
-npm test -- --run src/publishing/PublishingPage.test.tsx src/editor/ArticleEditorPage.test.tsx src/articles/ArticleListPage.test.tsx
+npm test -- --run src/publishing/PublishingPage.test.tsx src/publishing/release-cache.test.ts src/editor/ArticleEditorPage.test.tsx src/articles/ArticleListPage.test.tsx
 npm run typecheck
 ```
 
@@ -1082,7 +1106,7 @@ const request: PutSiteSettingsRequest = {
 
 - [ ] **Step 4: Implement save/publication separation**
 
-Use an accessible form with ordered add/remove/reorder social controls, upload-selected default media ID, duplicate-submit blocking, and query cache replaced only by server response. Render `filingUrl` as fixed read-only link. After save announce “Saved settings — pending publication.” A separate confirmed action calls the generic Release request, awaits `syncReleaseCache(queryClient, result.release)`, and navigates by validated Release ID. It does not special-case article caches by request mode; only a returned successful Release triggers the helper's broad article invalidation. Conflict offers copy of only PUT fields and confirmed reload.
+Use an accessible form with ordered add/remove/reorder social controls, upload-selected default media ID, duplicate-submit blocking, and query cache replaced only by server response. Render `filingUrl` as fixed read-only link. After save announce “Saved settings — pending publication.” A separate confirmed action calls the generic Release request, awaits `syncReleaseCache(queryClient, result.release, "create")`, and navigates by validated Release ID. It does not special-case article caches by request mode; only a returned successful Release triggers the helper's broad article invalidation. Conflict offers copy of only PUT fields and confirmed reload.
 
 - [ ] **Step 5: Verify green**
 
@@ -1342,7 +1366,7 @@ git commit -m "test(admin): cover browser management flows"
 Write `verify-dist.test.mjs` fixtures that make the verifier reject missing index, unhashed JS/CSS, source maps, absolute local paths, any one of these exact protected identifiers, output above 2 MiB per file, and HTML references to missing assets:
 
 ```js
-const protectedIdentifiers = [
+const protectedIdentifiers = Object.freeze([
   "BLOG_ADMIN_PASSWORD",
   "BLOG_REDIS_PASSWORD",
   "BLOG_GFS_APP_SECRET",
@@ -1350,7 +1374,7 @@ const protectedIdentifiers = [
   "BLOG_BUNDLE_TOKEN",
   "BLOG_CALLBACK_HMAC_KEY",
   "BLOG_BUILDER_MASTER_KEY",
-] as const;
+]);
 ```
 
 Test every identifier individually and one valid fixture with hashed JS/CSS. Scan for these exact case-sensitive strings only; do not generically reject the words `token`, `password`, or `secret`, because legitimate UI copy and generated field names contain them. Bundle only plaintext, Bash, JSON, YAML, Go, JavaScript, TypeScript, JSX, TSX, SQL, HTML, CSS, and Markdown grammars; other fences render plaintext.

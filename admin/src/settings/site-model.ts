@@ -25,7 +25,11 @@ const limits = { siteName: 100, authorName: 100, authorBio: 1000, homeStatus: 50
 const bytes = (value: string) => new TextEncoder().encode(value).byteLength;
 const runes = (value: string) => Array.from(value).length;
 
-function canonicalComponent(raw: string): string | undefined {
+function unreserved(value: number): boolean { return (value >= 0x41 && value <= 0x5a) || (value >= 0x61 && value <= 0x7a) || (value >= 0x30 && value <= 0x39) || value === 0x2d || value === 0x2e || value === 0x5f || value === 0x7e; }
+function pathAllowed(value: number): boolean { return unreserved(value) || "!$&'()*+,;=:@/".includes(String.fromCharCode(value)); }
+function queryAllowed(value: number): boolean { return pathAllowed(value) || value === 0x3f; }
+
+function canonicalComponent(raw: string, allowed: (value: number) => boolean): string | undefined {
   let result = "";
   for (let index = 0; index < raw.length; index += 1) {
     const current = raw[index] ?? "";
@@ -33,12 +37,12 @@ function canonicalComponent(raw: string): string | undefined {
       const encoded = raw.slice(index + 1, index + 3);
       if (!/^[0-9A-Fa-f]{2}$/u.test(encoded)) return undefined;
       const value = Number.parseInt(encoded, 16);
-      if (value >= 0x21 && value <= 0x7e && /[A-Za-z0-9\-._~]/u.test(String.fromCharCode(value))) result += String.fromCharCode(value);
+      if (unreserved(value)) result += String.fromCharCode(value);
       else result += `%${encoded.toUpperCase()}`;
       index += 2;
       continue;
     }
-    if (current.charCodeAt(0) < 0x21 || current.charCodeAt(0) > 0x7e) return undefined;
+    if (current.charCodeAt(0) < 0x21 || current.charCodeAt(0) > 0x7e || !allowed(current.charCodeAt(0))) return undefined;
     result += current;
   }
   return result;
@@ -55,19 +59,23 @@ export function isCanonicalSocialUrl(raw: string): boolean {
   const port = authority.match(/:(\d+)$/u)?.[1];
   if (port !== undefined && (port === "443" || Number.parseInt(port, 10).toString() !== port)) return false;
   const hostname = parsed.hostname;
-  if (hostname.endsWith(".") || /^(?:[0-9]+\.)*[0-9]+$/u.test(hostname)) return false;
+  if (hostname.endsWith(".")) return false;
+  if (/^[0-9.]+$/u.test(hostname)) {
+    const octets = hostname.split(".");
+    if (octets.length !== 4 || octets.some((octet) => octet === "" || (octet.length > 1 && octet.startsWith("0")) || Number(octet) > 255)) return false;
+  }
   if (hostname.includes(":")) {
     if (authority !== parsed.host) return false;
   } else if (hostname !== hostname.toLowerCase() || /[^a-z0-9.-]/u.test(hostname)) return false;
   const path = raw.slice("https://".length + authority.length).split(/[?#]/u, 1)[0] ?? "";
   if (path && path !== parsed.pathname) return false;
-  if (path.split("/").some((segment) => segment === "." || segment === "..")) return false;
+  if (canonicalComponent(path, pathAllowed) !== path || path.split("/").some((segment) => segment === "." || segment === "..")) return false;
   const queryStart = raw.indexOf("?");
   const fragmentStart = raw.indexOf("#");
   const query = queryStart >= 0 ? raw.slice(queryStart + 1, fragmentStart >= 0 ? fragmentStart : undefined) : "";
   const fragment = fragmentStart >= 0 ? raw.slice(fragmentStart + 1) : "";
-  if (queryStart >= 0 && (!query || canonicalComponent(query) !== query)) return false;
-  if (fragmentStart >= 0 && (!fragment || canonicalComponent(fragment) !== fragment)) return false;
+  if (queryStart >= 0 && (!query || canonicalComponent(query, queryAllowed) !== query)) return false;
+  if (fragmentStart >= 0 && (!fragment || canonicalComponent(fragment, queryAllowed) !== fragment)) return false;
   return true;
 }
 

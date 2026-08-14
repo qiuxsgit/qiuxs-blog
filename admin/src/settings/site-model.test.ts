@@ -43,8 +43,8 @@ describe("site settings pure model", () => {
   });
 
   it("matches the service canonical absolute HTTPS social URL rules", () => {
-    const accepted = ["https://github.com", "https://github.com/path?q=1#part", "https://[2001:db8::1]/docs", "https://example.com:8443/a"];
-    const rejected = ["HTTPS://github.com", "https://EXAMPLE.com", "https://user:pass@example.com", "https://example.com:443", "https://example.com.", "https://192.168.001.1", "https://123", "https://[2001:0db8::1]", "https://example.com/a/../b", "https://example.com/?q=%7e"];
+    const accepted = ["https://github.com", "https://github.com/path?q=1#part", "https://[2001:db8::1]/docs", "https://example.com:8443/a", "https://192.0.2.1/profile", "https://example.com/a%2Fb"];
+    const rejected = ["HTTPS://github.com", "https://EXAMPLE.com", "https://user:pass@example.com", "https://example.com:443", "https://example.com.", "https://192.168.001.1", "https://123", "https://[2001:0db8::1]", "https://example.com/a/../b", "https://example.com/a%7eb", "https://example.com/a%2fb", "https://example.com/?q=%7e", "https://example.com/?q=["];
     for (const url of accepted) expect(isCanonicalSocialUrl(url), url).toBe(true);
     for (const url of rejected) expect(isCanonicalSocialUrl(url), url).toBe(false);
   });

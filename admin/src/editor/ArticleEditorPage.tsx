@@ -174,7 +174,7 @@ export function ArticleEditorPage() {
       <SaveIndicator state={autosave.state} />
       {saveErrors.length > 0 && <div role="alert"><ul>{saveErrors.map((error) => <li key={error}>{error}</li>)}</ul></div>}
       {autosave.state.kind === "failed" && <><ProblemNotice problem={autosave.state.problem} /><button className="editor-touch-target" onClick={autosave.retry} type="button">Retry saving</button></>}
-      {autosave.state.kind === "conflict" && <ConflictDialog local={autosave.state.local} onCopy={() => void navigator.clipboard?.writeText(autosave.copyMarkdown())} onReload={() => void autosave.reload()} />}
+      {autosave.state.kind === "conflict" && <ConflictDialog problem={autosave.state.problem} local={autosave.state.local} onCopy={() => void navigator.clipboard?.writeText(autosave.copyMarkdown())} onReload={() => { if (window.confirm("Reload the server draft and discard local changes?")) void autosave.reload(true); }} />}
 
       <label className="editor-title">Title<input aria-label="Title" onChange={(event) => setField("title", event.currentTarget.value)} value={document.title} /></label>
 

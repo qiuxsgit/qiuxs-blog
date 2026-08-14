@@ -8,10 +8,11 @@ import { operationProblem } from "./operation-problem";
 
 export type SaveState =
   | { kind: "saved"; savedAt: Date; lockVersion: number }
-  | { kind: "dirty"; lockVersion: number }
+  | { kind: "dirty"; lockVersion: number; immediate?: boolean }
+  | { kind: "invalid"; lockVersion: number; errors: string[] }
   | { kind: "saving"; lockVersion: number }
   | { kind: "failed"; lockVersion: number; problem: ApiProblem }
-  | { kind: "conflict"; lockVersion: number; local: EditorDocument };
+  | { kind: "conflict"; lockVersion: number; local: EditorDocument; problem?: ApiProblem };
 
 export interface AutosaveState {
   document: EditorDocument;
@@ -24,11 +25,27 @@ export type AutosaveAction =
   | { type: "start"; generation: number; lockVersion: number }
   | { type: "success"; generation: number; draft: DraftView; savedAt: Date }
   | { type: "failure"; generation: number; problem: ApiProblem }
+  | { type: "invalid"; errors: string[] }
   | { type: "conflict"; generation: number }
+  | { type: "reload_failure"; problem: ApiProblem }
   | { type: "reload"; detail: ArticleDetail; savedAt: Date };
 
 export function createAutosaveState(document: EditorDocument, lockVersion: number, savedAt = new Date()): AutosaveState {
   return { document, generation: 0, state: { kind: "saved", lockVersion, savedAt } };
+}
+
+export function autosaveInitialKey(articleId: EntityId, lockVersion: number, document: EditorDocument): string {
+  return JSON.stringify([articleId, lockVersion, document.title, document.summary, document.coverMediaId, document.contentMd, document.tagIds]);
+}
+
+export function nextAutosaveDelay(state: SaveState, elapsedMs: number, delayMs: number): number | null {
+  if (state.kind !== "dirty") return null;
+  if (state.immediate) return 0;
+  return Math.max(0, delayMs - elapsedMs);
+}
+
+export function conflictReloadDecision(confirmed: boolean): "stay" | "reload" {
+  return confirmed ? "reload" : "stay";
 }
 
 function documentFromDraft(current: EditorDocument, draft: DraftView): EditorDocument {
@@ -50,14 +67,18 @@ export function autosaveReducer(current: AutosaveState, action: AutosaveAction):
     case "success": {
       const document = documentFromDraft(current.document, action.draft);
       if (action.generation !== current.generation) {
-        return { document: current.document, generation: current.generation, state: { kind: "dirty", lockVersion: action.draft.lockVersion } };
+        return { document: current.document, generation: current.generation, state: { kind: "dirty", lockVersion: action.draft.lockVersion, immediate: true } };
       }
       return { document, generation: current.generation, state: { kind: "saved", lockVersion: action.draft.lockVersion, savedAt: action.savedAt } };
     }
     case "failure":
       return { ...current, state: { kind: "failed", lockVersion: current.state.lockVersion, problem: action.problem } };
+    case "invalid":
+      return { ...current, state: { kind: "invalid", lockVersion: current.state.lockVersion, errors: [...action.errors] } };
     case "conflict":
       return { ...current, state: { kind: "conflict", lockVersion: current.state.lockVersion, local: current.document } };
+    case "reload_failure":
+      return { ...current, state: current.state.kind === "conflict" ? { ...current.state, problem: action.problem } : { kind: "failed", lockVersion: current.state.lockVersion, problem: action.problem } };
     case "reload":
       return { document: fromArticleDetail(action.detail), generation: current.generation + 1, state: { kind: "saved", lockVersion: action.detail.draft.lockVersion, savedAt: action.savedAt } };
   }
@@ -91,7 +112,7 @@ export function useAutosave(options: AutosaveOptions) {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const inFlight = useRef(false);
   const abort = useRef<AbortController | undefined>(undefined);
-  const initialKey = `${options.articleId}:${options.initialLockVersion}:${options.initial.contentMd}`;
+  const initialKey = autosaveInitialKey(options.articleId, options.initialLockVersion, options.initial);
   usePrompt({ when: shouldBlockNavigation(machine.state), message: "You have unsaved changes. Leave this page?" });
 
   const update = useCallback((action: AutosaveAction) => {
@@ -112,10 +133,10 @@ export function useAutosave(options: AutosaveOptions) {
   const run = useCallback(() => {
     if (!mounted.current || inFlight.current) return;
     const current = machineRef.current;
-    if (current.state.kind === "saved" || current.state.kind === "saving" || current.state.kind === "conflict") return;
+    if (current.state.kind === "saved" || current.state.kind === "saving" || current.state.kind === "conflict" || current.state.kind === "invalid") return;
     const errors = validateEditorDocument(current.document, current.state.lockVersion);
     if (errors.length > 0) {
-      update({ type: "failure", generation: current.generation, problem: new ApiProblem(422, "invalid_draft", "client", errors[0] ?? "Invalid draft") });
+      update({ type: "invalid", errors });
       return;
     }
     const generation = current.generation;
@@ -154,13 +175,14 @@ export function useAutosave(options: AutosaveOptions) {
     timer.current = setTimeout(run, 0);
   }, [run]);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (confirmed = false) => {
+    if (conflictReloadDecision(confirmed) !== "reload") return undefined;
     try {
       const detail = await options.reload(abort.current?.signal);
       if (mounted.current) update({ type: "reload", detail, savedAt: new Date() });
       return detail;
     } catch (error) {
-      if (mounted.current) update({ type: "failure", generation: machineRef.current.generation, problem: operationProblem(error, "Unable to reload article", "reload_article_failed") });
+      if (mounted.current) update({ type: "reload_failure", problem: operationProblem(error, "Unable to reload article", "reload_article_failed") });
       throw error;
     }
   }, [options, update]);

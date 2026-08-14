@@ -4,6 +4,7 @@ export function SaveIndicator({ state }: { state: SaveState }) {
   const labels = {
     saved: ["✓", "Saved"],
     dirty: ["●", "Unsaved changes"],
+    invalid: ["⚠", "Draft needs attention"],
     saving: ["◌", "Saving changes"],
     failed: ["⚠", "Save failed"],
     conflict: ["⚠", "Version conflict"],

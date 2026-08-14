@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiProblem } from "../api/problem";
 import { articleDetail, draftView } from "../test/fixtures";
-import { createAutosaveState, autosaveReducer, copyLocalMarkdown, isRevisionConflict, shouldBlockNavigation, type SaveState } from "./useAutosave";
+import { autosaveInitialKey, createAutosaveState, autosaveReducer, copyLocalMarkdown, conflictReloadDecision, isRevisionConflict, nextAutosaveDelay, shouldBlockNavigation, type SaveState } from "./useAutosave";
 import type { EditorDocument } from "./editor-document";
 
 const local: EditorDocument = { title: "Draft", summary: "", coverMediaId: null, contentMd: "# local\n", tagIds: [31] };
@@ -14,6 +14,39 @@ describe("autosave state machine", () => {
     expect(dirty.generation).toBe(1);
     expect(dirty.state).toEqual({ kind: "dirty", lockVersion: 7 });
     expect(shouldBlockNavigation(dirty.state)).toBe(true);
+  });
+
+  it("changes the load generation when metadata changes even if Markdown is unchanged", () => {
+    expect(autosaveInitialKey(11, 7, local)).not.toBe(autosaveInitialKey(11, 7, { ...local, title: "other" }));
+    expect(autosaveInitialKey(11, 7, local)).not.toBe(autosaveInitialKey(11, 7, { ...local, tagIds: [32] }));
+  });
+
+  it("keeps invalid local input dirty with validation errors and no save delay", () => {
+    const invalid = autosaveReducer(createAutosaveState(local, 7), { type: "edit", document: { ...local, title: "x".repeat(201) } });
+    const checked = autosaveReducer(invalid, { type: "invalid", errors: ["Title must be at most 200 characters."] });
+    expect(checked.state.kind).toBe("invalid");
+    expect((checked.state as Extract<SaveState, { kind: "invalid" }>).errors).toHaveLength(1);
+    expect(nextAutosaveDelay(checked.state, 2000, 2000)).toBeNull();
+  });
+
+  it("does not reload until explicitly confirmed and keeps conflict on reload failure", () => {
+    expect(conflictReloadDecision(false)).toBe("stay");
+    expect(conflictReloadDecision(true)).toBe("reload");
+    const conflict = autosaveReducer(createAutosaveState(local, 7), { type: "conflict", generation: 0 });
+    const failed = autosaveReducer(conflict, { type: "reload_failure", problem: new ApiProblem(503, "network_error", "client", "Reload failed") });
+    expect(failed.state.kind).toBe("conflict");
+    expect((failed.state as Extract<SaveState, { kind: "conflict" }>).problem?.title).toBe("Reload failed");
+  });
+
+  it("enforces the exact debounce boundary and schedules newer work after settlement", () => {
+    const dirty = autosaveReducer(createAutosaveState(local, 7), { type: "edit", document: { ...local, contentMd: "new" } });
+    expect(nextAutosaveDelay(dirty.state, 1999, 2000)).toBe(1);
+    expect(nextAutosaveDelay(dirty.state, 2000, 2000)).toBe(0);
+    expect(nextAutosaveDelay(dirty.state, 0, 2000)).toBe(2000);
+    const saving = autosaveReducer(dirty, { type: "start", generation: 1, lockVersion: 7 });
+    const newer = autosaveReducer(saving, { type: "edit", document: { ...local, contentMd: "newer" } });
+    const settled = autosaveReducer(newer, { type: "success", generation: 1, draft: { ...draftView, lockVersion: 8 }, savedAt: new Date() });
+    expect(nextAutosaveDelay(settled.state, 0, 2000)).toBe(0);
   });
 
   it("serializes a response and adopts its lock version", () => {
@@ -33,7 +66,7 @@ describe("autosave state machine", () => {
     const newer = autosaveReducer(saving, { type: "edit", document: { ...local, contentMd: "# newer\n" } });
     const settled = autosaveReducer(newer, { type: "success", generation: 1, draft: { ...draftView, contentMd: "# stale\n", lockVersion: 8 }, savedAt: new Date() });
     expect(settled.document.contentMd).toBe("# newer\n");
-    expect(settled.state).toEqual({ kind: "dirty", lockVersion: 8 });
+    expect(settled.state).toEqual({ kind: "dirty", lockVersion: 8, immediate: true });
   });
 
   it("distinguishes exact revision conflicts and keeps local markdown copy-only", () => {

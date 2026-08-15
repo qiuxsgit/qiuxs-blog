@@ -86,8 +86,6 @@ CREATE TABLE article_revisions (
     UNIQUE KEY uk_article_revisions_no (article_id, revision_no),
     UNIQUE KEY uk_article_revisions_editing (editing_article_id),
     KEY idx_article_revisions_article_status (article_id, status),
-    CONSTRAINT fk_article_revisions_article FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE RESTRICT,
-    CONSTRAINT fk_article_revisions_cover_media FOREIGN KEY (cover_media_id) REFERENCES media (id) ON DELETE RESTRICT,
     CONSTRAINT chk_article_revisions_no CHECK (revision_no > 0),
     CONSTRAINT chk_article_revisions_status CHECK (status IN ('editing', 'frozen')),
     CONSTRAINT chk_article_revisions_reason CHECK (reason IN ('draft', 'manual_version', 'publish_snapshot')),
@@ -106,8 +104,6 @@ CREATE TABLE article_revision_tags (
     PRIMARY KEY (id),
     UNIQUE KEY uk_article_revision_tags_position (revision_id, position),
     UNIQUE KEY uk_article_revision_tags_tag (revision_id, tag_id),
-    CONSTRAINT fk_article_revision_tags_revision FOREIGN KEY (revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT,
-    CONSTRAINT fk_article_revision_tags_tag FOREIGN KEY (tag_id) REFERENCES tags (id) ON DELETE RESTRICT,
     CONSTRAINT chk_article_revision_tags_position CHECK (position >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
@@ -121,8 +117,6 @@ CREATE TABLE article_revision_media (
     PRIMARY KEY (id),
     UNIQUE KEY uk_article_revision_media_position (revision_id, position),
     UNIQUE KEY uk_article_revision_media_reference (revision_id, media_id, purpose),
-    CONSTRAINT fk_article_revision_media_revision FOREIGN KEY (revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT,
-    CONSTRAINT fk_article_revision_media_media FOREIGN KEY (media_id) REFERENCES media (id) ON DELETE RESTRICT,
     CONSTRAINT chk_article_revision_media_purpose CHECK (purpose IN ('content', 'cover')),
     CONSTRAINT chk_article_revision_media_position CHECK (position >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -146,7 +140,6 @@ CREATE TABLE site_settings (
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (id),
     UNIQUE KEY uk_site_settings_singleton (singleton_key),
-    CONSTRAINT fk_site_settings_seo_media FOREIGN KEY (seo_default_image_media_id) REFERENCES media (id) ON DELETE RESTRICT,
     CONSTRAINT chk_site_settings_singleton CHECK (singleton_key = 1),
     CONSTRAINT chk_site_settings_site_name CHECK (CHAR_LENGTH(TRIM(site_name)) > 0),
     CONSTRAINT chk_site_settings_author_name CHECK (CHAR_LENGTH(TRIM(author_name)) > 0),
@@ -179,10 +172,6 @@ CREATE TABLE referer_allowlist (
     CONSTRAINT chk_referer_allowlist_enabled CHECK (enabled IN (0, 1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-ALTER TABLE articles
-    ADD CONSTRAINT fk_articles_draft_revision FOREIGN KEY (draft_revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT,
-    ADD CONSTRAINT fk_articles_published_revision FOREIGN KEY (published_revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT;
-
 CREATE TABLE releases (
     id BIGINT NOT NULL,
     site_snapshot_json JSON NOT NULL,
@@ -212,9 +201,6 @@ CREATE TABLE release_articles (
     PRIMARY KEY (id),
     UNIQUE KEY uk_release_articles_article (release_id, article_id),
     KEY idx_release_articles_revision (revision_id),
-    CONSTRAINT fk_release_articles_release FOREIGN KEY (release_id) REFERENCES releases (id) ON DELETE RESTRICT,
-    CONSTRAINT fk_release_articles_article FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE RESTRICT,
-    CONSTRAINT fk_release_articles_revision FOREIGN KEY (revision_id) REFERENCES article_revisions (id) ON DELETE RESTRICT,
     CONSTRAINT chk_release_articles_slug CHECK (REGEXP_LIKE(slug, '^[a-z0-9_-]{12}$', 'c')),
     CONSTRAINT chk_release_articles_hash CHECK (REGEXP_LIKE(content_hash, '^sha256:[a-f0-9]{64}$', 'c'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -267,8 +253,6 @@ CREATE TABLE publish_jobs (
     finished_at DATETIME(6) NULL,
     PRIMARY KEY (id),
     KEY idx_publish_jobs_release_created (release_id, created_at),
-    CONSTRAINT fk_publish_jobs_release FOREIGN KEY (release_id) REFERENCES releases (id) ON DELETE RESTRICT,
-    CONSTRAINT fk_publish_jobs_builder FOREIGN KEY (builder_id) REFERENCES builder_config (id) ON DELETE RESTRICT,
     CONSTRAINT chk_publish_jobs_builder_name CHECK (CHAR_LENGTH(TRIM(builder_name)) > 0),
     CONSTRAINT chk_publish_jobs_builder_base_url CHECK (REGEXP_LIKE(builder_base_url, '^https://[a-z0-9.-]+(:[1-9][0-9]{0,4})?$', 'c')),
     CONSTRAINT chk_publish_jobs_builder_username CHECK (CHAR_LENGTH(TRIM(builder_username)) > 0),
@@ -288,7 +272,5 @@ CREATE TABLE site_state (
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (id),
     UNIQUE KEY uk_site_state_singleton (singleton_key),
-    CONSTRAINT fk_site_state_current_release FOREIGN KEY (current_release_id) REFERENCES releases (id) ON DELETE RESTRICT,
-    CONSTRAINT fk_site_state_active_job FOREIGN KEY (active_publish_job_id) REFERENCES publish_jobs (id) ON DELETE RESTRICT,
     CONSTRAINT chk_site_state_singleton CHECK (singleton_key = 1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

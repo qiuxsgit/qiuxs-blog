@@ -172,7 +172,7 @@ func flowConfig(redisAddr string) config.Config {
 			Addr:        ":8080",
 			AdminOrigin: adminOrigin,
 		},
-		MySQL: config.MySQLConfig{DSN: "sqlmock"},
+		MySQL: config.MySQLConfig{Host: "sqlmock", Port: 3306, User: "test", Database: "test", Args: "parseTime=true&loc=UTC&charset=utf8mb4"},
 		Redis: config.RedisConfig{Addr: redisAddr},
 		IDGen: config.IDGenConfig{Offset: 1, Step: 1, Heal: false},
 		Session: config.SessionConfig{

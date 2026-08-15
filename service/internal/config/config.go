@@ -13,6 +13,8 @@ import (
 const (
 	defaultEnvironment       = "development"
 	defaultHTTPAddr          = ":8080"
+	defaultMySQLPort         = 3306
+	defaultMySQLArgs         = "parseTime=true&loc=UTC&charset=utf8mb4"
 	defaultSessionCookieName = "qx_blog_session"
 	defaultSessionTTL        = 24 * time.Hour
 	minimumSessionTTL        = 15 * time.Minute
@@ -31,7 +33,14 @@ type Config struct {
 }
 
 type HTTPConfig struct{ Addr, AdminOrigin string }
-type MySQLConfig struct{ DSN string }
+type MySQLConfig struct {
+	Host     string
+	Port     int
+	User     string
+	Password string
+	Database string
+	Args     string
+}
 type RedisConfig struct {
 	Addr, Password string
 	DB             int
@@ -65,7 +74,11 @@ func Load(getenv func(string) string) (Config, error) {
 
 	environment := valueOrDefault(getenv("BLOG_ENV"), defaultEnvironment)
 	httpAddr := valueOrDefault(getenv("BLOG_HTTP_ADDR"), defaultHTTPAddr)
-	mysqlDSN := getenv("BLOG_MYSQL_DSN")
+	mysqlPort, err := parseMySQLPort(getenv("BLOG_MYSQL_PORT"))
+	if err != nil {
+		return Config{}, err
+	}
+	mysqlArgs := valueOrDefault(getenv("BLOG_MYSQL_ARGS"), defaultMySQLArgs)
 
 	redisAddr := getenv("BLOG_REDIS_ADDR")
 	redisDB, err := parseRedisDB(getenv("BLOG_REDIS_DB"))
@@ -120,7 +133,14 @@ func Load(getenv func(string) string) (Config, error) {
 			Addr:        httpAddr,
 			AdminOrigin: adminOrigin,
 		},
-		MySQL: MySQLConfig{DSN: mysqlDSN},
+		MySQL: MySQLConfig{
+			Host:     getenv("BLOG_MYSQL_HOST"),
+			Port:     mysqlPort,
+			User:     getenv("BLOG_MYSQL_USER"),
+			Password: getenv("BLOG_MYSQL_PASSWORD"),
+			Database: getenv("BLOG_MYSQL_DATABASE"),
+			Args:     mysqlArgs,
+		},
 		Redis: RedisConfig{
 			Addr:     redisAddr,
 			Password: getenv("BLOG_REDIS_PASSWORD"),
@@ -174,8 +194,20 @@ func Validate(cfg Config) error {
 	if canonicalOrigin != cfg.HTTP.AdminOrigin {
 		return fmt.Errorf("BLOG_ADMIN_ORIGIN must be canonical without a trailing slash")
 	}
-	if strings.TrimSpace(cfg.MySQL.DSN) == "" {
-		return fmt.Errorf("BLOG_MYSQL_DSN is required")
+	if strings.TrimSpace(cfg.MySQL.Host) == "" {
+		return fmt.Errorf("BLOG_MYSQL_HOST is required")
+	}
+	if cfg.MySQL.Port < 1 || cfg.MySQL.Port > 65535 {
+		return fmt.Errorf("BLOG_MYSQL_PORT must be between 1 and 65535")
+	}
+	if strings.TrimSpace(cfg.MySQL.User) == "" {
+		return fmt.Errorf("BLOG_MYSQL_USER is required")
+	}
+	if strings.TrimSpace(cfg.MySQL.Database) == "" {
+		return fmt.Errorf("BLOG_MYSQL_DATABASE is required")
+	}
+	if strings.TrimSpace(cfg.MySQL.Args) == "" {
+		return fmt.Errorf("BLOG_MYSQL_ARGS is required")
 	}
 	if strings.TrimSpace(cfg.Redis.Addr) == "" {
 		return fmt.Errorf("BLOG_REDIS_ADDR is required")
@@ -224,6 +256,17 @@ func Validate(cfg Config) error {
 		return fmt.Errorf("BLOG_CURRENT_RELEASE_JSON_PATH is required")
 	}
 	return nil
+}
+
+func parseMySQLPort(value string) (int, error) {
+	if strings.TrimSpace(value) == "" {
+		return defaultMySQLPort, nil
+	}
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("BLOG_MYSQL_PORT must be between 1 and 65535")
+	}
+	return port, nil
 }
 
 func parseOpaqueReleaseSecret(field, value string) ([]byte, error) {

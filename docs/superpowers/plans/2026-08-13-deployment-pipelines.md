@@ -6,14 +6,14 @@
 
 **Architecture:** Three Jenkinsfiles build independently and deploy immutable releases over preconfigured SSH aliases. Shared POSIX scripts stage via rsync, validate remotely, atomically rename and switch `current`, retaining the previous release on every failure. Nginx serves Admin and Site static `current` links and proxies only scoped Service paths; secrets and the cross-host Service upstream are Jenkins-managed inputs.
 
-**Tech Stack:** Jenkins Declarative Pipeline, Bash/POSIX shell, Docker Node 22.20.0, host Node 20.19.4, host Go 1.25.7, rsync, OpenSSH, Nginx, systemd, Playwright.
+**Tech Stack:** Jenkins Declarative Pipeline, Bash/POSIX shell, Docker Node 22.20.0, host Node 20.19.4, host Go 1.25.7, rsync, OpenSSH, Nginx, nohup/PID process control, Playwright.
 
 ## Global Constraints
 
 - Service deploys through `root@blogweb1` to `/web/deploy/blog`.
 - Admin deploys through `root@ngx1` to `/web/deploy/blog-admin`.
 - Site deploys through `root@ngx1` to `/web/deploy/blog-site`.
-- SSH keys, Service `.env`, Jenkins API token, bundle token, callback secret, and `BLOG_SERVICE_UPSTREAM` live in Jenkins/server configuration, never Git.
+- SSH keys, Service `blog.env`, Jenkins API token, bundle token, callback secret, and `BLOG_SERVICE_UPSTREAM` live in Jenkins/server configuration, never Git.
 - Admin host build must report Node `v20.19.4`; Service host build must report Go `go1.25.7`; Site builds only in Node `22.20.0` Docker.
 - Static deployments use `releases/<immutable-id>` plus atomic `current` symlink; failed staging never changes `current`.
 - Site publication receives both Release and Publish Job IDs and includes both in every signed `building`, `deploying`, and retrying final `success`/`failed` callback.
@@ -25,7 +25,7 @@
 
 - `deploy/jenkins/Jenkinsfile.service`, `.admin`, `.site`: independent jobs.
 - `deploy/scripts/deploy-service.sh`, `deploy-static.sh`, `site-callback.sh`, `render-nginx.sh`, `smoke.sh`: audited deployment primitives.
-- `deploy/systemd/qiuxs-blog.service`: process unit reading external environment.
+- `deploy/scripts/blog-service.sh`: nohup/PID process controller reading external environment.
 - `deploy/nginx/blog-admin.conf.template`, `qiuxs.com.conf.template`: scoped routing templates.
 - `deploy/tests/*`: shell behavior and pipeline contract tests.
 - `deploy/README.md`: credentials, first install, jobs, rollback, and smoke runbook.
@@ -35,7 +35,7 @@
 
 **Files:** Create `deploy/scripts/lib.sh`, `deploy/scripts/deploy-static.sh`, `deploy/scripts/deploy-service.sh`, `deploy/tests/deploy_scripts.bats`, `deploy/tests/helpers/*`.
 
-**Interfaces:** `deploy-static.sh HOST ROOT RELEASE SOURCE RETAIN`; `deploy-service.sh HOST ROOT RELEASE BINARY UNIT RETAIN`; both validate tokens/absolute approved roots, stage, verify, rename, atomically relink, and prune only older owned releases.
+**Interfaces:** `deploy-static.sh HOST ROOT RELEASE SOURCE RETAIN`; `deploy-service.sh HOST ROOT RELEASE BINARY RETAIN`; both validate tokens/absolute approved roots, stage, verify, rename, atomically relink, and prune only older owned releases.
 
 - [ ] Write fake ssh/rsync tests for success, transfer/check failure, existing immutable release, symlink atomicity, quoting/injection rejection, and retaining previous/current releases.
 - [ ] Run Bats and observe missing-script failures.
@@ -44,12 +44,12 @@
 
 ### Task 2: Package Service Deployment and Process Ownership
 
-**Files:** Create `deploy/systemd/qiuxs-blog.service`, `deploy/jenkins/Jenkinsfile.service`, `deploy/tests/service_pipeline_test.go`, modify `service/Makefile`, `service/README.md`.
+**Files:** Create `deploy/scripts/blog-service.sh`, `deploy/jenkins/Jenkinsfile.service`, `deploy/tests/service_pipeline_test.go`, modify `service/Makefile`, `service/README.md`.
 
-**Interfaces:** Pipeline verifies Go 1.25.7, runs full Service gates, builds static Linux amd64 binary, deploys to `root@blogweb1:/web/deploy/blog`, preserves `/web/deploy/blog/shared/blog.env`, restarts `qiuxs-blog.service`, then checks live/ready.
+**Interfaces:** Pipeline verifies Go 1.25.7, runs full Service gates, builds static Linux amd64 binary, deploys to `root@blogweb1:/web/deploy/blog`, preserves `/web/deploy/blog/shared/blog.env`, invokes `scripts/blog-service.sh restart`, then checks live/ready.
 
-- [ ] Add static pipeline tests asserting exact version gate, test/race/vet/generate/build order, fixed host/root, no secret copying, systemd hardening, health rollback behavior, and retention.
-- [ ] Observe failures, implement Jenkinsfile and unit with `EnvironmentFile=/web/deploy/blog/shared/blog.env`, `ExecStart=/web/deploy/blog/current/blog-service`, restart limits, unprivileged runtime user, filesystem/network hardening compatible with outbound MySQL/Redis/Jenkins/GFS.
+- [ ] Add static pipeline tests asserting exact version gate, test/race/vet/generate/build order, fixed host/root, no secret copying, PID/log handling, health rollback behavior, and retention.
+- [ ] Observe failures, implement Jenkinsfile and control script with `/web/deploy/blog/shared/blog.env`, graceful SIGTERM, startup health polling, PID files, and log handling compatible with outbound MySQL/Redis/Jenkins/GFS.
 - [ ] Run Go pipeline tests plus a local fake deployment; commit `build(service): add jenkins deployment pipeline`.
 
 ### Task 3: Package Admin Static Deployment

@@ -9,4 +9,7 @@ grep -q 'X-Jenkins-Signature' "$root/deploy/scripts/site-callback.sh"
 grep -q 'publishJobId' "$root/deploy/scripts/site-callback.sh"
 grep -q 'queued' "$root/deploy/scripts/site-callback.sh"
 ! grep -q 'X-Blog-Signature' "$root/deploy/scripts/site-callback.sh"
+test -x "$root/deploy/scripts/blog-service.sh"
+grep -q 'blog-service.sh restart' "$root/deploy/scripts/deploy-service.sh"
+! grep -q 'systemctl' "$root/deploy/scripts/deploy-service.sh"
 echo 'deployment argument gate passed'

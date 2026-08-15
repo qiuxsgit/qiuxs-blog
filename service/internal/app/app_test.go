@@ -286,7 +286,7 @@ func TestBuildRejectsInvalidDirectConfig(t *testing.T) {
 			cfg.HTTP.AdminOrigin = "https://admin.example.com"
 			cfg.Session.CookieSecure = false
 		}},
-		{name: "MySQL DSN", mutate: func(cfg *config.Config) { cfg.MySQL.DSN = " " }},
+		{name: "MySQL host", mutate: func(cfg *config.Config) { cfg.MySQL.Host = " " }},
 		{name: "Redis address", mutate: func(cfg *config.Config) { cfg.Redis.Addr = " " }},
 		{name: "Redis database", mutate: func(cfg *config.Config) { cfg.Redis.DB = -1 }},
 		{name: "ID generator", mutate: func(cfg *config.Config) { cfg.IDGen.Offset = 0 }},
@@ -526,7 +526,7 @@ func testConfig() config.Config {
 			Addr:        ":8080",
 			AdminOrigin: "http://admin.example.com",
 		},
-		MySQL: config.MySQLConfig{DSN: "blog:password@tcp(mysql:3306)/blog"},
+		MySQL: config.MySQLConfig{Host: "mysql", Port: 3306, User: "blog", Password: "password", Database: "blog", Args: "parseTime=true&loc=UTC&charset=utf8mb4"},
 		Redis: config.RedisConfig{Addr: "redis:6379"},
 		IDGen: config.IDGenConfig{Offset: 1, Step: 1},
 		Session: config.SessionConfig{

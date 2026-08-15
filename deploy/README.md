@@ -13,9 +13,11 @@ verification uses pure tests and shell/configuration contracts, while UI accepta
 | Admin | `root@ngx1` | `/web/deploy/blog-admin` |
 | Site | `root@ngx1` | `/web/deploy/blog-site` |
 
-On first install, create the roots, `releases`, `shared`, and an unprivileged `blog` user. Copy
-`deploy/env/blog.env.example` to `/web/deploy/blog/shared/blog.env`, fill it out, install
-`deploy/systemd/qiuxs-blog.service` into `/etc/systemd/system/`, then run `systemctl daemon-reload`.
+On first install, create the roots, `releases`, `shared`, `scripts`, `run`, and `logs`, and an
+unprivileged `blog` user. Copy `deploy/env/blog.env.example` to
+`/web/deploy/blog/shared/blog.env`, fill it out, and let the Jenkins service job install the binary
+and `scripts/blog-service.sh`. The service is managed by that control script with `nohup` and a PID
+file; no systemd unit is installed.
 Run the SQL files under `service/sqls/develop/` manually in their documented order before starting the
 Service. Configure the initial administrator through the Service's bootstrap flow.
 
@@ -45,7 +47,7 @@ List releases on the target and atomically point `current` to a known-good direc
 
 ```sh
 ssh root@ngx1 'ln -sfn 123-known-good /web/deploy/blog-site/.rollback-new && mv -Tf /web/deploy/blog-site/.rollback-new /web/deploy/blog-site/current'
-ssh root@blogweb1 'ln -sfn 123-known-good /web/deploy/blog/.rollback-new && mv -Tf /web/deploy/blog/.rollback-new /web/deploy/blog/current && systemctl restart qiuxs-blog.service'
+ssh root@blogweb1 'ln -sfn 123-known-good /web/deploy/blog/.rollback-new && mv -Tf /web/deploy/blog/.rollback-new /web/deploy/blog/current && /web/deploy/blog/scripts/blog-service.sh restart'
 ```
 
 The scripts retain the newest five owned releases. Remove only clearly identified old release

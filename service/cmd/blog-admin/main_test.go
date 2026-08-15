@@ -28,7 +28,12 @@ func (i *fakePasswordInput) ReadPassword(string) (string, error) {
 
 func validCLIEnvironment(password string) func(string) string {
 	env := map[string]string{
-		"BLOG_MYSQL_DSN":              "user:pass@tcp(mysql:3306)/blog",
+		"BLOG_MYSQL_HOST":             "mysql",
+		"BLOG_MYSQL_PORT":             "3306",
+		"BLOG_MYSQL_USER":             "user",
+		"BLOG_MYSQL_PASSWORD":         "pass",
+		"BLOG_MYSQL_DATABASE":         "blog",
+		"BLOG_MYSQL_ARGS":             "parseTime=true&loc=UTC&charset=utf8mb4",
 		"BLOG_REDIS_ADDR":             "redis:6379",
 		"BLOG_ADMIN_ORIGIN":           "http://localhost:3000",
 		"BLOG_ADMIN_PASSWORD":         password,

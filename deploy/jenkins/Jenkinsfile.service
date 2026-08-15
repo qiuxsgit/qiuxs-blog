@@ -6,7 +6,7 @@ pipeline {
     stage('toolchain') { steps { sh 'go version | grep -F "go1.25.7"' } }
     stage('verify') { steps { dir('service') { sh 'make generate && go test ./... && go test -race ./... && go vet ./...' } } }
     stage('build') { steps { dir('service') { sh 'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../dist/blog-service ./cmd/blog-service' } } }
-    stage('deploy') { steps { sh 'deploy/scripts/deploy-service.sh "$DEPLOY_HOST" "$DEPLOY_ROOT" "$RELEASE_ID" dist/blog-service qiuxs-blog.service 5' } }
+    stage('deploy') { steps { sh 'deploy/scripts/deploy-service.sh "$DEPLOY_HOST" "$DEPLOY_ROOT" "$RELEASE_ID" dist/blog-service 5' } }
     stage('health') { steps { withCredentials([string(credentialsId: 'blog-service-health-url', variable: 'HEALTH_URL')]) { sh 'curl --fail --max-time 10 "$HEALTH_URL/healthz"' } } }
   }
   post { failure { echo 'Service deployment failed; deploy-service leaves current unchanged on staging/health failure.' } }

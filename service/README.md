@@ -14,7 +14,12 @@ All runtime configuration is supplied through environment variables.
 | --- | --- | --- |
 | `BLOG_ENV` | `development` | Must be `development` or `production`. Production requires an HTTPS admin origin and enables Secure session cookies. |
 | `BLOG_HTTP_ADDR` | `:8080` | Address passed to the HTTP server. |
-| `BLOG_MYSQL_DSN` | required | MySQL DSN. Include options required by the deployment, such as `parseTime=true&loc=UTC`. |
+| `BLOG_MYSQL_HOST` | required | MySQL host name or IP address. |
+| `BLOG_MYSQL_PORT` | `3306` | MySQL TCP port from 1 through 65535. |
+| `BLOG_MYSQL_USER` | required | MySQL username. |
+| `BLOG_MYSQL_PASSWORD` | empty | MySQL password. Keep it only in the runtime environment file. |
+| `BLOG_MYSQL_DATABASE` | required | MySQL database name. |
+| `BLOG_MYSQL_ARGS` | `parseTime=true&loc=UTC&charset=utf8mb4` | URL-query style MySQL driver arguments. |
 | `BLOG_REDIS_ADDR` | required | Redis address in `host:port` form. |
 | `BLOG_REDIS_PASSWORD` | empty | Redis password. |
 | `BLOG_REDIS_DB` | `0` | Non-negative Redis database number. |
@@ -70,6 +75,19 @@ go run ./cmd/blog-admin init --username qiuxs
 The command prompts for the password twice without echoing it. It creates only
 the first administrator; the MySQL singleton constraint remains authoritative
 if initializers race.
+
+## Process control
+
+Production does not install a systemd unit. The deployment job copies the
+binary and `deploy/scripts/blog-service.sh` to `/web/deploy/blog`, then runs:
+
+```sh
+/web/deploy/blog/scripts/blog-service.sh {start|stop|restart|status}
+```
+
+The script loads `/web/deploy/blog/shared/blog.env`, writes the PID file under
+`run/`, writes stdout and stderr under `logs/`, waits for `/healthz` after
+starting, and sends `SIGTERM` before falling back to `SIGKILL` on timeout.
 
 ## Provision GFS and private media storage
 

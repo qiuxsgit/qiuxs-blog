@@ -287,7 +287,12 @@ func validRuntime(t *testing.T) (runtimeDependencies, *closeCounts) {
 		getenv: configEnvironment(map[string]string{
 			"BLOG_ENV":                    "production",
 			"BLOG_HTTP_ADDR":              ":19090",
-			"BLOG_MYSQL_DSN":              "user:password@tcp(mysql:3306)/blog",
+			"BLOG_MYSQL_HOST":             "mysql",
+			"BLOG_MYSQL_PORT":             "3306",
+			"BLOG_MYSQL_USER":             "user",
+			"BLOG_MYSQL_PASSWORD":         "password",
+			"BLOG_MYSQL_DATABASE":         "blog",
+			"BLOG_MYSQL_ARGS":             "parseTime=true&loc=UTC&charset=utf8mb4",
 			"BLOG_REDIS_ADDR":             "redis:6379",
 			"BLOG_ADMIN_ORIGIN":           "https://admin.example.com",
 			"BLOG_GFS_BASE_URL":           "https://gfs.example.com",

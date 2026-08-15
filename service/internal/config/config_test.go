@@ -22,7 +22,12 @@ func TestLoadProductionConfig(t *testing.T) {
 	require.Equal(t, "production", got.Environment)
 	require.Equal(t, ":9010", got.HTTP.Addr)
 	require.Equal(t, "https://blog-admin.qiuxs.com", got.HTTP.AdminOrigin)
-	require.Equal(t, "blog:secret@tcp(mysql:3306)/qiuxs_blog?parseTime=true&loc=UTC", got.MySQL.DSN)
+	require.Equal(t, "mysql", got.MySQL.Host)
+	require.Equal(t, 3306, got.MySQL.Port)
+	require.Equal(t, "blog", got.MySQL.User)
+	require.Equal(t, "secret", got.MySQL.Password)
+	require.Equal(t, "qiuxs_blog", got.MySQL.Database)
+	require.Equal(t, "parseTime=true&loc=UTC&charset=utf8mb4", got.MySQL.Args)
 	require.Equal(t, "redis:6379", got.Redis.Addr)
 	require.Equal(t, "redis-secret", got.Redis.Password)
 	require.Equal(t, 2, got.Redis.DB)
@@ -206,7 +211,11 @@ func TestValidateRejectsInvalidDirectConfigWithoutRevealingValues(t *testing.T) 
 			cfg.HTTP.AdminOrigin = "https://blog-admin.qiuxs.com"
 			cfg.Session.CookieSecure = false
 		}, wantField: "BLOG_ENV"},
-		{name: "blank MySQL DSN", mutate: func(cfg *config.Config) { cfg.MySQL.DSN = " \t" }, wantField: "BLOG_MYSQL_DSN"},
+		{name: "blank MySQL host", mutate: func(cfg *config.Config) { cfg.MySQL.Host = " \t" }, wantField: "BLOG_MYSQL_HOST"},
+		{name: "invalid MySQL port", mutate: func(cfg *config.Config) { cfg.MySQL.Port = 0 }, wantField: "BLOG_MYSQL_PORT"},
+		{name: "blank MySQL user", mutate: func(cfg *config.Config) { cfg.MySQL.User = " \t" }, wantField: "BLOG_MYSQL_USER"},
+		{name: "blank MySQL database", mutate: func(cfg *config.Config) { cfg.MySQL.Database = " \t" }, wantField: "BLOG_MYSQL_DATABASE"},
+		{name: "blank MySQL args", mutate: func(cfg *config.Config) { cfg.MySQL.Args = " \t" }, wantField: "BLOG_MYSQL_ARGS"},
 		{name: "blank Redis address", mutate: func(cfg *config.Config) { cfg.Redis.Addr = " \t" }, wantField: "BLOG_REDIS_ADDR"},
 		{name: "negative Redis database", mutate: func(cfg *config.Config) { cfg.Redis.DB = -1 }, wantField: "BLOG_REDIS_DB"},
 		{name: "zero ID offset", mutate: func(cfg *config.Config) { cfg.IDGen.Offset = 0 }, wantField: "IDGEN_OFFSET"},
@@ -338,13 +347,13 @@ func TestLoadRejectsUnknownEnvironmentAndWhitespaceHTTPAddress(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsMissingMySQLDSN(t *testing.T) {
+func TestLoadRejectsMissingMySQLHost(t *testing.T) {
 	env := validEnv()
-	delete(env, "BLOG_MYSQL_DSN")
+	delete(env, "BLOG_MYSQL_HOST")
 
 	_, err := config.Load(func(key string) string { return env[key] })
 
-	require.ErrorContains(t, err, "BLOG_MYSQL_DSN")
+	require.ErrorContains(t, err, "BLOG_MYSQL_HOST")
 }
 
 func TestLoadRejectsMissingRedisAddress(t *testing.T) {
@@ -476,7 +485,12 @@ func validEnv() map[string]string {
 	return map[string]string{
 		"BLOG_ENV":                       "production",
 		"BLOG_HTTP_ADDR":                 ":9010",
-		"BLOG_MYSQL_DSN":                 "blog:secret@tcp(mysql:3306)/qiuxs_blog?parseTime=true&loc=UTC",
+		"BLOG_MYSQL_HOST":                "mysql",
+		"BLOG_MYSQL_PORT":                "3306",
+		"BLOG_MYSQL_USER":                "blog",
+		"BLOG_MYSQL_PASSWORD":            "secret",
+		"BLOG_MYSQL_DATABASE":            "qiuxs_blog",
+		"BLOG_MYSQL_ARGS":                "parseTime=true&loc=UTC&charset=utf8mb4",
 		"BLOG_REDIS_ADDR":                "redis:6379",
 		"BLOG_REDIS_PASSWORD":            "redis-secret",
 		"BLOG_REDIS_DB":                  "2",
@@ -504,7 +518,7 @@ func validDirectConfig() config.Config {
 			Addr:        ":8080",
 			AdminOrigin: "http://localhost:3000",
 		},
-		MySQL: config.MySQLConfig{DSN: "blog:password@tcp(mysql:3306)/blog"},
+		MySQL: config.MySQLConfig{Host: "mysql", Port: 3306, User: "blog", Password: "password", Database: "blog", Args: "parseTime=true&loc=UTC&charset=utf8mb4"},
 		Redis: config.RedisConfig{
 			Addr: "redis:6379",
 			DB:   0,

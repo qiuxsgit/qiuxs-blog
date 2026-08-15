@@ -56,6 +56,7 @@ type SessionConfig struct {
 }
 type GFSConfig struct {
 	BaseURL          string
+	AppDomain        string
 	AppID            string
 	AppSecret        string
 	PublicReadSecret string
@@ -107,6 +108,7 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	gfsAppDomain := getenv("BLOG_GFS_APP_DOMAIN")
 
 	cookieName := valueOrDefault(getenv("BLOG_SESSION_COOKIE_NAME"), defaultSessionCookieName)
 	ttl, err := parseSessionTTL(getenv("BLOG_SESSION_TTL"))
@@ -158,6 +160,7 @@ func Load(getenv func(string) string) (Config, error) {
 		},
 		GFS: GFSConfig{
 			BaseURL:          gfsBaseURL,
+			AppDomain:        gfsAppDomain,
 			AppID:            getenv("BLOG_GFS_APP_ID"),
 			AppSecret:        getenv("BLOG_GFS_APP_SECRET"),
 			PublicReadSecret: getenv("BLOG_GFS_PUBLIC_READ_SECRET"),
@@ -237,6 +240,9 @@ func Validate(cfg Config) error {
 	if strings.TrimSpace(cfg.GFS.AppID) == "" {
 		return fmt.Errorf("BLOG_GFS_APP_ID is required")
 	}
+	if err := validateGFSAppDomain(cfg.GFS.AppDomain); err != nil {
+		return err
+	}
 	if strings.TrimSpace(cfg.GFS.AppSecret) == "" {
 		return fmt.Errorf("BLOG_GFS_APP_SECRET is required")
 	}
@@ -254,6 +260,21 @@ func Validate(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.Release.CurrentReleaseJSONPath) == "" {
 		return fmt.Errorf("BLOG_CURRENT_RELEASE_JSON_PATH is required")
+	}
+	return nil
+}
+
+func validateGFSAppDomain(value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
+		return fmt.Errorf("BLOG_GFS_APP_DOMAIN must be a lowercase DNS label")
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+			return fmt.Errorf("BLOG_GFS_APP_DOMAIN must be a lowercase DNS label")
+		}
 	}
 	return nil
 }

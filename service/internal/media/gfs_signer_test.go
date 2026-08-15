@@ -77,6 +77,17 @@ func TestGFSSignerReadURLMatchesFixedGFSVectorAndEscapesPolicy(t *testing.T) {
 	}, policy)
 }
 
+func TestGFSSignerReadURLUsesAppDomainWhenConfigured(t *testing.T) {
+	keys, err := randomkey.New(bytes.NewReader(append(byteRange(26, 38), byteRange(38, 48)...)))
+	require.NoError(t, err)
+	signer, err := media.NewGFSSignerWithAppDomain("https://gfs.example.com", "blog-app", "blog-app-id", testRawAppSecret, testPublicReadSecret, keys)
+	require.NoError(t, err)
+
+	got, err := signer.ReadURL(media.Media{GFSFileID: 91}, time.Unix(1700000000, 0))
+	require.NoError(t, err)
+	require.Contains(t, got, "https://blog-app.r.img-bed.top/read/")
+}
+
 func TestGFSSignerRejectsInvalidConfigurationWithoutRevealingValues(t *testing.T) {
 	validKeys, err := randomkey.New(bytes.NewReader(make([]byte, 64)))
 	require.NoError(t, err)

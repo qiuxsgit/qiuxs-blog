@@ -208,8 +208,9 @@ func buildComponents(cfg config.Config, deps Dependencies) (applicationComponent
 	if err != nil {
 		return applicationComponents{}, buildObservation{}, fmt.Errorf("construct GFS metadata client: %w", err)
 	}
-	gfsSigner, err := media.NewGFSSigner(
+	gfsSigner, err := media.NewGFSSignerWithAppDomain(
 		cfg.GFS.BaseURL,
+		cfg.GFS.AppDomain,
 		cfg.GFS.AppID,
 		cfg.GFS.AppSecret,
 		cfg.GFS.PublicReadSecret,

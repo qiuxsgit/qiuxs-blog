@@ -52,6 +52,7 @@ type ReadURLSigner interface {
 
 type GFSSigner struct {
 	baseURL          url.URL
+	appDomain        string
 	appID            string
 	uploadSecret     string
 	publicReadSecret string
@@ -59,12 +60,19 @@ type GFSSigner struct {
 }
 
 func NewGFSSigner(baseURL, appID, rawAppSecret, publicReadSecret string, keys *randomkey.Generator) (*GFSSigner, error) {
+	return NewGFSSignerWithAppDomain(baseURL, "", appID, rawAppSecret, publicReadSecret, keys)
+}
+
+// NewGFSSignerWithAppDomain configures the account-book-compatible vanity
+// domain used only for public read URLs. Uploads and metadata still use baseURL.
+func NewGFSSignerWithAppDomain(baseURL, appDomain, appID, rawAppSecret, publicReadSecret string, keys *randomkey.Generator) (*GFSSigner, error) {
 	parsedBaseURL, err := parseCanonicalBaseURL(baseURL)
-	if err != nil || strings.TrimSpace(appID) == "" || strings.TrimSpace(rawAppSecret) == "" || strings.TrimSpace(publicReadSecret) == "" || keys == nil {
+	if err != nil || !validGFSAppDomain(appDomain) || strings.TrimSpace(appID) == "" || strings.TrimSpace(rawAppSecret) == "" || strings.TrimSpace(publicReadSecret) == "" || keys == nil {
 		return nil, ErrInvalidGFSConfiguration
 	}
 	return &GFSSigner{
 		baseURL:          parsedBaseURL,
+		appDomain:        appDomain,
 		appID:            appID,
 		uploadSecret:     md5Hex(rawAppSecret),
 		publicReadSecret: publicReadSecret,
@@ -123,6 +131,10 @@ func (s *GFSSigner) ReadURL(item Media, now time.Time) (string, error) {
 	signature := md5Hex(strings.Join([]string{s.publicReadSecret, policy, timestamp, gfsExpireSeconds, s.publicReadSecret}, "_"))
 
 	readURL := s.baseURL
+	if s.appDomain != "" {
+		readURL.Scheme = "https"
+		readURL.Host = s.appDomain + ".r.img-bed.top"
+	}
 	readURL.Path = "/read/" + policy
 	readURL.RawPath = "/read/" + url.PathEscape(policy)
 	query := url.Values{}
@@ -131,6 +143,21 @@ func (s *GFSSigner) ReadURL(item Media, now time.Time) (string, error) {
 	query.Set("expire", gfsExpireSeconds)
 	readURL.RawQuery = query.Encode()
 	return readURL.String(), nil
+}
+
+func validGFSAppDomain(value string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *GFSSigner) valid() bool {

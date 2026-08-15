@@ -31,6 +31,7 @@ All runtime configuration is supplied through environment variables.
 | `BLOG_SESSION_TTL` | `24h` | Go duration from `15m` through `168h` (7 days). |
 | `BLOG_ADMIN_PASSWORD` | unset | Optional non-interactive input for `blog-admin init`. Prefer the hidden, twice-entered prompt so the password is not inherited or exposed through process configuration. |
 | `BLOG_GFS_BASE_URL` | required | GFS `http` or `https` origin with no non-root path, query, fragment, or userinfo. An optional root `/` is normalized away; production requires HTTPS. |
+| `BLOG_GFS_APP_DOMAIN` | empty | Optional lowercase GFS app label. When set, public read URLs use `https://<value>.r.img-bed.top`; upload and metadata requests continue using `BLOG_GFS_BASE_URL`. |
 | `BLOG_GFS_APP_ID` | required | Application ID for the dedicated Blog Service GFS application. |
 | `BLOG_GFS_APP_SECRET` | required | Raw GFS application secret used only for local upload signing. Keep it out of source control, process output, and logs. |
 | `BLOG_GFS_PUBLIC_READ_SECRET` | required | Secret used only to sign short-lived GFS read URLs locally. Keep it out of source control, process output, and logs. |

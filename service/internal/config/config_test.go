@@ -38,6 +38,7 @@ func TestLoadProductionConfig(t *testing.T) {
 	require.True(t, got.Session.CookieSecure)
 	require.Equal(t, 24*time.Hour, got.Session.TTL)
 	require.Equal(t, "https://gfs.example.com", got.GFS.BaseURL)
+	require.Equal(t, "blog-app", got.GFS.AppDomain)
 	require.Equal(t, "blog-app", got.GFS.AppID)
 	require.Equal(t, "raw-app-secret", got.GFS.AppSecret)
 	require.Equal(t, "public-read-secret", got.GFS.PublicReadSecret)
@@ -225,6 +226,7 @@ func TestValidateRejectsInvalidDirectConfigWithoutRevealingValues(t *testing.T) 
 		{name: "session TTL below minimum", mutate: func(cfg *config.Config) { cfg.Session.TTL = 15*time.Minute - time.Nanosecond }, wantField: "BLOG_SESSION_TTL"},
 		{name: "session TTL above maximum", mutate: func(cfg *config.Config) { cfg.Session.TTL = 168*time.Hour + time.Nanosecond }, wantField: "BLOG_SESSION_TTL"},
 		{name: "missing GFS base URL", mutate: func(cfg *config.Config) { cfg.GFS.BaseURL = "" }, wantField: "BLOG_GFS_BASE_URL"},
+		{name: "invalid GFS app domain", mutate: func(cfg *config.Config) { cfg.GFS.AppDomain = "bad domain" }, wantField: "BLOG_GFS_APP_DOMAIN"},
 		{name: "malformed GFS base URL", mutate: func(cfg *config.Config) { cfg.GFS.BaseURL = "://gfs-url-secret" }, wantField: "BLOG_GFS_BASE_URL", secretText: "gfs-url-secret"},
 		{name: "GFS base URL userinfo", mutate: func(cfg *config.Config) { cfg.GFS.BaseURL = "https://gfs-user-secret@gfs.example.com" }, wantField: "BLOG_GFS_BASE_URL", secretText: "gfs-user-secret"},
 		{name: "GFS base URL empty fragment", mutate: func(cfg *config.Config) { cfg.GFS.BaseURL += "#" }, wantField: "BLOG_GFS_BASE_URL"},
@@ -501,6 +503,7 @@ func validEnv() map[string]string {
 		"BLOG_SESSION_COOKIE_NAME":       "qx_blog_session",
 		"BLOG_SESSION_TTL":               "24h",
 		"BLOG_GFS_BASE_URL":              "https://gfs.example.com/",
+		"BLOG_GFS_APP_DOMAIN":            "blog-app",
 		"BLOG_GFS_APP_ID":                "blog-app",
 		"BLOG_GFS_APP_SECRET":            "raw-app-secret",
 		"BLOG_GFS_PUBLIC_READ_SECRET":    "public-read-secret",
